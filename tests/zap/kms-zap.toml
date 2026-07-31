@@ -1,0 +1,27 @@
+# KMS configuration for ZAP security scanning
+# Disables rate limiting and quotas so ZAP can send many requests
+# without being throttled.
+
+[server]
+rest_port = 8080
+grpc_port = 9090
+
+[backend]
+backend_type = "software"
+
+[redis]
+url = "redis://127.0.0.1:6379"
+enabled = false
+
+[audit]
+output_path = "stdout"
+flush_interval_secs = 5
+buffer_size = 100
+
+[rate_limit]
+enabled = false
+requests_per_second = 100
+
+[quota]
+enabled = false
+max_keys = 1000

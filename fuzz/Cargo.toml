@@ -1,0 +1,49 @@
+[package]
+name = "kms-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Keep fuzz targets independent of the parent workspace
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+# Cryptography dependencies for fuzz targets
+gm-crypto = { path = "../../gm/gm-crypto" }
+ring = "0.17"
+hex = "0.4"
+
+# Constant-time comparison for dudect tests
+subtle = "2.6"
+
+# Prevent this from being built by normal `cargo build` etc.
+# Fuzz targets are only built via `cargo fuzz build`
+[[bin]]
+name = "sm4_gcm_roundtrip"
+path = "fuzz_targets/sm4_gcm_roundtrip.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "aes_gcm_roundtrip"
+path = "fuzz_targets/aes_gcm_roundtrip.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "sm2_sign_verify_roundtrip"
+path = "fuzz_targets/sm2_sign_verify_roundtrip.rs"
+test = false
+doc = false
+
+# dudect timing side-channel analysis (standalone binary, not a fuzz target)
+[[bin]]
+name = "dudect_timing"
+path = "fuzz_targets/dudect_timing.rs"
+test = false
+doc = false

@@ -1,0 +1,115 @@
+---
+# Horizontal Pod Autoscaler for KMS
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: kms-hpa
+  namespace: kms-system
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: kms
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Percent
+          value: 10
+          periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 15
+        - type: Pods
+          value: 3
+          periodSeconds: 15
+      selectPolicy: Max
+---
+# Pod Disruption Budget for KMS
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: kms-pdb
+  namespace: kms-system
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: kms
+---
+# Network Policy for KMS - Restrict ingress to necessary namespaces
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kms-network-policy
+  namespace: kms-system
+spec:
+  podSelector:
+    matchLabels:
+      app: kms
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: ingress-nginx
+        - namespaceSelector:
+            matchLabels:
+              name: monitoring
+      ports:
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 9090
+---
+# Service Account for KMS
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kms
+  namespace: kms-system
+---
+# Role for KMS to access secrets
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kms-secrets-reader
+  namespace: kms-system
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch"]
+---
+# RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kms-secrets-reader-binding
+  namespace: kms-system
+subjects:
+  - kind: ServiceAccount
+    name: kms
+    namespace: kms-system
+roleRef:
+  kind: Role
+  name: kms-secrets-reader
+  apiGroup: rbac.authorization.k8s.io

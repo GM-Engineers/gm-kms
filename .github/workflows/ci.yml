@@ -1,0 +1,203 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  test:
+    name: Test Suite
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+        with:
+          version: 1.85
+
+      - name: Install GmSSL 3.1.1
+        run: |
+          sudo apt-get update && sudo apt-get install -y cmake build-essential
+          git clone --depth 1 --branch v3.1.1 https://github.com/guanzhi/GmSSL.git /tmp/gmssl
+          mkdir -p /tmp/gmssl/build && cd /tmp/gmssl/build
+          cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local -DBUILD_SHARED_LIBS=ON
+          make -j$(nproc) && sudo make install
+          sudo ldconfig
+          rm -rf /tmp/gmssl
+
+      - name: Cache cargo registry
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy linting
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Build
+        run: cargo build --workspace --release
+
+      - name: Run tests
+        run: cargo test --workspace --release
+
+  security-audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+        with:
+          version: 1.85
+
+      - name: Cache cargo registry
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run cargo-audit
+        run: |
+          cargo install cargo-audit --locked 2>/dev/null || true
+          cargo audit
+        # Blocking on main branch: any advisory fails the build
+
+      - name: Run cargo-deny check advisories
+        run: |
+          cargo install cargo-deny --locked 2>/dev/null || true
+          cargo deny check advisories
+
+      - name: Generate SBOM (CycloneDX)
+        run: |
+          cargo install cargo-cyclonedx --locked 2>/dev/null || true
+          make sbom
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: |
+            kms-sbom.cdx.json
+            kms-sbom.cdx.xml
+          retention-days: 90
+
+  container-security:
+    name: Container Security Scan
+    runs-on: ubuntu-latest
+    needs: build-docker
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          tags: gm-kms:latest
+          outputs: type=docker
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'gm-kms:latest'
+          format: 'table'
+          exit-code: '1'
+          severity: 'CRITICAL,HIGH'
+
+  build-docker:
+    name: Build Docker Image
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          tags: gm-kms:latest
+          outputs: type=docker
+
+      - name: Run container health check
+        run: |
+          docker run -d --name kms-test gm-kms:latest
+          sleep 5
+          docker inspect --format='{{.State.Health.Status}}' kms-test
+          docker stop kms-test
+
+  zap-scan:
+    name: OWASP ZAP Security Scan
+    runs-on: ubuntu-latest
+    needs: build-docker
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Pull ZAP Docker image
+        run: docker pull owasp/zap2docker-stable
+
+      - name: Create Docker network
+        run: docker network create zap-net
+
+      - name: Start KMS container
+        run: |
+          docker run -d --name kms-target --network zap-net \
+            -e KMS_API_KEY=zap-ci-test-key \
+            -p 8080:8080 \
+            gm-kms:latest \
+            --server --config /app/config/kms-docker.toml
+          # Wait for KMS to be healthy
+          for i in $(seq 1 30); do
+            if curl -s http://localhost:8080/healthz > /dev/null 2>&1; then
+              echo "KMS is ready (attempt $i)"
+              break
+            fi
+            sleep 2
+          done
+          # Verify
+          curl -s http://localhost:8080/v1/health || true
+
+      - name: Prepare ZAP config
+        run: |
+          mkdir -p tests/zap/reports
+          # Replace target URL with Docker network address
+          sed 's|__TARGET_URL__|http://kms-target:8080|g' \
+            tests/zap/zap-baseline.yaml > tests/zap/zap-run-config.yaml
+
+      - name: Run ZAP baseline scan
+        run: |
+          docker run --rm --name kms-zap --network zap-net \
+            -v "$(pwd)/tests/zap:/zap/wrk:rw" \
+            -e KMS_API_KEY=zap-ci-test-key \
+            owasp/zap2docker-stable \
+            zap.sh -cmd -autorun /zap/wrk/zap-run-config.yaml
+
+      - name: Upload ZAP reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zap-scan-reports
+          path: tests/zap/reports/
+          retention-days: 30
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker rm -f kms-target kms-zap 2>/dev/null || true
+          docker network rm zap-net 2>/dev/null || true

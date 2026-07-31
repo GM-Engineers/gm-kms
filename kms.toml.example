@@ -1,0 +1,139 @@
+# gm-kms Configuration Example
+#
+# Copy this file to kms.toml and customize as needed.
+# All settings can be overridden via environment variables.
+#
+# Environment variable overrides:
+#   REST_PORT, GRPC_PORT         - Server ports
+#   KMS_BACKEND                  - "software" or "tpm"
+#   KMS_TPM_BACKEND              - "simulated" or "tpm2-tss"
+#   REDIS_URL                    - Redis connection URL
+#   AUDIT_OUTPUT                 - Audit log output path ("stdout" or file path)
+#   KAFKA_BROKERS                - Kafka broker addresses (e.g., "localhost:9092")
+#   KAFKA_TOPIC                  - Kafka topic for audit events
+#   TSA_ENABLED                  - "true" to enable RFC 3161 trusted timestamping
+#   TSA_ENDPOINT                 - Comma-separated TSA endpoint URLs
+#   TSA_TIMEOUT                  - TSA request timeout in seconds (default: 30)
+#   TSA_REQUIRE                  - "true" to fail if TSA is unavailable (fail-closed)
+#   TSA_INTERVAL                 - TSA background request interval in seconds (default: 60)
+#   TSA_USERNAME, TSA_PASSWORD   - TSA basic auth credentials
+#   TSA_CA_PATH                  - CA certificate path for TSA TLS verification
+#   TSA_HASH_ALGORITHM           - "sha256" (default) or "sm3"
+#   TLS_CERT_PATH, TLS_KEY_PATH, TLS_CA_PATH  - TLS certificate paths
+#   TLS_REQUIRE_CLIENT_CERT      - "true" for mTLS, "false" for server-only TLS
+#   REST_TLS_CERT_PATH, REST_TLS_KEY_PATH - REST API TLS certificate paths
+#   RATE_LIMIT_ENABLED           - "true" or "false"
+#   RATE_LIMIT_RPS              - Requests per second per tenant
+#   BACKUP_ENABLED               - "true" or "false"
+#   BACKUP_PATH                  - Backup storage directory
+#   BACKUP_RETENTION_COUNT       - Max backups per key
+#   BACKUP_RETENTION_DAYS        - Backup retention in days
+#   BACKUP_KDF_ITERATIONS        - SM3 KDF iterations for master key passphrase
+
+[server]
+# REST API server port
+rest_port = 8080
+
+# gRPC server port
+grpc_port = 9090
+
+[backend]
+# Backend type: "software" for in-memory keys, "tpm" for TPM 2.0
+backend_type = "software"
+
+# TPM backend: "simulated" (default, for dev/test) or "tpm2-tss" (real hardware)
+# tpm_backend requires: Linux host with TPM 2.0 chip, libtss2-esys installed,
+# and build with: cargo build --features kms-hsm/tpm2-tss
+# tpm_backend = "simulated"
+
+[redis]
+# Redis URL for key metadata caching
+url = "redis://127.0.0.1:6379"
+
+# Enable/disable Redis caching
+enabled = true
+
+# TLS/mTLS configuration for gRPC
+# Uncomment and configure to enable TLS
+# [tls]
+# cert_path = "/path/to/server.crt"
+# key_path = "/path/to/server.key"
+# ca_path = "/path/to/ca.crt"
+# require_client_cert = true
+
+# REST API TLS configuration (optional HTTPS)
+# Supported backends: "rustls" (standard TLS), "gm" (国密 TLS GB/T 38636-2020 TLCP)
+# Uncomment and configure to enable HTTPS for REST API
+# [rest_tls]
+# enabled = true
+# backend = "rustls"               # "rustls" or "gm"
+# cert_path = "/path/to/rest-server.crt"
+# key_path = "/path/to/rest-server.key"
+# ca_path = ""                     # Required for gm backend (CA certificate for client auth)
+# require_client_auth = false      # Set to true for mTLS
+
+[audit]
+# Audit log output: "stdout" or file path
+output_path = "stdout"
+
+# Flush interval in seconds
+flush_interval_secs = 5
+
+# Buffer size before flush
+buffer_size = 100
+
+# Kafka configuration (optional - enables audit streaming)
+# kafka_brokers = "localhost:9092"
+# kafka_topic = "kms-audit-events"
+
+[rate_limit]
+# Enable per-tenant rate limiting (requires Redis)
+enabled = true
+
+# Maximum requests per second per tenant
+requests_per_second = 100
+
+# Maximum requests per minute per tenant
+requests_per_minute = 5000
+
+# Maximum burst size
+burst_size = 200
+
+[quota]
+# Enable per-tenant quota tracking (requires Redis)
+enabled = true
+
+# Maximum keys per tenant
+max_keys = 1000
+
+# Maximum requests per minute per tenant
+max_requests_per_minute = 5000
+
+# Maximum requests per day per tenant
+max_requests_per_day = 1000000
+
+# RFC 3161 Trusted Timestamp Authority (TSA) configuration
+# Uncomment and configure to enable external trusted timestamps for audit logs.
+# This satisfies 等保 2.0 三级 requirement for reliable time sources.
+# [audit.tsa]
+# enabled = true
+# endpoints = ["https://tsa.example.com/tsa"]
+# timeout_secs = 30
+# require_tsa = false
+# interval_secs = 60
+# username = ""
+# password = ""
+# ca_path = ""
+# hash_algorithm = "sha256"
+
+# Key backup configuration (SM4-GCM encrypted + SM3-HMAC signed)
+# Master key is auto-generated. Export with passphrase for disaster recovery:
+#   kmctl backup export-master-key --passphrase "..." > master-key.enc
+#   kmctl backup import-master-key --passphrase "..." < master-key.enc
+[backup]
+enabled = true
+# backup_path = "/var/kms/backup"     # Backup storage directory
+# retention_count = 3                  # Max backups per key
+# retention_days = 365                 # Retention period in days
+# kdf_iterations = 100000              # SM3 KDF iterations for master key passphrase
+

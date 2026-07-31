@@ -1,0 +1,68 @@
+# OWASP ZAP Active API Scan Configuration
+# Full active scan using OpenAPI spec import.
+# Runs comprehensive attacks against all documented endpoints.
+#
+# Usage: run via run-zap-scan.sh which replaces __TARGET_URL__ placeholder
+#        with the actual KMS target URL.
+
+env:
+  contexts:
+    - name: kms-api
+      urls:
+        - "__TARGET_URL__"
+      includePaths:
+        - "__TARGET_URL__.*"
+  parameters:
+    failOnError: false
+    failOnWarning: false
+    progressToStdout: true
+
+jobs:
+  - type: requestor
+    parameters:
+      script: "var apikey = control.getEnvVar('KMS_API_KEY'); if (apikey) { replacer.addHeader('x-api-key', apikey); }"
+
+  - type: openapi
+    parameters:
+      url: "__TARGET_URL__/swagger/openapi.json"
+      targetUrl: "__TARGET_URL__"
+
+  - type: passiveScan-config
+    parameters:
+      maxAlertsPerRule: 10
+      scanOnlyInScope: true
+
+  - type: passiveScan-wait
+    parameters:
+      maxDuration: 5
+
+  - type: activeScan
+    parameters:
+      context: kms-api
+      maxRuleDurationInMins: 1
+      maxScanDurationInMins: 15
+      maxAlertsPerRule: 5
+
+  - type: report
+    parameters:
+      template: traditional-html
+      reportDir: /zap/wrk/reports
+      reportFile: zap-api-scan-report.html
+      reportTitle: "KMS REST API - ZAP Active Scan Report"
+      reportDescription: "OWASP ZAP active security scan using OpenAPI spec against KMS REST API."
+
+  - type: report
+    parameters:
+      template: traditional-json
+      reportDir: /zap/wrk/reports
+      reportFile: zap-api-scan-report.json
+      reportTitle: "KMS REST API - ZAP Active Scan Report"
+      reportDescription: "OWASP ZAP active security scan using OpenAPI spec against KMS REST API."
+
+  - type: report
+    parameters:
+      template: traditional-md
+      reportDir: /zap/wrk/reports
+      reportFile: zap-api-scan-report.md
+      reportTitle: "KMS REST API - ZAP Active Scan Report"
+      reportDescription: "OWASP ZAP active security scan using OpenAPI spec against KMS REST API."

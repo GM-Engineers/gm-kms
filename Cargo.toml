@@ -1,0 +1,201 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/kms-core",
+    "crates/kms-keystore",
+    "crates/kms-policy",
+    "crates/kms-audit",
+    "crates/kms-api",
+    "crates/kms-cli",
+    "crates/kms-hsm",
+    "crates/kms-mfa",
+    "crates/kms-approval",
+]
+
+[package]
+name = "kms"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "kms"
+path = "src/main.rs"
+
+[dependencies]
+# Async runtime
+tokio = { workspace = true, features = ["full"] }
+async-trait = "0.1"
+
+# Web
+axum = { workspace = true }
+tower-http = { workspace = true }
+
+# gRPC
+tonic = "0.14"
+tonic-health = "0.14"
+
+# GM TLS for mTLS
+gm-tls = { version = "0.1.0", features = ["grpc"] }
+
+# TLS for REST API (rustls for native TLS support)
+tokio-rustls = "0.26"
+rustls = "0.23"
+
+# CLI
+clap = { workspace = true }
+
+# Utilities
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+toml = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+
+# Redis
+redis = { workspace = true }
+
+# Workspace dependencies
+kms-core = { path = "crates/kms-core" }
+kms-keystore = { path = "crates/kms-keystore" }
+kms-policy = { path = "crates/kms-policy" }
+kms-audit = { path = "crates/kms-audit" }
+kms-api = { path = "crates/kms-api" }
+kms-hsm = { path = "crates/kms-hsm" }
+gm-sm9-rs = { version = "0.1.0" }
+
+# Cryptography
+rand = { workspace = true }
+
+# OpenAPI / Swagger
+utoipa = { workspace = true }
+utoipa-swagger-ui = { workspace = true }
+
+# SM2 certificate generation (dev/test only)
+gm-ca = { version = "0.1.0" }
+gm-crypto = { version = "0.1.0" }
+elliptic-curve = "0.13"
+asn1 = "0.17"
+tempfile = "3"
+pem = "3"
+x509-parser = "0.16"
+axum-server = { version = "0.8.0", features = ["tls-rustls"] }
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+authors = ["Eric Zhang"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/GM-Engineers/gm-kms"
+rust-version = "1.85"
+publish = false
+
+[workspace.dependencies]
+# Synchronization (poison-free, faster than std)
+parking_lot = "0.12"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Web framework
+axum = "0.8"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+
+# gRPC
+tonic = "0.14"
+prost = "0.13"
+prost-build = "0.13"
+tonic-prost-build = "0.14"
+tonic-health = "0.14"
+
+# Cryptography
+ring = "0.17"
+rand = "0.10"
+rand_core = { version = "0.6", features = ["getrandom"] }
+zeroize = "1"
+# EC DH (for ECDH key exchange with existing keys)
+p256 = { version = "0.13", features = ["ecdh"] }
+p384 = { version = "0.13", features = ["ecdh"] }
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+# GM 国密 SM2/SM3/SM4
+gm-crypto = { version = "0.1.0" }
+gm-sm9-rs = { version = "0.1.0" }
+sm2 = "0.13"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Database
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "uuid", "chrono", "json", "tls-native-tls"] }
+
+# Redis for caching (includes cluster support)
+redis = { version = "0.26", features = ["tokio-comp", "connection-manager", "cluster", "tls-rustls", "tokio-rustls-comp", "rustls-native-certs", "rustls-pemfile"] }
+
+# For repository pattern
+kms-keystore = { path = "crates/kms-keystore" }
+
+# Utilities
+uuid = { version = "1.11", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "2.0"
+anyhow = "1.0"
+async-trait = "0.1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+base64 = "0.22"
+hex = "0.4"
+
+# OpenAPI / Swagger
+utoipa = "5"
+utoipa-swagger-ui = "9"
+
+# Configuration
+config = "0.14"
+toml = "0.8"
+
+# Kafka for audit streaming (Phase 2)
+rdkafka = { version = "0.36", features = ["tokio"] }
+
+# CLI
+clap = { version = "4.5", features = ["derive", "env"] }
+
+# Regex for policy matching
+regex = "1.10"
+
+# HTTP client for webhooks
+reqwest = { version = "0.12", features = ["json"] }
+url = "2"
+
+# For SM2 certificate generation (dev/test only)
+gm-ca = { version = "0.1.0" }
+elliptic-curve = "0.13"
+asn1 = "0.17"
+tempfile = "3"
+pem = "3"
+x509-parser = "0.16"
+
+[features]
+default = []
+kafka = ["kms-audit/kafka"]
+tpm2-tss = []
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+
+[dev-dependencies]
+reqwest = { version = "0.12", features = ["json"] }
+serde_json = "1.0"
+base64 = "0.22"
+tempfile = "3"
+hex = "0.4"
+ring = "0.17"
+chrono = { workspace = true }
+gm-crypto = { version = "0.1.0" }
+gm-sm9-rs = { version = "0.1.0" }

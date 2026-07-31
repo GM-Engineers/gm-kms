@@ -1,0 +1,63 @@
+# OWASP ZAP Baseline Scan Configuration
+# Passive scan only — fast, suitable for CI pre-merge checks.
+#
+# Usage: run via run-zap-scan.sh which replaces __TARGET_URL__ placeholder
+#        with the actual KMS target URL.
+
+env:
+  contexts:
+    - name: kms-api
+      urls:
+        - "__TARGET_URL__"
+      includePaths:
+        - "__TARGET_URL__.*"
+  parameters:
+    failOnError: false
+    failOnWarning: false
+    progressToStdout: true
+
+jobs:
+  - type: requestor
+    parameters:
+      script: "var apikey = control.getEnvVar('KMS_API_KEY'); if (apikey) { replacer.addHeader('x-api-key', apikey); }"
+
+  - type: spider
+    parameters:
+      context: kms-api
+      url: "__TARGET_URL__/v1/health"
+      maxDuration: 2
+      maxDepth: 5
+      maxChildren: 30
+
+  - type: passiveScan-config
+    parameters:
+      maxAlertsPerRule: 10
+      scanOnlyInScope: true
+
+  - type: passiveScan-wait
+    parameters:
+      maxDuration: 5
+
+  - type: report
+    parameters:
+      template: traditional-html
+      reportDir: /zap/wrk/reports
+      reportFile: zap-baseline-report.html
+      reportTitle: "KMS REST API - ZAP Baseline Scan"
+      reportDescription: "OWASP ZAP passive security scan of KMS REST API endpoints."
+
+  - type: report
+    parameters:
+      template: traditional-json
+      reportDir: /zap/wrk/reports
+      reportFile: zap-baseline-report.json
+      reportTitle: "KMS REST API - ZAP Baseline Scan"
+      reportDescription: "OWASP ZAP passive security scan of KMS REST API endpoints."
+
+  - type: report
+    parameters:
+      template: traditional-md
+      reportDir: /zap/wrk/reports
+      reportFile: zap-baseline-report.md
+      reportTitle: "KMS REST API - ZAP Baseline Scan"
+      reportDescription: "OWASP ZAP passive security scan of KMS REST API endpoints."

@@ -1,0 +1,15 @@
+# Cargo audit configuration for gm-kms
+# Known issues that have no fix available
+
+[advisories]
+ignore = [
+    # RSA Marvin Attack (RUSTSEC-2023-0071): affects decryption (private key) side.
+    # gm-kms only uses rsa::encrypt (OAEP) for key export — private key operations
+    # are performed by the requesting client, not by kms-api. No fix available upstream.
+    "RUSTSEC-2023-0071",
+    # atomic-polyfill is unmaintained, pulled in transitively via postcard → heapless.
+    # No functional impact; waiting for upstream postcard to drop the dependency.
+    "RUSTSEC-2023-0089",
+    # rustls-pemfile is unmaintained, pulled in via redis. No direct use in gm-kms.
+    "RUSTSEC-2025-0134",
+]

@@ -1,0 +1,37 @@
+[package]
+rust-version.workspace = true
+name = "kms-audit"
+license.workspace = true
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+parking_lot = { workspace = true }
+kms-core = { path = "../kms-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+zeroize = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+ring = { workspace = true }
+hex = { workspace = true }
+rand = { workspace = true }
+libc = "0.2"
+reqwest = { version = "0.12", features = ["json", "stream"] }
+bytes = "1"
+
+# Kafka audit stream (Phase 2)
+rdkafka = { version = "0.36", features = ["tokio"], optional = true }
+
+[features]
+default = []
+kafka = ["rdkafka"]
+
+[dev-dependencies]
+tokio = { workspace = true }
+tempfile = "3"

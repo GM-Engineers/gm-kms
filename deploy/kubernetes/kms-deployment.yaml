@@ -1,0 +1,147 @@
+---
+# KMS Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kms
+  namespace: kms-system
+  labels:
+    app: kms
+    version: v1
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: kms
+  template:
+    metadata:
+      labels:
+        app: kms
+        version: v1
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - kms
+                topologyKey: kubernetes.io/hostname
+      containers:
+        - name: kms
+          image: ghcr.io/gm-kms/kms:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: http
+            - containerPort: 9090
+              name: grpc
+          env:
+            - name: RUST_LOG
+              value: "info,kms=debug"
+            - name: KMS_CONFIG_PATH
+              value: "/config/kms.toml"
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              cpu: 2000m
+              memory: 2Gi
+          securityContext:
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1000
+          volumeMounts:
+            - name: config
+              mountPath: /config
+              readOnly: true
+            - name: tls
+              mountPath: /tls
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      volumes:
+        - name: config
+          configMap:
+            name: kms-config
+        - name: tls
+          secret:
+            secretName: kms-tls
+        - name: tmp
+          emptyDir: {}
+---
+# KMS Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: kms-service
+  namespace: kms-system
+  labels:
+    app: kms
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8080
+      targetPort: 8080
+      protocol: TCP
+      name: http
+    - port: 9090
+      targetPort: 9090
+      protocol: TCP
+      name: grpc
+  selector:
+    app: kms
+---
+# KMS ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kms-config
+  namespace: kms-system
+data:
+  kms.toml: |
+    [server]
+    host = "0.0.0.0"
+    port = 8080
+    grpc_port = 9090
+
+    [database]
+    host = "postgres.database.svc.cluster.local"
+    port = 5432
+    name = "kms"
+    max_connections = 100
+
+    [redis]
+    host = "redis-master.database.svc.cluster.local"
+    port = 6379
+    cluster = true
+
+    [audit]
+    backend = "kafka"
+    kafka_brokers = "kafka.database.svc.cluster.local:9092"
+    kafka_topic = "kms-audit"
+
+    [security]
+    enable_tls = true
+    min_tls_version = "1.2"

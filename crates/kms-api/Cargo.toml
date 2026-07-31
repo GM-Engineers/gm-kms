@@ -1,0 +1,84 @@
+[package]
+rust-version.workspace = true
+name = "kms-api"
+license.workspace = true
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+parking_lot = { workspace = true }
+sha2 = "0.10"
+kms-core = { path = "../kms-core" }
+kms-keystore = { path = "../kms-keystore" }
+kms-policy = { path = "../kms-policy" }
+kms-audit = { path = "../kms-audit" }
+gm-sm9-rs = { path = "../../../gm/gm-sm9-rs" }
+kms-mfa = { path = "../kms-mfa" }
+kms-approval = { path = "../kms-approval" }
+
+# GM 国密算法
+gm-crypto = { workspace = true }
+
+# GM TLS for mTLS
+gm-tls = { path = "../../../gm/gm-tls", features = ["grpc"] }
+
+# Web - Axum
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+tokio = { workspace = true }
+
+# gRPC - Tonic
+tonic = "0.14"
+tonic-prost = "0.14"
+prost = "0.14"
+prost-types = "0.14"
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Database
+sqlx = { workspace = true }
+
+# Utils
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+config = { workspace = true }
+async-trait = { workspace = true }
+base64 = { workspace = true }
+hex = { workspace = true }
+ring = { workspace = true }
+zeroize = { workspace = true }
+subtle = "2.6"
+bitflags = "2"
+rand = { workspace = true }
+rand_core = { workspace = true }
+base32 = "0.5"
+
+# Redis for rate limiting
+redis = { workspace = true }
+
+# RSA for transport key encryption
+rsa = { version = "0.9", features = ["sha2"] }
+
+# OpenAPI / Swagger
+utoipa = { workspace = true, features = ["uuid"] }
+utoipa-swagger-ui = { workspace = true, features = ["axum"] }
+
+# Input validation
+regex = { workspace = true }
+
+[build-dependencies]
+tonic-build = { version = "0.14", features = ["transport"] }
+tonic-prost-build = "0.14"
+
+[dev-dependencies]
+proptest = "1.5"
+rand = "0.10"
+tokio = { version = "1", features = ["full"] }

@@ -1,0 +1,37 @@
+[package]
+rust-version.workspace = true
+name = "kms-keystore"
+license.workspace = true
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+parking_lot = { workspace = true }
+kms-core = { path = "../kms-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+hex = { workspace = true }
+zeroize = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+rand = { workspace = true }
+rand_core = { workspace = true }
+ring = { workspace = true }
+sqlx = { workspace = true, features = ["runtime-tokio", "postgres", "uuid", "chrono", "json", "migrate"] }
+tokio = { workspace = true }
+gm-crypto = { workspace = true }
+
+# EC DH (for ECDH key exchange with existing keys)
+p256 = { workspace = true }
+p384 = { workspace = true }
+x25519-dalek = { workspace = true }
+sm2 = { workspace = true }
+
+# Redis caching
+redis = { workspace = true }
+gm-sm9-rs = { path = "../../../gm/gm-sm9-rs" }

@@ -1,0 +1,323 @@
+syntax = "proto3";
+
+package kms.v1;
+
+// Key specification
+message Key {
+    string id = 1;
+    string tenant_id = 7;
+    string name = 2;
+    string spec = 3;
+    string status = 4;
+    uint32 version = 5;
+    string created_at = 6;
+}
+
+message CreateKeyRequest {
+    string name = 1;
+    string spec = 2;
+    string tenant_id = 3;
+}
+
+message CreateKeyResponse {
+    Key key = 1;
+}
+
+message GetKeyRequest {
+    string id = 1;
+    string tenant_id = 2;
+}
+
+message GetKeyResponse {
+    Key key = 1;
+}
+
+message ListKeysRequest {
+    // Pagination
+    uint32 limit = 1;
+    uint32 offset = 2;
+    string tenant_id = 3;
+}
+
+message ListKeysResponse {
+    repeated Key keys = 1;
+}
+
+message EncryptRequest {
+    string key_id = 1;
+    bytes plaintext = 2;
+    bytes aad = 3;
+    string tenant_id = 4;
+}
+
+message EncryptResponse {
+    string ciphertext = 1;
+    string nonce = 2;
+    string tag = 3;
+    uint32 version = 4;
+}
+
+message DecryptRequest {
+    string key_id = 1;
+    string ciphertext = 2;
+    string nonce = 3;
+    string tag = 4;
+    bytes aad = 5;
+    uint32 version = 6;
+    string tenant_id = 7;
+}
+
+message DecryptResponse {
+    bytes plaintext = 1;
+}
+
+message RotateKeyRequest {
+    string id = 1;
+    string tenant_id = 2;
+}
+
+message RotateKeyResponse {
+    Key key = 1;
+}
+
+message DeleteKeyRequest {
+    string id = 1;
+    string tenant_id = 2;
+    // Security: key deletion requires a pre-approved DeleteKey approval request.
+    // 3-of-5 multi-party approval (GM/T 0028-2014 dual-control principle).
+    string approval_id = 3;
+}
+
+message DeleteKeyResponse {}
+
+message SignRequest {
+    string key_id = 1;
+    string data = 2;
+    string tenant_id = 3;
+}
+
+message SignResponse {
+    string signature = 1;
+    uint32 version = 2;
+}
+
+message VerifyRequest {
+    string key_id = 1;
+    string data = 2;
+    string signature = 3;
+    string tenant_id = 4;
+}
+
+message VerifyResponse {
+    bool valid = 1;
+}
+
+// SM9 Identity-Based Cryptography messages
+message Sm9SignRequest {
+    string identity = 1;
+    string data = 2;
+    string tenant_id = 3;
+}
+
+message Sm9SignResponse {
+    string w = 1;
+    string h = 2;
+    string s = 3;
+}
+
+message Sm9VerifyRequest {
+    string identity = 1;
+    string data = 2;
+    string w = 3;
+    string h = 4;
+    string s = 5;
+    string tenant_id = 6;
+}
+
+message Sm9VerifyResponse {
+    bool valid = 1;
+}
+
+message Sm9EncryptRequest {
+    string identity = 1;
+    bytes plaintext = 2;
+    string tenant_id = 3;
+}
+
+message Sm9EncryptResponse {
+    string c1 = 1;
+    string c2 = 2;
+    string c3 = 3;
+}
+
+message Sm9DecryptRequest {
+    string identity = 1;
+    string c1 = 2;
+    string c2 = 3;
+    string c3 = 4;
+    string tenant_id = 5;
+}
+
+message Sm9DecryptResponse {
+    bytes plaintext = 1;
+}
+
+// Envelope encryption messages
+message EnvelopeEncryptRequest {
+    string kek_id = 1;
+    bytes plaintext = 2;
+    bytes aad = 3;
+    string tenant_id = 4;
+    string user_id = 5;
+}
+
+message EnvelopeEncryptResponse {
+    string wrapped_dek = 1;
+    string dek_nonce = 2;
+    string ciphertext = 3;
+    string data_nonce = 4;
+    string tag = 5;
+    uint32 kek_version = 6;
+}
+
+message EnvelopeDecryptRequest {
+    string kek_id = 1;
+    bytes ciphertext = 2;
+    bytes wrapped_dek = 3;
+    bytes dek_nonce = 4;
+    bytes data_nonce = 5;
+    bytes tag = 6;
+    bytes aad = 7;
+    uint32 kek_version = 8;
+    string tenant_id = 9;
+    string user_id = 10;
+}
+
+message EnvelopeDecryptResponse {
+    bytes plaintext = 1;
+}
+
+message EnvelopeRewrapRequest {
+    string kek_id = 1;
+    bytes wrapped_dek = 2;
+    bytes dek_nonce = 3;
+    uint32 old_kek_version = 4;
+    string tenant_id = 5;
+}
+
+message EnvelopeRewrapResponse {
+    string wrapped_dek = 1;
+    string dek_nonce = 2;
+    uint32 kek_version = 3;
+    uint32 old_kek_version = 4;
+}
+
+// Key import/export messages
+message ImportKeyRequest {
+    string name = 1;
+    string spec = 2;
+    bytes key_material = 3;
+    string tenant_id = 4;
+}
+
+message ImportKeyResponse {
+    Key key = 1;
+}
+
+message ExportKeyRequest {
+    string id = 1;
+    string tenant_id = 2;
+    // approval_id is required: key export must go through the approval workflow.
+    // The caller must first create a KeyExport approval request via
+    // POST /v1/approvals, obtain the required quorum approvals, then
+    // supply the approved request ID here.
+    string approval_id = 3;
+}
+
+message ExportKeyResponse {
+    bytes key_material = 1;
+    uint32 version = 2;
+}
+
+// Audit query messages
+message AuditEvent {
+    string id = 1;
+    string event_type = 2;
+    string key_id = 3;
+    string user_id = 4;
+    string tenant_id = 5;
+    string timestamp = 6;
+    string details = 7;
+}
+
+message QueryAuditEventsRequest {
+    string tenant_id = 1;
+    string start_time = 2;
+    string end_time = 3;
+    string event_type = 4;
+    string key_id = 5;
+    uint32 limit = 6;
+    uint32 offset = 7;
+}
+
+message QueryAuditEventsResponse {
+    repeated AuditEvent events = 1;
+    uint32 total = 2;
+}
+
+// Hash messages
+message HashRequest {
+    string algorithm = 1;
+    bytes data = 2;
+}
+
+message HashResponse {
+    bytes digest = 1;
+}
+
+// DH key exchange messages
+message DhDeriveRequest {
+    string key_id = 1;
+    bytes peer_public = 2;
+    string tenant_id = 3;
+}
+
+message DhDeriveResponse {
+    bytes shared_secret = 1;
+    bytes public_key = 2;
+}
+
+service KMSService {
+    // Key management
+    rpc CreateKey(CreateKeyRequest) returns (CreateKeyResponse);
+    rpc GetKey(GetKeyRequest) returns (GetKeyResponse);
+    rpc ListKeys(ListKeysRequest) returns (ListKeysResponse);
+    rpc RotateKey(RotateKeyRequest) returns (RotateKeyResponse);
+    rpc DeleteKey(DeleteKeyRequest) returns (DeleteKeyResponse);
+    rpc ImportKey(ImportKeyRequest) returns (ImportKeyResponse);
+    rpc ExportKey(ExportKeyRequest) returns (ExportKeyResponse);
+
+    // Cryptographic operations
+    rpc Encrypt(EncryptRequest) returns (EncryptResponse);
+    rpc Decrypt(DecryptRequest) returns (DecryptResponse);
+    rpc Sign(SignRequest) returns (SignResponse);
+    rpc Verify(VerifyRequest) returns (VerifyResponse);
+    rpc Hash(HashRequest) returns (HashResponse);
+
+    // Envelope encryption
+    rpc EnvelopeEncrypt(EnvelopeEncryptRequest) returns (EnvelopeEncryptResponse);
+    rpc EnvelopeDecrypt(EnvelopeDecryptRequest) returns (EnvelopeDecryptResponse);
+    rpc EnvelopeRewrap(EnvelopeRewrapRequest) returns (EnvelopeRewrapResponse);
+
+    // DH key exchange
+    rpc DhDerive(DhDeriveRequest) returns (DhDeriveResponse);
+
+    // SM9 identity-based cryptography
+    rpc Sm9Sign(Sm9SignRequest) returns (Sm9SignResponse);
+    rpc Sm9Verify(Sm9VerifyRequest) returns (Sm9VerifyResponse);
+    rpc Sm9Encrypt(Sm9EncryptRequest) returns (Sm9EncryptResponse);
+    rpc Sm9Decrypt(Sm9DecryptRequest) returns (Sm9DecryptResponse);
+
+    // Audit
+    rpc QueryAuditEvents(QueryAuditEventsRequest) returns (QueryAuditEventsResponse);
+}

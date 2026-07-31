@@ -1,0 +1,22 @@
+{
+  "name": "@gm-kms/sdk",
+  "version": "0.1.0",
+  "description": "GM-KMS JavaScript/TypeScript SDK",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "jest"
+  },
+  "keywords": [
+    "kms",
+    "key-management",
+    "encryption",
+    "gm-kms"
+  ],
+  "author": "GM-KMS Team",
+  "license": "MIT",
+  "devDependencies": {
+    "typescript": "^5.3.0"
+  }
+}

@@ -1,0 +1,27 @@
+gm / gm-kms — Third-Party Components and Attribution
+=====================================================
+
+This project incorporates code derived from, or wraps, the following
+third-party works. Their original licenses are compatible with the
+MIT OR Apache-2.0 dual license used here and are preserved.
+
+SM9 (crate: gm-sm9-rs)
+----------------------
+The SM9 implementation in `gm-sm9-rs` is a Rust port derived from GmSSL.
+  - Project : GmSSL (https://github.com/guanzhi/GmSSL)
+  - License : Apache License, Version 2.0
+              (https://www.apache.org/licenses/LICENSE-2.0)
+  - Copyright: Copyright 2014-2022 The GmSSL Project.
+              Licensed under the Apache License, Version 2.0.
+The GmSSL copyright notice and license text are reproduced in LICENSE-APACHE
+and must be retained in all distributions of this project.
+
+SM2 / SM3 / SM4 (crate: gm-crypto)
+----------------------------------
+The SM2, SM3, and SM4 algorithm implementations in `gm-crypto` are thin
+wrappers around the following community Rust crates, not independent
+reimplementations:
+  - sm2  (crates.io) — MIT OR Apache-2.0
+  - sm3  (crates.io) — MIT OR Apache-2.0
+  - sm4  (crates.io) — MIT OR Apache-2.0
+We acknowledge and thank their respective authors.

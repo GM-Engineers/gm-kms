@@ -1,0 +1,49 @@
+---
+# KMS Namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kms-system
+  labels:
+    name: kms-system
+    kubernetes.io/metadata.name: kms-system
+---
+# Prometheus ServiceMonitor for KMS metrics
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: kms-monitor
+  namespace: kms-system
+  labels:
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: kms
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+  namespaceSelector:
+    matchNames:
+      - kms-system
+---
+# Prometheus PodMonitor for KMS
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: kms-pod-monitor
+  namespace: kms-system
+  labels:
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: kms
+  podMetricsEndpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+  namespaceSelector:
+    matchNames:
+      - kms-system

@@ -1,0 +1,32 @@
+[package]
+rust-version.workspace = true
+name = "kms-hsm"
+license.workspace = true
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+parking_lot = { workspace = true }
+kms-core = { path = "../kms-core" }
+kms-keystore = { path = "../kms-keystore" }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+
+# GM 国密算法
+gm-crypto = { workspace = true }
+
+# Cryptography
+ring = { workspace = true }
+rand = { workspace = true }
+chrono = { workspace = true }
+hex = { workspace = true }
+zeroize = { workspace = true }
+
+# For dev/tests
+tokio = { workspace = true }
+
+[features]
+default = []
+tpm2-tss = []
