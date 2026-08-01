@@ -1,0 +1,84 @@
+name: Release
+
+# 自动构建多平台二进制并发布到 GitHub Releases。
+# 触发方式：推送版本标签，例如  git tag v0.1.0 && git push origin v0.1.0
+# 无需手动编译；CI 会在 ubuntu/macos/windows + x86_64/aarch64 上交叉构建并附到 Release。
+#
+# 注意：gm-kms 默认使用 pure-rust 后端（gm-crypto/gm-tls 默认 features 不含 gmssl），
+#       因此发布二进制不依赖 GmSSL 等 C 库，可干净地跨平台交叉编译。
+on:
+  push:
+    tags:
+      - "v*"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,  target: x86_64-unknown-linux-gnu,    bin: kms,      artifact: kms-linux-x86_64 }
+          - { os: ubuntu-latest,  target: aarch64-unknown-linux-gnu,   bin: kms,      artifact: kms-linux-aarch64, use-cross: true }
+          - { os: macos-latest,   target: x86_64-apple-darwin,         bin: kms,      artifact: kms-macos-x86_64 }
+          - { os: macos-latest,   target: aarch64-apple-darwin,        bin: kms,      artifact: kms-macos-aarch64 }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc,      bin: kms.exe,  artifact: kms-windows-x86_64.exe }
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+        with:
+          version: 1.85
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo registry
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build (cross / aarch64-linux)
+        if: ${{ matrix.use-cross }}
+        run: |
+          cargo install cross --locked
+          cross build -p kms --release --target ${{ matrix.target }}
+
+      - name: Build (cargo)
+        if: ${{ !matrix.use-cross }}
+        run: cargo build -p kms --release --target ${{ matrix.target }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: target/${{ matrix.target }}/release/${{ matrix.bin }}
+          if-no-files-found: error
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Generate SHA256 checksums
+        run: |
+          cd artifacts
+          find . -type f -print0 | xargs -0 sha256sum > ../SHA256SUMS.txt
+          cat ../SHA256SUMS.txt
+
+      - name: Publish to GitHub Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/**/*
+            SHA256SUMS.txt
+          generate_release_notes: true
