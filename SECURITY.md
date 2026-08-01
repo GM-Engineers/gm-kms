@@ -1,5 +1,7 @@
 # Security Policy — gm-kms
 
+**[中文版](./SECURITY.zh-CN.md)**
+
 ## Reporting Security Issues
 
 We take security vulnerabilities in **gm-kms** seriously and appreciate
