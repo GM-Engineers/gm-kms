@@ -1081,6 +1081,7 @@ pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()
                     })
                     .await
                     .expect("GM/TLS REST server error");
+                Ok(())
             }
             Some(ref tls) if tls.enabled => {
                 // REST with TLS using axum_server
@@ -1106,6 +1107,7 @@ pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()
                 rest_shutdown_rx.await.ok();
                 tracing::info!("Initiating REST TLS server graceful shutdown...");
                 shutdown_handle.graceful_shutdown(Some(std::time::Duration::from_secs(30)));
+                Ok(())
             }
             _ => {
                 // REST without TLS
@@ -1117,6 +1119,7 @@ pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()
                     })
                     .await
                     .expect("REST server error");
+                Ok(())
             }
         }
     });

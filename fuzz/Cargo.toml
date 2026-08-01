@@ -14,7 +14,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 
 # Cryptography dependencies for fuzz targets
-gm-crypto = { path = "../../gm/gm-crypto" }
+gm-crypto = { version = "0.1.0" }
 ring = "0.17"
 hex = "0.4"
 

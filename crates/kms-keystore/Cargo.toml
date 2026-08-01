@@ -34,4 +34,4 @@ sm2 = { workspace = true }
 
 # Redis caching
 redis = { workspace = true }
-gm-sm9-rs = { path = "../../../gm/gm-sm9-rs" }
+gm-sm9-rs = { version = "0.1.0" }

@@ -2446,7 +2446,7 @@ async fn query_audit_events(
 
 // SM9 Identity-Based Cryptography handlers
 
-use gm_sm9_rs_rs::{Decryptor, Encryptor, Signer, Verifier};
+use gm_sm9_rs::{Decryptor, Encryptor, Signer, Verifier};
 
 async fn sm9_sign(
     CallerId { key_id: caller_id }: CallerId,
@@ -2523,8 +2523,8 @@ async fn sm9_verify(
         .decode(&req.s)
         .map_err(|_| ApiError::InvalidRequest("invalid base64 s".to_string()))?;
 
-    let signature = gm_sm9_rs_rs::Signature::from_der(&signature_bytes)
-        .or_else(|_| gm_sm9_rs_rs::Signature::from_bytes(&signature_bytes))
+    let signature = gm_sm9_rs::Signature::from_der(&signature_bytes)
+        .or_else(|_| gm_sm9_rs::Signature::from_bytes(&signature_bytes))
         .map_err(|e| ApiError::InvalidRequest(format!("invalid signature format: {}", e)))?;
 
     let verifier = Verifier::new(
@@ -2623,7 +2623,7 @@ async fn sm9_decrypt(
         .decode(&req.c1)
         .map_err(|_| ApiError::InvalidRequest("invalid base64 ciphertext".to_string()))?;
 
-    let ciphertext = gm_sm9_rs_rs::Ciphertext::from_bytes(&ciphertext_bytes)
+    let ciphertext = gm_sm9_rs::Ciphertext::from_bytes(&ciphertext_bytes)
         .map_err(|e| ApiError::InvalidRequest(format!("invalid ciphertext: {}", e)))?;
 
     // Derive decryption key for this identity

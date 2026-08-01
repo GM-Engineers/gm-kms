@@ -1303,6 +1303,8 @@ dependencies = [
 [[package]]
 name = "gm-ca"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e51124dede086b1c3f64ea5677f70b7e7912465724a176ce1af3d2e7eb4a57b7"
 dependencies = [
  "chrono",
  "gm-crypto",
@@ -1335,6 +1337,8 @@ dependencies = [
 [[package]]
 name = "gm-crypto"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f0bdeeb0c5e60730b476b11a86050be4b97f3e3f507297fe0a3851d433cef3d0"
 dependencies = [
  "base64 0.22.1",
  "ctr",
@@ -1363,6 +1367,8 @@ dependencies = [
 [[package]]
 name = "gm-der"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5156f5517dabe98d88321dd8eae2f582885af986e4d92ebe1f9e3283d915d825"
 dependencies = [
  "thiserror 2.0.18",
 ]
@@ -1370,6 +1376,8 @@ dependencies = [
 [[package]]
 name = "gm-sm9-rs"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "35d8f6d5331db08de281f73b37fe6e33618cffe61320cecec01061eb96398b42"
 dependencies = [
  "digest",
  "gm-crypto",
@@ -1387,6 +1395,8 @@ dependencies = [
 [[package]]
 name = "gm-tls"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "595e00b668334a8e43fb6e6cb6cf4cefe6e83aea899f371e29cb14c27dc2e84c"
 dependencies = [
  "async-trait",
  "deadpool-redis",
