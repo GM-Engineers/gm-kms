@@ -245,8 +245,7 @@ impl EnvelopeService {
 
         let mut wrapped_dek_vec = wrapped_dek.to_vec();
         let tag_len = 16;
-        let (encrypted_dek, stored_tag) =
-            wrapped_dek_vec.split_at_mut(wrapped_dek.len() - tag_len);
+        let (encrypted_dek, stored_tag) = wrapped_dek_vec.split_at_mut(wrapped_dek.len() - tag_len);
 
         let unbound_old_kek = UnboundKey::new(&AES_256_GCM, &old_kek_bytes)
             .map_err(|e| ApiError::Internal(format!("invalid old KEK: {}", e)))?;
@@ -470,8 +469,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_rewrap_dek_after_kek_rotation() {
-        use kms_keystore::software::SoftwareKeystore;
         use kms_core::KeySpec;
+        use kms_keystore::software::SoftwareKeystore;
 
         let keystore = Arc::new(SoftwareKeystore::new());
         let state = crate::KmsState::new(
@@ -479,7 +478,8 @@ mod tests {
             kms_policy::PBACEngine::new(),
             Arc::new(kms_audit::AuditLogger::with_stdout()),
             crate::Sm9State {
-                master_key: gm_sm9_rs::KgcMasterKey::generate().expect("failed to generate master key"),
+                master_key: gm_sm9_rs::KgcMasterKey::generate()
+                    .expect("failed to generate master key"),
                 repository: None,
             },
             crate::KmsMetrics::new(),
@@ -489,11 +489,7 @@ mod tests {
 
         // 1. Generate a KEK
         let kek_meta = keystore
-            .generate_key(
-                &KeySpec::Aes256Gcm,
-                "test-kek",
-                "test-tenant",
-            )
+            .generate_key(&KeySpec::Aes256Gcm, "test-kek", "test-tenant")
             .await
             .unwrap();
         let kek_id = kek_meta.id;
@@ -506,12 +502,8 @@ mod tests {
             .await
             .unwrap();
 
-        let wrapped_dek = STANDARD
-            .decode(&enc_result.wrapped_dek)
-            .unwrap();
-        let dek_nonce = STANDARD
-            .decode(&enc_result.dek_nonce)
-            .unwrap();
+        let wrapped_dek = STANDARD.decode(&enc_result.wrapped_dek).unwrap();
+        let dek_nonce = STANDARD.decode(&enc_result.dek_nonce).unwrap();
 
         // 3. Rotate the KEK
         let new_meta = keystore.rotate_key(&kek_id, "test-tenant").await.unwrap();
@@ -542,7 +534,13 @@ mod tests {
 
         // 5. Rewrap the DEK to the new KEK version
         let rewrap_result = envelope_svc
-            .rewrap_dek(&kek_id, &wrapped_dek, &dek_nonce, old_version, "test-tenant")
+            .rewrap_dek(
+                &kek_id,
+                &wrapped_dek,
+                &dek_nonce,
+                old_version,
+                "test-tenant",
+            )
             .await
             .unwrap();
 
@@ -585,13 +583,16 @@ mod tests {
                 new_version,
             )
             .await;
-        assert!(decrypt_wrong.is_err(), "old wrapped DEK should fail with new KEK version");
+        assert!(
+            decrypt_wrong.is_err(),
+            "old wrapped DEK should fail with new KEK version"
+        );
     }
 
     #[tokio::test]
     async fn test_rewrap_same_version_noop() {
-        use kms_keystore::software::SoftwareKeystore;
         use kms_core::KeySpec;
+        use kms_keystore::software::SoftwareKeystore;
 
         let keystore = Arc::new(SoftwareKeystore::new());
         let state = crate::KmsState::new(
@@ -599,7 +600,8 @@ mod tests {
             kms_policy::PBACEngine::new(),
             Arc::new(kms_audit::AuditLogger::with_stdout()),
             crate::Sm9State {
-                master_key: gm_sm9_rs::KgcMasterKey::generate().expect("failed to generate master key"),
+                master_key: gm_sm9_rs::KgcMasterKey::generate()
+                    .expect("failed to generate master key"),
                 repository: None,
             },
             crate::KmsMetrics::new(),

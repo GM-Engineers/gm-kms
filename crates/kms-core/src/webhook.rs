@@ -515,19 +515,19 @@ mod tests {
 
         // Just verify they exist and can be matched
         match delivered {
-            DeliveryStatus::Delivered => {},
+            DeliveryStatus::Delivered => {}
             _ => panic!("Expected Delivered"),
         }
         match failed {
-            DeliveryStatus::Failed => {},
+            DeliveryStatus::Failed => {}
             _ => panic!("Expected Failed"),
         }
         match pending {
-            DeliveryStatus::Pending => {},
+            DeliveryStatus::Pending => {}
             _ => panic!("Expected Pending"),
         }
         match retrying {
-            DeliveryStatus::Retrying => {},
+            DeliveryStatus::Retrying => {}
             _ => panic!("Expected Retrying"),
         }
     }
@@ -654,7 +654,7 @@ mod tests {
 
         assert!(filter.matches(&event_created));
         assert!(!filter.matches(&event_rotated)); // excluded
-        assert!(!filter.matches(&event_deleted));  // not included
+        assert!(!filter.matches(&event_deleted)); // not included
     }
 
     /// Test WebhookConfig default

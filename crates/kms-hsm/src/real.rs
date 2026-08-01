@@ -318,9 +318,7 @@ mod tests {
     #[tokio::test]
     async fn test_real_tpm_generate_key_not_implemented() {
         let ks = RealTpmKeystore::new();
-        let result = ks
-            .generate_key(&KeySpec::Aes256Gcm, "test", "tenant")
-            .await;
+        let result = ks.generate_key(&KeySpec::Aes256Gcm, "test", "tenant").await;
         assert!(result.is_err());
         match result.unwrap_err() {
             Error::NotImplemented(msg) => assert!(msg.contains("tpm2-tss")),
@@ -331,9 +329,7 @@ mod tests {
     #[tokio::test]
     async fn test_real_tpm_encrypt_not_implemented() {
         let ks = RealTpmKeystore::new();
-        let result = ks
-            .encrypt(&Uuid::new_v4(), b"data", None, "tenant")
-            .await;
+        let result = ks.encrypt(&Uuid::new_v4(), b"data", None, "tenant").await;
         assert!(result.is_err());
     }
 
@@ -367,9 +363,7 @@ mod tests {
             version: 1,
             signature: vec![0u8; 64],
         };
-        let result = ks
-            .verify(&Uuid::new_v4(), b"data", &sig, "tenant")
-            .await;
+        let result = ks.verify(&Uuid::new_v4(), b"data", &sig, "tenant").await;
         assert!(result.is_err());
     }
 

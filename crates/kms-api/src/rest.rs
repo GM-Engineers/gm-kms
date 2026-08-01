@@ -684,7 +684,8 @@ pub fn create_routes(state: Arc<KmsState>, api_key_config: ApiKeyConfig) -> Rout
     protected.merge(public).with_state(state)
 }
 
-async fn create_key(CallerId { key_id: caller_id }: CallerId, 
+async fn create_key(
+    CallerId { key_id: caller_id }: CallerId,
     State(state): State<Arc<KmsState>>,
     Json(req): Json<CreateKeyRequest>,
 ) -> Result<(StatusCode, Json<KeyResponse>)> {
@@ -695,7 +696,8 @@ async fn create_key(CallerId { key_id: caller_id }: CallerId,
 
     // PBAC evaluation
     use crate::auth::check_rest_pbac;
-    check_rest_pbac(&state.policy_engine, &caller_id, "create_key", &req.name).await
+    check_rest_pbac(&state.policy_engine, &caller_id, "create_key", &req.name)
+        .await
         .map_err(|_| ApiError::PermissionDenied)?;
 
     let spec = KeyService::parse_spec(&req.spec)?;
@@ -709,7 +711,11 @@ async fn create_key(CallerId { key_id: caller_id }: CallerId,
 
     // Backup key material (best-effort, failure is logged but not returned)
     if let Some(ref bs) = state.backup_service {
-        match state.keystore.get_key_material(&meta.id, &req.tenant_id).await {
+        match state
+            .keystore
+            .get_key_material(&meta.id, &req.tenant_id)
+            .await
+        {
             Ok(material) => {
                 if let Err(e) = bs.backup_key(&meta, &material, Some(req.name.clone())) {
                     tracing::error!("Failed to backup key {}: {}", meta.id, e);
@@ -718,7 +724,11 @@ async fn create_key(CallerId { key_id: caller_id }: CallerId,
                 }
             }
             Err(e) => {
-                tracing::error!("Failed to retrieve key material for backup {}: {}", meta.id, e);
+                tracing::error!(
+                    "Failed to retrieve key material for backup {}: {}",
+                    meta.id,
+                    e
+                );
             }
         }
     }
@@ -747,10 +757,10 @@ async fn list_keys(
     State(state): State<Arc<KmsState>>,
     Query(tenant_query): Query<TenantQuery>,
 ) -> Result<Json<Vec<KeyResponse>>> {
-
     // PBAC evaluation
     use crate::auth::check_rest_pbac;
-    check_rest_pbac(&state.policy_engine, &caller_id, "list_keys", "keys").await
+    check_rest_pbac(&state.policy_engine, &caller_id, "list_keys", "keys")
+        .await
         .map_err(|_| ApiError::PermissionDenied)?;
     let tenant_id = &tenant_query.tenant_id;
     let key_svc = state.key_service();
@@ -760,7 +770,8 @@ async fn list_keys(
     Ok(Json(response))
 }
 
-async fn encrypt(CallerId { key_id: caller_id }: CallerId, 
+async fn encrypt(
+    CallerId { key_id: caller_id }: CallerId,
     State(state): State<Arc<KmsState>>,
     Path(id): Path<Uuid>,
     Query(tenant_query): Query<TenantQuery>,
@@ -770,7 +781,8 @@ async fn encrypt(CallerId { key_id: caller_id }: CallerId,
 
     // PBAC evaluation
     use crate::auth::check_rest_pbac;
-    check_rest_pbac(&state.policy_engine, &caller_id, "encrypt", &id.to_string()).await
+    check_rest_pbac(&state.policy_engine, &caller_id, "encrypt", &id.to_string())
+        .await
         .map_err(|_| ApiError::PermissionDenied)?;
 
     let tenant_id = &tenant_query.tenant_id;
@@ -807,7 +819,8 @@ async fn encrypt(CallerId { key_id: caller_id }: CallerId,
     }))
 }
 
-async fn decrypt(CallerId { key_id: caller_id }: CallerId, 
+async fn decrypt(
+    CallerId { key_id: caller_id }: CallerId,
     State(state): State<Arc<KmsState>>,
     Path(id): Path<Uuid>,
     Query(tenant_query): Query<TenantQuery>,
@@ -817,7 +830,8 @@ async fn decrypt(CallerId { key_id: caller_id }: CallerId,
 
     // PBAC evaluation
     use crate::auth::check_rest_pbac;
-    check_rest_pbac(&state.policy_engine, &caller_id, "decrypt", &id.to_string()).await
+    check_rest_pbac(&state.policy_engine, &caller_id, "decrypt", &id.to_string())
+        .await
         .map_err(|_| ApiError::PermissionDenied)?;
 
     let tenant_id = &tenant_query.tenant_id;
@@ -862,15 +876,22 @@ async fn decrypt(CallerId { key_id: caller_id }: CallerId,
     }))
 }
 
-async fn rotate_key(CallerId { key_id: caller_id }: CallerId, 
+async fn rotate_key(
+    CallerId { key_id: caller_id }: CallerId,
     State(state): State<Arc<KmsState>>,
     Path(id): Path<Uuid>,
     Query(tenant_query): Query<TenantQuery>,
 ) -> Result<Json<KeyResponse>> {
     // PBAC evaluation
     use crate::auth::check_rest_pbac;
-    check_rest_pbac(&state.policy_engine, &caller_id, "rotate_key", &id.to_string()).await
-        .map_err(|_| ApiError::PermissionDenied)?;
+    check_rest_pbac(
+        &state.policy_engine,
+        &caller_id,
+        "rotate_key",
+        &id.to_string(),
+    )
+    .await
+    .map_err(|_| ApiError::PermissionDenied)?;
 
     let tenant_id = &tenant_query.tenant_id;
 
@@ -886,15 +907,22 @@ async fn rotate_key(CallerId { key_id: caller_id }: CallerId,
     Ok(Json(KeyResponse::from(meta)))
 }
 
-async fn delete_key(CallerId { key_id: caller_id }: CallerId, 
+async fn delete_key(
+    CallerId { key_id: caller_id }: CallerId,
     State(state): State<Arc<KmsState>>,
     Path(id): Path<Uuid>,
     Query(tenant_query): Query<TenantQuery>,
 ) -> Result<StatusCode> {
     // PBAC evaluation
     use crate::auth::check_rest_pbac;
-    check_rest_pbac(&state.policy_engine, &caller_id, "delete_key", &id.to_string()).await
-        .map_err(|_| ApiError::PermissionDenied)?;
+    check_rest_pbac(
+        &state.policy_engine,
+        &caller_id,
+        "delete_key",
+        &id.to_string(),
+    )
+    .await
+    .map_err(|_| ApiError::PermissionDenied)?;
 
     // Security: enforce dual-control approval for key deletion
     use kms_approval::OperationType;
@@ -937,7 +965,8 @@ async fn delete_key(CallerId { key_id: caller_id }: CallerId,
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn sign(CallerId { key_id: caller_id }: CallerId, 
+async fn sign(
+    CallerId { key_id: caller_id }: CallerId,
     State(state): State<Arc<KmsState>>,
     Path(id): Path<Uuid>,
     Query(tenant_query): Query<TenantQuery>,
@@ -964,7 +993,8 @@ async fn sign(CallerId { key_id: caller_id }: CallerId,
     }))
 }
 
-async fn verify(CallerId { key_id: caller_id }: CallerId, 
+async fn verify(
+    CallerId { key_id: caller_id }: CallerId,
     State(state): State<Arc<KmsState>>,
     Path(id): Path<Uuid>,
     Query(tenant_query): Query<TenantQuery>,
@@ -998,12 +1028,14 @@ async fn verify(CallerId { key_id: caller_id }: CallerId,
     Ok(Json(VerifyResponse { valid }))
 }
 
-async fn hash(CallerId { key_id: caller_id }: CallerId, 
+async fn hash(
+    CallerId { key_id: caller_id }: CallerId,
     State(state): State<Arc<KmsState>>,
     Json(req): Json<HashRequest>,
 ) -> Result<Json<HashResponse>> {
     use crate::auth::check_rest_pbac;
-    check_rest_pbac(&state.policy_engine, &caller_id, "hash", "hash").await
+    check_rest_pbac(&state.policy_engine, &caller_id, "hash", "hash")
+        .await
         .map_err(|_| ApiError::PermissionDenied)?;
 
     use base64::{Engine, engine::general_purpose::STANDARD};
@@ -1692,7 +1724,8 @@ async fn mfa_verify_backup(
     }
 }
 
-async fn mfa_status(CallerId { key_id: caller_id }: CallerId, 
+async fn mfa_status(
+    CallerId { key_id: caller_id }: CallerId,
     State(state): State<Arc<KmsState>>,
     Path(user_id): Path<String>,
 ) -> Result<Json<MfaStatusResponse>> {
@@ -1793,7 +1826,8 @@ async fn create_approval_request(
     Ok((StatusCode::CREATED, Json(response)))
 }
 
-async fn list_pending_approvals(CallerId { key_id: caller_id }: CallerId, 
+async fn list_pending_approvals(
+    CallerId { key_id: caller_id }: CallerId,
     State(state): State<Arc<KmsState>>,
     Path(tenant_id): Path<String>,
 ) -> Result<Json<Vec<crate::approval::ApprovalRequestResponse>>> {
@@ -1817,7 +1851,8 @@ async fn list_pending_approvals(CallerId { key_id: caller_id }: CallerId,
     Ok(Json(requests))
 }
 
-async fn get_approval_request(CallerId { key_id: caller_id }: CallerId, 
+async fn get_approval_request(
+    CallerId { key_id: caller_id }: CallerId,
     State(state): State<Arc<KmsState>>,
     Path(request_id): Path<Uuid>,
 ) -> Result<Json<crate::approval::ApprovalRequestResponse>> {
@@ -1943,7 +1978,8 @@ async fn cancel_request(
 // Envelope encryption handlers
 
 /// Encrypt data using envelope encryption (DEK wrapped with KEK)
-async fn envelope_encrypt(CallerId { key_id: caller_id }: CallerId, 
+async fn envelope_encrypt(
+    CallerId { key_id: caller_id }: CallerId,
     State(state): State<Arc<KmsState>>,
     Json(req): Json<EnvelopeEncryptRequest>,
 ) -> Result<Json<EnvelopeEncryptResponse>> {
@@ -1978,7 +2014,8 @@ async fn envelope_encrypt(CallerId { key_id: caller_id }: CallerId,
 }
 
 /// Decrypt data using envelope encryption (unwrap DEK with KEK, then decrypt)
-async fn envelope_decrypt(CallerId { key_id: caller_id }: CallerId, 
+async fn envelope_decrypt(
+    CallerId { key_id: caller_id }: CallerId,
     State(state): State<Arc<KmsState>>,
     Json(req): Json<EnvelopeDecryptRequest>,
 ) -> Result<Json<EnvelopeDecryptResponse>> {
@@ -2039,7 +2076,8 @@ async fn envelope_decrypt(CallerId { key_id: caller_id }: CallerId,
 /// After KEK rotation, existing envelope-encrypted data still references the old KEK
 /// version. This endpoint re-wraps the DEK with the current KEK version, enabling
 /// decryption with the new key without re-encrypting the underlying plaintext.
-async fn envelope_rewrap(CallerId { key_id: caller_id }: CallerId, 
+async fn envelope_rewrap(
+    CallerId { key_id: caller_id }: CallerId,
     State(state): State<Arc<KmsState>>,
     Json(req): Json<EnvelopeRewrapRequest>,
 ) -> Result<Json<EnvelopeRewrapResponse>> {
@@ -2059,7 +2097,13 @@ async fn envelope_rewrap(CallerId { key_id: caller_id }: CallerId,
 
     let envelope_svc = crate::service::EnvelopeService::new(&state);
     let result = envelope_svc
-        .rewrap_dek(&kek_id, &wrapped_dek, &dek_nonce, req.old_kek_version, tenant_id)
+        .rewrap_dek(
+            &kek_id,
+            &wrapped_dek,
+            &dek_nonce,
+            req.old_kek_version,
+            tenant_id,
+        )
         .await?;
 
     // Log audit event
@@ -2140,14 +2184,16 @@ async fn dh_derive(
 // Key import/export handlers
 
 /// Import an external key into the KMS
-async fn import_key(CallerId { key_id: caller_id }: CallerId, 
+async fn import_key(
+    CallerId { key_id: caller_id }: CallerId,
     State(state): State<Arc<KmsState>>,
     Json(req): Json<ImportKeyRequest>,
 ) -> Result<(StatusCode, Json<ImportKeyResponse>)> {
     use base64::{Engine, engine::general_purpose::STANDARD};
 
     use crate::auth::check_rest_pbac;
-    check_rest_pbac(&state.policy_engine, &caller_id, "import_key", &req.name).await
+    check_rest_pbac(&state.policy_engine, &caller_id, "import_key", &req.name)
+        .await
         .map_err(|_| ApiError::PermissionDenied)?;
 
     // Parse key spec using KeyService
@@ -2199,7 +2245,8 @@ async fn import_key(CallerId { key_id: caller_id }: CallerId,
 /// The caller must first create an approval request via `POST /v1/approvals`,
 /// obtain the required approvals (Triple level — 3 approvers), then pass the
 /// `approval_id` in this request. Export without approval is rejected.
-async fn export_key(CallerId { key_id: caller_id }: CallerId, 
+async fn export_key(
+    CallerId { key_id: caller_id }: CallerId,
     State(state): State<Arc<KmsState>>,
     Path(key_id): Path<Uuid>,
     Json(req): Json<ExportKeyRequest>,
@@ -2208,8 +2255,14 @@ async fn export_key(CallerId { key_id: caller_id }: CallerId,
 
     // PBAC evaluation
     use crate::auth::check_rest_pbac;
-    check_rest_pbac(&state.policy_engine, &caller_id, "export_key", &key_id.to_string()).await
-        .map_err(|_| ApiError::PermissionDenied)?;
+    check_rest_pbac(
+        &state.policy_engine,
+        &caller_id,
+        "export_key",
+        &key_id.to_string(),
+    )
+    .await
+    .map_err(|_| ApiError::PermissionDenied)?;
 
     // Enforce approval gate: KeyExport requires an approved request
     let approval_id = match &req.approval_id {
@@ -2376,11 +2429,16 @@ async fn query_audit_events(
     State(state): State<Arc<KmsState>>,
     Query(filter): Query<kms_audit::AuditFilter>,
 ) -> Result<Json<Vec<kms_audit::AuditEvent>>> {
-
     // PBAC evaluation
     use crate::auth::check_rest_pbac;
-    check_rest_pbac(&state.policy_engine, &caller_id, "query_audit_events", "audit").await
-        .map_err(|_| ApiError::PermissionDenied)?;
+    check_rest_pbac(
+        &state.policy_engine,
+        &caller_id,
+        "query_audit_events",
+        "audit",
+    )
+    .await
+    .map_err(|_| ApiError::PermissionDenied)?;
     let events = state.audit_logger.query(filter).await;
 
     Ok(Json(events))
@@ -2390,12 +2448,14 @@ async fn query_audit_events(
 
 use gm_sm9_rs_rs::{Decryptor, Encryptor, Signer, Verifier};
 
-async fn sm9_sign(CallerId { key_id: caller_id }: CallerId, 
+async fn sm9_sign(
+    CallerId { key_id: caller_id }: CallerId,
     State(state): State<Arc<KmsState>>,
     Json(req): Json<Sm9SignRequest>,
 ) -> Result<Json<Sm9SignResponse>> {
     use crate::auth::check_rest_pbac;
-    check_rest_pbac(&state.policy_engine, &caller_id, "sm9_sign", &req.identity).await
+    check_rest_pbac(&state.policy_engine, &caller_id, "sm9_sign", &req.identity)
+        .await
         .map_err(|_| ApiError::PermissionDenied)?;
 
     use base64::{Engine, engine::general_purpose::STANDARD};
@@ -2437,13 +2497,20 @@ async fn sm9_sign(CallerId { key_id: caller_id }: CallerId,
     }))
 }
 
-async fn sm9_verify(CallerId { key_id: caller_id }: CallerId, 
+async fn sm9_verify(
+    CallerId { key_id: caller_id }: CallerId,
     State(state): State<Arc<KmsState>>,
     Json(req): Json<Sm9VerifyRequest>,
 ) -> Result<Json<Sm9VerifyResponse>> {
     use crate::auth::check_rest_pbac;
-    check_rest_pbac(&state.policy_engine, &caller_id, "sm9_verify", &req.identity).await
-        .map_err(|_| ApiError::PermissionDenied)?;
+    check_rest_pbac(
+        &state.policy_engine,
+        &caller_id,
+        "sm9_verify",
+        &req.identity,
+    )
+    .await
+    .map_err(|_| ApiError::PermissionDenied)?;
 
     use base64::{Engine, engine::general_purpose::STANDARD};
 
@@ -2484,13 +2551,20 @@ async fn sm9_verify(CallerId { key_id: caller_id }: CallerId,
     Ok(Json(Sm9VerifyResponse { valid }))
 }
 
-async fn sm9_encrypt(CallerId { key_id: caller_id }: CallerId, 
+async fn sm9_encrypt(
+    CallerId { key_id: caller_id }: CallerId,
     State(state): State<Arc<KmsState>>,
     Json(req): Json<Sm9EncryptRequest>,
 ) -> Result<Json<Sm9EncryptResponse>> {
     use crate::auth::check_rest_pbac;
-    check_rest_pbac(&state.policy_engine, &caller_id, "sm9_encrypt", &req.identity).await
-        .map_err(|_| ApiError::PermissionDenied)?;
+    check_rest_pbac(
+        &state.policy_engine,
+        &caller_id,
+        "sm9_encrypt",
+        &req.identity,
+    )
+    .await
+    .map_err(|_| ApiError::PermissionDenied)?;
 
     use base64::{Engine, engine::general_purpose::STANDARD};
 
@@ -2528,13 +2602,20 @@ async fn sm9_encrypt(CallerId { key_id: caller_id }: CallerId,
     }))
 }
 
-async fn sm9_decrypt(CallerId { key_id: caller_id }: CallerId, 
+async fn sm9_decrypt(
+    CallerId { key_id: caller_id }: CallerId,
     State(state): State<Arc<KmsState>>,
     Json(req): Json<Sm9DecryptRequest>,
 ) -> Result<Json<Sm9DecryptResponse>> {
     use crate::auth::check_rest_pbac;
-    check_rest_pbac(&state.policy_engine, &caller_id, "sm9_decrypt", &req.identity).await
-        .map_err(|_| ApiError::PermissionDenied)?;
+    check_rest_pbac(
+        &state.policy_engine,
+        &caller_id,
+        "sm9_decrypt",
+        &req.identity,
+    )
+    .await
+    .map_err(|_| ApiError::PermissionDenied)?;
 
     use base64::{Engine, engine::general_purpose::STANDARD};
 

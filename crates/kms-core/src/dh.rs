@@ -176,11 +176,7 @@ mod tests {
 
     #[test]
     fn test_dh_key_pair_private_key_skipped_in_serde() {
-        let pair = DhKeyPair::new(
-            DhAlgorithm::X25519,
-            vec![1u8; 32],
-            vec![2u8; 32],
-        );
+        let pair = DhKeyPair::new(DhAlgorithm::X25519, vec![1u8; 32], vec![2u8; 32]);
         let json = serde_json::to_string(&pair).unwrap();
         // private_key should not appear in serialized form
         assert!(!json.contains("private_key"));

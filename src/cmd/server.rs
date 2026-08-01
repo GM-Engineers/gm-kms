@@ -14,7 +14,9 @@ use kms_api::{
 };
 use kms_audit::{AuditConfig, AuditLogger, TimestampedAuditConfig, TimestampedAuditLogger};
 use kms_hsm::create_tpm_keystore;
-use kms_keystore::{KeystoreBackend, PostgresKeyRepository, PostgresKeystore, RedisCachedKeystore, SoftwareKeystore};
+use kms_keystore::{
+    KeystoreBackend, PostgresKeyRepository, PostgresKeystore, RedisCachedKeystore, SoftwareKeystore,
+};
 use kms_policy::PBACEngine;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -421,7 +423,8 @@ pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()
                 }
                 Err(e) => {
                     tracing::warn!(
-                        "Audit chain verification skipped (could not read log files): {}", e
+                        "Audit chain verification skipped (could not read log files): {}",
+                        e
                     );
                 }
             }
@@ -472,13 +475,16 @@ pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()
         // Try loading from database first
         if let Some(pool) = sm9_pool {
             let kek_store = Arc::new(kms_core::sm9_master_key::EnvVarKekStore::new("KMS_KEK"));
-            let pg_repo = Arc::new(
-                kms_keystore::PostgresSm9MasterKeyRepository::new(pool, kek_store),
-            );
+            let pg_repo = Arc::new(kms_keystore::PostgresSm9MasterKeyRepository::new(
+                pool, kek_store,
+            ));
 
             // Initialize the table
             if let Err(e) = pg_repo.init().await {
-                tracing::error!("SM9 master key table init failed: {}, falling back to in-memory", e);
+                tracing::error!(
+                    "SM9 master key table init failed: {}, falling back to in-memory",
+                    e
+                );
                 let sm9_master_key = gm_sm9_rs::KgcMasterKey::generate()
                     .map_err(|e| anyhow::anyhow!("Failed to generate SM9 master key: {}", e))?;
                 Sm9State::from_key(sm9_master_key)
@@ -496,8 +502,9 @@ pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()
                     }
                     Err(_) => {
                         // No key found or deserialization failed — generate and store
-                        let sm9_master_key = gm_sm9_rs::KgcMasterKey::generate()
-                            .map_err(|e| anyhow::anyhow!("Failed to generate SM9 master key: {}", e))?;
+                        let sm9_master_key = gm_sm9_rs::KgcMasterKey::generate().map_err(|e| {
+                            anyhow::anyhow!("Failed to generate SM9 master key: {}", e)
+                        })?;
                         let state = Sm9State::from_key(sm9_master_key);
                         if let Err(e) = state.store_to_repository(&adapter).await {
                             tracing::error!("Failed to persist SM9 master key: {}", e);
@@ -568,7 +575,8 @@ pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()
                 }
                 Err(e) => {
                     tracing::error!(
-                        "PostgreSQL keystore init failed: {}. Falling back to in-memory keystore (keys WILL be lost on restart!)", e
+                        "PostgreSQL keystore init failed: {}. Falling back to in-memory keystore (keys WILL be lost on restart!)",
+                        e
                     );
                     Arc::new(SoftwareKeystore::new())
                 }
@@ -606,7 +614,10 @@ pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()
                          keystore (keys WILL be lost on restart!)",
                         e
                     );
-                    Arc::new(RedisCachedKeystore::new(SoftwareKeystore::new(), redis_conn))
+                    Arc::new(RedisCachedKeystore::new(
+                        SoftwareKeystore::new(),
+                        redis_conn,
+                    ))
                 }
             }
         } else {
@@ -614,7 +625,10 @@ pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()
                 "No PostgreSQL — using Redis-cached in-memory keystore. \
                  Keys WILL be lost on restart!"
             );
-            Arc::new(RedisCachedKeystore::new(SoftwareKeystore::new(), redis_conn))
+            Arc::new(RedisCachedKeystore::new(
+                SoftwareKeystore::new(),
+                redis_conn,
+            ))
         }
     }
 
@@ -673,11 +687,8 @@ pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()
 
                     match backend_type {
                         BackendType::Software => {
-                            let keystore = create_software_keystore_inner(
-                                &mfa_pool,
-                                redis_conn,
-                            )
-                            .await;
+                            let keystore =
+                                create_software_keystore_inner(&mfa_pool, redis_conn).await;
                             build_kms_state(
                                 keystore,
                                 policy_engine,
@@ -694,9 +705,10 @@ pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()
                             tracing::warn!(
                                 "Redis caching not supported for TPM backend, using keystore directly"
                             );
-                            let tpm_keystore =
-                                create_tpm_keystore(&config.backend.tpm_backend)
-                                    .map_err(|e| anyhow::anyhow!("Failed to create TPM keystore: {}", e))?;
+                            let tpm_keystore = create_tpm_keystore(&config.backend.tpm_backend)
+                                .map_err(|e| {
+                                    anyhow::anyhow!("Failed to create TPM keystore: {}", e)
+                                })?;
                             build_kms_state(
                                 tpm_keystore,
                                 policy_engine,
@@ -974,10 +986,7 @@ pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()
                 match svc_clone.cleanup_old_backups() {
                     Ok(count) => {
                         m.record_backup_success();
-                        tracing::info!(
-                            "Backup cleanup completed: {} old backups removed",
-                            count
-                        );
+                        tracing::info!("Backup cleanup completed: {} old backups removed", count);
                     }
                     Err(e) => {
                         m.record_backup_failure();

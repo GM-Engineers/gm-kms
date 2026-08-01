@@ -8,8 +8,8 @@
 //! This decomposition improves single-responsibility and makes testing easier.
 
 use crate::{ApprovalManager, KmsMetrics, MfaManager, TenantQuotaTracker, TenantRateLimiter};
-use std::sync::Arc;
 use parking_lot::RwLock;
+use std::sync::Arc;
 
 /// Security-related state (MFA, approval workflows)
 #[derive(Clone)]

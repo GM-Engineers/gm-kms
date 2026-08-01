@@ -364,9 +364,7 @@ impl KeyBackupService {
 
         // Register in-memory
         {
-            let mut registry = self
-                .backup_registry
-                .write();
+            let mut registry = self.backup_registry.write();
             registry.push(BackupRecord {
                 key_id: key_meta.id,
                 backup_id: Uuid::new_v4(),
@@ -490,8 +488,7 @@ impl KeyBackupService {
     /// Compute SM3-HMAC of data using the HMAC signing key.
     fn compute_hmac(&self, data: &[u8]) -> Result<String> {
         let hmac = gm_crypto::sm3::Sm3Hmac::new(self.master_key.hmac_key());
-        hmac
-            .compute_hex(data)
+        hmac.compute_hex(data)
             .map_err(|e| anyhow::anyhow!("SM3-HMAC computation failed: {}", e))
     }
 
@@ -538,9 +535,7 @@ impl KeyBackupService {
 
     /// List backups for a key from the in-memory registry.
     pub fn list_backups(&self, key_id: &Uuid) -> Vec<chrono::DateTime<chrono::Utc>> {
-        let registry = self
-            .backup_registry
-            .read();
+        let registry = self.backup_registry.read();
         registry
             .iter()
             .filter(|r| r.key_id == *key_id)

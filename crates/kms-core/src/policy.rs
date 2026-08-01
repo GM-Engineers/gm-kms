@@ -313,10 +313,7 @@ mod tests {
 
     #[test]
     fn test_policy_context_get_list() {
-        let ctx = PolicyContext::new().with_attr(
-            "roles",
-            serde_json::json!(["admin", "operator"]),
-        );
+        let ctx = PolicyContext::new().with_attr("roles", serde_json::json!(["admin", "operator"]));
         let list = ctx.get_list("roles").unwrap();
         assert_eq!(list, vec!["admin", "operator"]);
     }
@@ -449,8 +446,12 @@ mod tests {
     #[test]
     fn test_condition_not_in() {
         let ctx = PolicyContext::new().with_attr("role", "user");
-        assert!(Condition::NotIn("role".into(), vec!["admin".into(), "root".into()]).evaluate(&ctx));
-        assert!(!Condition::NotIn("role".into(), vec!["user".into(), "guest".into()]).evaluate(&ctx));
+        assert!(
+            Condition::NotIn("role".into(), vec!["admin".into(), "root".into()]).evaluate(&ctx)
+        );
+        assert!(
+            !Condition::NotIn("role".into(), vec!["user".into(), "guest".into()]).evaluate(&ctx)
+        );
     }
 
     // --- Condition: Between / Outside ---
@@ -542,7 +543,11 @@ mod tests {
 
     #[test]
     fn test_policy_new() {
-        let policy = Policy::new("test-policy", PolicyEffect::Allow, Condition::Exists("role".into()));
+        let policy = Policy::new(
+            "test-policy",
+            PolicyEffect::Allow,
+            Condition::Exists("role".into()),
+        );
         assert_eq!(policy.name, "test-policy");
         assert_eq!(policy.effect, PolicyEffect::Allow);
         assert!(policy.enabled);
@@ -594,7 +599,11 @@ mod tests {
 
     #[test]
     fn test_policy_matches_condition_false() {
-        let mut policy = Policy::new("p", PolicyEffect::Allow, Condition::Eq("role".into(), "admin".into()));
+        let mut policy = Policy::new(
+            "p",
+            PolicyEffect::Allow,
+            Condition::Eq("role".into(), "admin".into()),
+        );
         policy.resources = vec!["*".to_string()];
         policy.subjects = vec!["*".to_string()];
         let ctx = PolicyContext::new()

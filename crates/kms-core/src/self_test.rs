@@ -191,8 +191,7 @@ impl Sm4SelfTest {
     #[allow(deprecated)]
     pub fn new() -> Self {
         Self {
-            key: hex::decode("0123456789abcdeffedcba9876543210")
-                .expect("valid KAT hex constant"),
+            key: hex::decode("0123456789abcdeffedcba9876543210").expect("valid KAT hex constant"),
             plaintext: hex::decode("0123456789abcdeffedcba9876543210")
                 .expect("valid KAT hex constant"),
             // ECB mode expected output from GM/T 0002-2012
@@ -479,13 +478,12 @@ impl Sm9SelfTest {
     }
 
     pub async fn run(&self) -> AlgorithmTestResult {
+        use gm_sm9_rs::encrypt::{Decryptor, Encryptor};
         use gm_sm9_rs::key::KgcMasterKey;
         use gm_sm9_rs::sign::{Signer, Verifier};
-        use gm_sm9_rs::encrypt::{Encryptor, Decryptor};
 
         // ── SM9 Signature Roundtrip ──
-        let kgc = KgcMasterKey::generate()
-            .map_err(|e| format!("SM9 KGC generation failed: {}", e));
+        let kgc = KgcMasterKey::generate().map_err(|e| format!("SM9 KGC generation failed: {}", e));
         let kgc = match kgc {
             Ok(k) => k,
             Err(e) => {
@@ -580,9 +578,7 @@ impl Sm9SelfTest {
             Ok(_) => AlgorithmTestResult {
                 algorithm: "SM9-Encrypt".to_string(),
                 passed: false,
-                error_message: Some(
-                    "SM9 decryption returned wrong plaintext".to_string(),
-                ),
+                error_message: Some("SM9 decryption returned wrong plaintext".to_string()),
             },
             Err(e) => AlgorithmTestResult {
                 algorithm: "SM9-Encrypt".to_string(),
@@ -848,7 +844,11 @@ mod tests {
     async fn test_sm2_self_test_run() {
         let test = Sm2SelfTest::new();
         let result = test.run().await;
-        assert!(result.passed, "SM2 self-test failed: {:?}", result.error_message);
+        assert!(
+            result.passed,
+            "SM2 self-test failed: {:?}",
+            result.error_message
+        );
         assert_eq!(result.algorithm, "SM2");
     }
 
@@ -857,7 +857,11 @@ mod tests {
     async fn test_sm9_self_test_run() {
         let test = Sm9SelfTest::new();
         let result = test.run().await;
-        assert!(result.passed, "SM9 self-test failed: {:?}", result.error_message);
+        assert!(
+            result.passed,
+            "SM9 self-test failed: {:?}",
+            result.error_message
+        );
         assert_eq!(result.algorithm, "SM9-Encrypt");
     }
 }

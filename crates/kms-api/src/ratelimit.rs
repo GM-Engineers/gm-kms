@@ -65,7 +65,8 @@ impl TenantRateLimiter {
     pub async fn check(&self, tenant_id: &str) -> Result<u64, (u64, i64)> {
         let mut conn = self.redis.clone();
         let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).expect("system clock before UNIX epoch")
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock before UNIX epoch")
             .as_millis() as u64;
 
         let window_ms = 1000; // 1 second window
@@ -139,7 +140,8 @@ impl TenantRateLimiter {
     pub async fn get_usage(&self, tenant_id: &str) -> Result<u64, ()> {
         let mut conn = self.redis.clone();
         let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).expect("system clock before UNIX epoch")
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock before UNIX epoch")
             .as_millis() as u64;
 
         let window_key = format!("ratelimit:{}:{}", tenant_id, now / 1000);
@@ -214,9 +216,10 @@ pub async fn rate_limit_middleware(
             );
             let mut response = Response::new(body);
             *response.status_mut() = StatusCode::UNAUTHORIZED;
-            response
-                .headers_mut()
-                .insert("Content-Type", "application/json".parse().expect("valid header value"));
+            response.headers_mut().insert(
+                "Content-Type",
+                "application/json".parse().expect("valid header value"),
+            );
             return response;
         }
     };
@@ -238,16 +241,18 @@ pub async fn rate_limit_middleware(
 
             let mut response = Response::new(body);
             *response.status_mut() = StatusCode::TOO_MANY_REQUESTS;
-            response
-                .headers_mut()
-                .insert("Retry-After", retry_after.to_string().parse().expect("valid header value"));
+            response.headers_mut().insert(
+                "Retry-After",
+                retry_after.to_string().parse().expect("valid header value"),
+            );
             response.headers_mut().insert(
                 "X-RateLimit-Retry-After-Seconds",
                 retry_after.to_string().parse().expect("valid header value"),
             );
-            response
-                .headers_mut()
-                .insert("Content-Type", "application/json".parse().expect("valid header value"));
+            response.headers_mut().insert(
+                "Content-Type",
+                "application/json".parse().expect("valid header value"),
+            );
             response
         }
     }

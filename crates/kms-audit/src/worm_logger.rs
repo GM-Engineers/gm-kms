@@ -345,8 +345,7 @@ mod tests {
     #[test]
     fn test_with_rotation_age_secs() {
         let path = std::path::PathBuf::from("/tmp/test_audit");
-        let config = WormSignedAuditConfig::new(path, 0)
-            .with_rotation_age_secs(7200);
+        let config = WormSignedAuditConfig::new(path, 0).with_rotation_age_secs(7200);
         assert_eq!(config.rotation_age_secs, 7200);
     }
 
@@ -405,6 +404,9 @@ mod tests {
     fn test_signing_key_path() {
         let worm_path = std::path::PathBuf::from("/data/audit.log");
         let key_path = signing_key_path(&worm_path);
-        assert_eq!(key_path, std::path::PathBuf::from("/data/audit.signing_key"));
+        assert_eq!(
+            key_path,
+            std::path::PathBuf::from("/data/audit.signing_key")
+        );
     }
 }

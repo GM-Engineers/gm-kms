@@ -330,13 +330,17 @@ mod tests {
     async fn test_envvar_store_hex_kek() {
         let kek_hex = "4242424242424242424242424242424242424242424242424242424242424242";
         // SAFETY: single-threaded test, no concurrent env access
-        unsafe { std::env::set_var("TEST_SM9_KEK_HEX", kek_hex); }
+        unsafe {
+            std::env::set_var("TEST_SM9_KEK_HEX", kek_hex);
+        }
         let store = EnvVarKekStore::new("TEST_SM9_KEK_HEX");
         let plaintext = b"test data";
         let ciphertext = store.encrypt(plaintext).await.unwrap();
         let decrypted = store.decrypt(&ciphertext).await.unwrap();
         assert_eq!(decrypted.as_slice(), plaintext);
-        unsafe { std::env::remove_var("TEST_SM9_KEK_HEX"); }
+        unsafe {
+            std::env::remove_var("TEST_SM9_KEK_HEX");
+        }
     }
 
     #[tokio::test]
@@ -346,13 +350,17 @@ mod tests {
         let kek = [0x42u8; 32];
         let kek_b64 = base64::engine::general_purpose::STANDARD.encode(kek);
         // SAFETY: single-threaded test, no concurrent env access
-        unsafe { std::env::set_var("TEST_SM9_KEK_B64", &kek_b64); }
+        unsafe {
+            std::env::set_var("TEST_SM9_KEK_B64", &kek_b64);
+        }
         let store = EnvVarKekStore::new("TEST_SM9_KEK_B64");
         let plaintext = b"hello";
         let ciphertext = store.encrypt(plaintext).await.unwrap();
         let decrypted = store.decrypt(&ciphertext).await.unwrap();
         assert_eq!(decrypted.as_slice(), plaintext);
-        unsafe { std::env::remove_var("TEST_SM9_KEK_B64"); }
+        unsafe {
+            std::env::remove_var("TEST_SM9_KEK_B64");
+        }
     }
 
     #[tokio::test]
@@ -368,11 +376,15 @@ mod tests {
     async fn test_envvar_store_wrong_length_kek() {
         // 16 bytes hex (too short for 32-byte KEK)
         // SAFETY: single-threaded test, no concurrent env access
-        unsafe { std::env::set_var("TEST_SM9_KEK_SHORT", "42424242424242424242424242424242"); }
+        unsafe {
+            std::env::set_var("TEST_SM9_KEK_SHORT", "42424242424242424242424242424242");
+        }
         let store = EnvVarKekStore::new("TEST_SM9_KEK_SHORT");
         let result = store.encrypt(b"data").await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("32 bytes"));
-        unsafe { std::env::remove_var("TEST_SM9_KEK_SHORT"); }
+        unsafe {
+            std::env::remove_var("TEST_SM9_KEK_SHORT");
+        }
     }
 }

@@ -106,14 +106,13 @@ impl S3ArchiveClient {
             .unwrap_or("unknown");
 
         let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).expect("system clock before UNIX epoch")
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock before UNIX epoch")
             .as_secs();
 
         let key = format!("{}{}-{}.jsonl", self.config.key_prefix, timestamp, filename);
 
-        let content = tokio::fs::read(local_path)
-            .await
-            .map_err(AuditError::Io)?;
+        let content = tokio::fs::read(local_path).await.map_err(AuditError::Io)?;
 
         self.upload_bytes(&key, content).await?;
 
@@ -156,7 +155,9 @@ impl S3ArchiveClient {
                 .header("x-amz-secret-access-key", secret);
         }
 
-        let response = request.send().await
+        let response = request
+            .send()
+            .await
             .map_err(|e| AuditError::Network(format!("Failed to upload to S3: {e}")))?;
 
         if response.status().is_success() {
@@ -170,7 +171,10 @@ impl S3ArchiveClient {
         } else {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            Err(AuditError::Network(format!("S3 upload failed: {} - {}", status, body)))
+            Err(AuditError::Network(format!(
+                "S3 upload failed: {} - {}",
+                status, body
+            )))
         }
     }
 
@@ -191,17 +195,23 @@ impl S3ArchiveClient {
                 .header("x-amz-secret-access-key", secret);
         }
 
-        let response = request.send().await
+        let response = request
+            .send()
+            .await
             .map_err(|e| AuditError::Network(format!("Failed to list S3 objects: {e}")))?;
 
         if response.status().is_success() {
-            let body = response.text().await
-                .map_err(|e| AuditError::Network(format!("Failed to read S3 list response body: {e}")))?;
+            let body = response.text().await.map_err(|e| {
+                AuditError::Network(format!("Failed to read S3 list response body: {e}"))
+            })?;
             Ok(self.parse_list_response(&body))
         } else {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            Err(AuditError::Network(format!("S3 list failed: {} - {}", status, body)))
+            Err(AuditError::Network(format!(
+                "S3 list failed: {} - {}",
+                status, body
+            )))
         }
     }
 
@@ -246,14 +256,14 @@ impl S3ArchiveClient {
                 .header("x-amz-secret-access-key", secret);
         }
 
-        let response = request
-            .send()
-            .await
-            .map_err(|e| AuditError::Network(format!("Failed to download archive for verification: {e}")))?;
+        let response = request.send().await.map_err(|e| {
+            AuditError::Network(format!("Failed to download archive for verification: {e}"))
+        })?;
 
         if response.status().is_success() {
-            let _content = response.bytes().await
-                .map_err(|e| AuditError::Network(format!("Failed to read S3 download response body: {e}")))?;
+            let _content = response.bytes().await.map_err(|e| {
+                AuditError::Network(format!("Failed to read S3 download response body: {e}"))
+            })?;
             // In production, would verify hash chain here
             Ok(true)
         } else {
@@ -323,14 +333,15 @@ impl ArchiveManager {
             return Ok(archived);
         }
 
-        let client = self.s3_client.as_ref().expect("s3_client checked for None above");
+        let client = self
+            .s3_client
+            .as_ref()
+            .expect("s3_client checked for None above");
 
         // Find completed files (those with .jsonl extension)
-        let mut entries = tokio::fs::read_dir(&self.local_path)
-            .await ?;
+        let mut entries = tokio::fs::read_dir(&self.local_path).await?;
 
-        while let Some(entry) = entries .next_entry().await?
-        {
+        while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
 
             if path.extension().and_then(|s| s.to_str()) == Some("jsonl") {
@@ -368,11 +379,9 @@ impl ArchiveManager {
         let cutoff = std::time::SystemTime::now()
             - std::time::Duration::from_secs(older_than_days as u64 * 86400);
 
-        let mut entries = tokio::fs::read_dir(&self.local_path)
-            .await ?;
+        let mut entries = tokio::fs::read_dir(&self.local_path).await?;
 
-        while let Some(entry) = entries .next_entry().await?
-        {
+        while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
 
             if path.extension().and_then(|s| s.to_str()) == Some("jsonl") {

@@ -93,7 +93,10 @@ mod tests {
     #[test]
     fn test_mfa_error_display_backup_code_locked() {
         let e = MfaError::BackupCodeLocked(300);
-        assert_eq!(e.to_string(), "too many failed backup code attempts, locked for 300 seconds");
+        assert_eq!(
+            e.to_string(),
+            "too many failed backup code attempts, locked for 300 seconds"
+        );
     }
 
     #[test]
@@ -105,7 +108,10 @@ mod tests {
     #[test]
     fn test_mfa_error_display_operation_not_permitted() {
         let e = MfaError::OperationNotPermitted("delete key".to_string());
-        assert_eq!(e.to_string(), "operation not permitted without MFA: delete key");
+        assert_eq!(
+            e.to_string(),
+            "operation not permitted without MFA: delete key"
+        );
     }
 
     #[test]

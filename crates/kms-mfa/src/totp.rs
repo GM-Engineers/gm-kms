@@ -448,11 +448,19 @@ mod tests {
         let code = generator.generate_at_timestamp(timestamp).unwrap();
 
         // Same timestamp should validate
-        assert!(generator.validate_at_timestamp(&code.code, timestamp).unwrap());
+        assert!(
+            generator
+                .validate_at_timestamp(&code.code, timestamp)
+                .unwrap()
+        );
 
         // One step later should also validate (within window)
         let next_step = timestamp + 30;
-        assert!(generator.validate_at_timestamp(&code.code, next_step).unwrap());
+        assert!(
+            generator
+                .validate_at_timestamp(&code.code, next_step)
+                .unwrap()
+        );
     }
 
     /// Test TOTP with expired code (outside window)
@@ -466,7 +474,11 @@ mod tests {
 
         // Far future timestamp should not validate
         let far_future = timestamp + 3600;
-        assert!(!generator.validate_at_timestamp(&code.code, far_future).unwrap());
+        assert!(
+            !generator
+                .validate_at_timestamp(&code.code, far_future)
+                .unwrap()
+        );
     }
 
     /// Test verify() is equivalent to validate()

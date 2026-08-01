@@ -16,13 +16,13 @@ use kms_core::{
     error::Error,
     key::{Ciphertext, DestructionProof, KeyMeta, KeySpec, KeyStatus, Signature},
 };
+use parking_lot::RwLock;
 use rand::Rng;
 use ring::{
     aead, digest,
     error::Unspecified,
     signature::{ED25519, Ed25519KeyPair, KeyPair, UnparsedPublicKey},
 };
-use parking_lot::RwLock;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
@@ -248,9 +248,7 @@ impl SoftwareKeystore {
         use gm_crypto::sm2_kex::KexSession;
 
         // Get the key entry
-        let keys = self
-            .keys
-            .read();
+        let keys = self.keys.read();
         let entry = keys
             .get(key_id)
             .ok_or_else(|| Error::KeyNotFound(key_id.to_string()))?;
@@ -290,9 +288,7 @@ impl SoftwareKeystore {
             message_history: Vec::new(),
         };
 
-        let mut sessions = self
-            .sm2_kex_sessions
-            .write();
+        let mut sessions = self.sm2_kex_sessions.write();
         sessions.insert(session_id, session_entry);
 
         Ok((session_id, msg1))
@@ -316,9 +312,7 @@ impl SoftwareKeystore {
         use sm2::elliptic_curve::PublicKey;
 
         // Get the key entry
-        let keys = self
-            .keys
-            .read();
+        let keys = self.keys.read();
         let entry = keys
             .get(key_id)
             .ok_or_else(|| Error::KeyNotFound(key_id.to_string()))?;
@@ -367,9 +361,7 @@ impl SoftwareKeystore {
             message_history: Vec::new(),
         };
 
-        let mut sessions = self
-            .sm2_kex_sessions
-            .write();
+        let mut sessions = self.sm2_kex_sessions.write();
         sessions.insert(session_id, session_entry);
 
         Ok((session_id, msg2))
@@ -400,9 +392,7 @@ impl SoftwareKeystore {
             )));
         }
 
-        let mut sessions = self
-            .sm2_kex_sessions
-            .write();
+        let mut sessions = self.sm2_kex_sessions.write();
 
         let entry = sessions.get_mut(session_id).ok_or_else(|| {
             Error::KeyNotFound(format!("SM2-KEX session {} not found", session_id))
@@ -493,9 +483,7 @@ impl SoftwareKeystore {
             )));
         }
 
-        let sessions = self
-            .sm2_kex_sessions
-            .read();
+        let sessions = self.sm2_kex_sessions.read();
 
         let entry = sessions.get(session_id).ok_or_else(|| {
             Error::KeyNotFound(format!("SM2-KEX session {} not found", session_id))
@@ -513,9 +501,7 @@ impl SoftwareKeystore {
     /// After removal, the session ID is added to a revocation list to prevent
     /// replay attacks using old session IDs.
     pub fn remove_sm2_kex_session(&self, session_id: &Uuid) -> Result<()> {
-        let mut sessions = self
-            .sm2_kex_sessions
-            .write();
+        let mut sessions = self.sm2_kex_sessions.write();
 
         // Verify session exists
         sessions.get(session_id).ok_or_else(|| {
@@ -525,9 +511,7 @@ impl SoftwareKeystore {
         // Add to revocation list before removal (prevents replay of old session IDs)
         let now = Instant::now();
         {
-            let mut revoked = self
-                .revoked_sessions
-                .write();
+            let mut revoked = self.revoked_sessions.write();
 
             // Clean up expired entries first (if more than 100 entries)
             if revoked.len() > 100 {
@@ -729,9 +713,7 @@ impl super::KeystoreBackend for SoftwareKeystore {
             versions: Vec::new(),
         };
 
-        let mut keys = self
-            .keys
-            .write();
+        let mut keys = self.keys.write();
         keys.insert(id, entry);
 
         Ok(meta)
@@ -787,18 +769,14 @@ impl super::KeystoreBackend for SoftwareKeystore {
             versions: Vec::new(),
         };
 
-        let mut keys = self
-            .keys
-            .write();
+        let mut keys = self.keys.write();
         keys.insert(id, entry);
 
         Ok(meta)
     }
 
     async fn export_key_material(&self, key_id: &Uuid, _tenant_id: &str) -> Result<Vec<u8>> {
-        let keys = self
-            .keys
-            .read();
+        let keys = self.keys.read();
         let entry = keys
             .get(key_id)
             .ok_or_else(|| Error::KeyNotFound(key_id.to_string()))?;
@@ -814,9 +792,7 @@ impl super::KeystoreBackend for SoftwareKeystore {
     }
 
     async fn get_key_material(&self, key_id: &Uuid, _tenant_id: &str) -> Result<Vec<u8>> {
-        let keys = self
-            .keys
-            .read();
+        let keys = self.keys.read();
         let entry = keys
             .get(key_id)
             .ok_or_else(|| Error::KeyNotFound(key_id.to_string()))?;
@@ -834,9 +810,7 @@ impl super::KeystoreBackend for SoftwareKeystore {
         version: u32,
         _tenant_id: &str,
     ) -> Result<Vec<u8>> {
-        let keys = self
-            .keys
-            .read();
+        let keys = self.keys.read();
         let entry = keys
             .get(key_id)
             .ok_or_else(|| Error::KeyNotFound(key_id.to_string()))?;
@@ -861,9 +835,7 @@ impl super::KeystoreBackend for SoftwareKeystore {
     }
 
     async fn get_key_metadata(&self, key_id: &Uuid) -> Result<KeyMeta> {
-        let keys = self
-            .keys
-            .read();
+        let keys = self.keys.read();
         keys.get(key_id)
             .map(|e| e.meta.clone())
             .ok_or_else(|| Error::KeyNotFound(key_id.to_string()))
@@ -876,9 +848,7 @@ impl super::KeystoreBackend for SoftwareKeystore {
         _aad: Option<&[u8]>,
         _tenant_id: &str,
     ) -> Result<Ciphertext> {
-        let keys = self
-            .keys
-            .read();
+        let keys = self.keys.read();
         let entry = keys
             .get(key_id)
             .ok_or_else(|| Error::KeyNotFound(key_id.to_string()))?;
@@ -995,9 +965,7 @@ impl super::KeystoreBackend for SoftwareKeystore {
         _aad: Option<&[u8]>,
         _tenant_id: &str,
     ) -> Result<Vec<u8>> {
-        let keys = self
-            .keys
-            .read();
+        let keys = self.keys.read();
         let entry = keys
             .get(key_id)
             .ok_or_else(|| Error::KeyNotFound(key_id.to_string()))?;
@@ -1119,9 +1087,7 @@ impl super::KeystoreBackend for SoftwareKeystore {
     }
 
     async fn sign(&self, key_id: &Uuid, data: &[u8], _tenant_id: &str) -> Result<Signature> {
-        let keys = self
-            .keys
-            .read();
+        let keys = self.keys.read();
         let entry = keys
             .get(key_id)
             .ok_or_else(|| Error::KeyNotFound(key_id.to_string()))?;
@@ -1177,9 +1143,7 @@ impl super::KeystoreBackend for SoftwareKeystore {
         sig: &Signature,
         _tenant_id: &str,
     ) -> Result<bool> {
-        let keys = self
-            .keys
-            .read();
+        let keys = self.keys.read();
         let entry = keys
             .get(key_id)
             .ok_or_else(|| Error::KeyNotFound(key_id.to_string()))?;
@@ -1212,9 +1176,7 @@ impl super::KeystoreBackend for SoftwareKeystore {
     }
 
     async fn rotate_key(&self, key_id: &Uuid, _tenant_id: &str) -> Result<KeyMeta> {
-        let mut keys = self
-            .keys
-            .write();
+        let mut keys = self.keys.write();
 
         let entry = keys
             .get_mut(key_id)
@@ -1267,9 +1229,7 @@ impl super::KeystoreBackend for SoftwareKeystore {
     }
 
     async fn delete_key(&self, key_id: &Uuid, _tenant_id: &str) -> Result<()> {
-        let mut keys = self
-            .keys
-            .write();
+        let mut keys = self.keys.write();
 
         let entry = keys
             .get_mut(key_id)
@@ -1281,9 +1241,7 @@ impl super::KeystoreBackend for SoftwareKeystore {
     }
 
     async fn destroy_key(&self, key_id: &Uuid) -> Result<()> {
-        let mut keys = self
-            .keys
-            .write();
+        let mut keys = self.keys.write();
 
         let entry = keys
             .remove(key_id)
@@ -1296,9 +1254,7 @@ impl super::KeystoreBackend for SoftwareKeystore {
     }
 
     async fn destroy_key_with_proof(&self, key_id: &Uuid) -> Result<DestructionProof> {
-        let mut keys = self
-            .keys
-            .write();
+        let mut keys = self.keys.write();
 
         let entry = keys
             .remove(key_id)
@@ -1322,9 +1278,7 @@ impl super::KeystoreBackend for SoftwareKeystore {
     }
 
     async fn list_keys(&self, filter: &kms_core::key::KeyFilter) -> Result<Vec<KeyMeta>> {
-        let keys = self
-            .keys
-            .read();
+        let keys = self.keys.read();
 
         let mut result: Vec<KeyMeta> = keys
             .values()
@@ -1371,9 +1325,7 @@ impl super::KeystoreBackend for SoftwareKeystore {
     ) -> Result<SharedSecret> {
         use kms_core::dh::SharedSecret;
 
-        let keys = self
-            .keys
-            .read();
+        let keys = self.keys.read();
         let entry = keys
             .get(key_id)
             .ok_or_else(|| Error::KeyNotFound(key_id.to_string()))?;

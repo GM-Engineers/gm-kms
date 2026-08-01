@@ -5,9 +5,9 @@
 //! This is a simple in-memory metrics implementation. For production use,
 //! consider integrating with Prometheus client library.
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
-use parking_lot::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use uuid::Uuid;
 

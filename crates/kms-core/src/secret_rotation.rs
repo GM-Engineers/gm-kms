@@ -452,7 +452,12 @@ mod tests {
     fn test_rollback_invalid_version() {
         let mut manager = SecretRotationManager::new();
         manager
-            .register("rb-test", "tenant-1", b"secret".to_vec(), RotationConfig::default())
+            .register(
+                "rb-test",
+                "tenant-1",
+                b"secret".to_vec(),
+                RotationConfig::default(),
+            )
             .unwrap();
 
         // Version 99 doesn't exist
@@ -463,7 +468,7 @@ mod tests {
     /// Test SecretVersion is_expired with old timestamp
     #[test]
     fn test_secret_version_expired() {
-        use chrono::{Utc, Duration};
+        use chrono::{Duration, Utc};
         let old_version = SecretVersion {
             version: 1,
             secret: b"old-secret".to_vec(),

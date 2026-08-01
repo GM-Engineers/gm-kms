@@ -405,11 +405,7 @@ impl MfaManager {
         }
 
         // Fallback: in-memory
-        self.memory
-            .lock()
-            .totp_configs
-            .get(user_id)
-            .cloned()
+        self.memory.lock().totp_configs.get(user_id).cloned()
     }
 
     /// Load the backup codes for a user
@@ -426,11 +422,7 @@ impl MfaManager {
         }
 
         // Fallback: in-memory
-        self.memory
-            .lock()
-            .backup_codes
-            .get(user_id)
-            .cloned()
+        self.memory.lock().backup_codes.get(user_id).cloned()
     }
 
     /// Check if a user has MFA configured
@@ -446,10 +438,7 @@ impl MfaManager {
             return row.is_some();
         }
 
-        self.memory
-            .lock()
-            .totp_configs
-            .contains_key(user_id)
+        self.memory.lock().totp_configs.contains_key(user_id)
     }
 
     /// Count remaining backup codes for a user
@@ -764,10 +753,7 @@ impl MfaManager {
             return;
         }
 
-        self.memory
-            .lock()
-            .backup_code_usage
-            .remove(user_id);
+        self.memory.lock().backup_code_usage.remove(user_id);
     }
 
     /// Migrate all plaintext TOTP secrets in the database to encrypted form.

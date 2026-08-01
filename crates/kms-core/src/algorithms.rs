@@ -228,22 +228,36 @@ impl AlgorithmRegistry {
         let algorithms = vec![
             (
                 "AES-256-GCM",
-                get_algorithm_info(KeySpec::Aes256Gcm).expect("all KeySpec variants have AlgorithmInfo"),
+                get_algorithm_info(KeySpec::Aes256Gcm)
+                    .expect("all KeySpec variants have AlgorithmInfo"),
             ),
-            ("SM4-GCM", get_algorithm_info(KeySpec::Sm4).expect("all KeySpec variants have AlgorithmInfo")),
-            ("SM2", get_algorithm_info(KeySpec::Sm2).expect("all KeySpec variants have AlgorithmInfo")),
-            ("Ed25519", get_algorithm_info(KeySpec::Ed25519).expect("all KeySpec variants have AlgorithmInfo")),
+            (
+                "SM4-GCM",
+                get_algorithm_info(KeySpec::Sm4).expect("all KeySpec variants have AlgorithmInfo"),
+            ),
+            (
+                "SM2",
+                get_algorithm_info(KeySpec::Sm2).expect("all KeySpec variants have AlgorithmInfo"),
+            ),
+            (
+                "Ed25519",
+                get_algorithm_info(KeySpec::Ed25519)
+                    .expect("all KeySpec variants have AlgorithmInfo"),
+            ),
             (
                 "ECDSA-P256",
-                get_algorithm_info(KeySpec::EcdsaP256).expect("all KeySpec variants have AlgorithmInfo"),
+                get_algorithm_info(KeySpec::EcdsaP256)
+                    .expect("all KeySpec variants have AlgorithmInfo"),
             ),
             (
                 "ECDSA-P384",
-                get_algorithm_info(KeySpec::EcdsaP384).expect("all KeySpec variants have AlgorithmInfo"),
+                get_algorithm_info(KeySpec::EcdsaP384)
+                    .expect("all KeySpec variants have AlgorithmInfo"),
             ),
             (
                 "HMAC-SHA256",
-                get_algorithm_info(KeySpec::HmacSha256).expect("all KeySpec variants have AlgorithmInfo"),
+                get_algorithm_info(KeySpec::HmacSha256)
+                    .expect("all KeySpec variants have AlgorithmInfo"),
             ),
         ];
         Self { algorithms }

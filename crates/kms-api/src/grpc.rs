@@ -99,11 +99,13 @@ impl Interceptor for GrpcAuthInterceptor {
 
         match api_key {
             Some(key) => {
-                if let Some((permission, key_id)) = self.api_key_config.validate_with_identity(key) {
+                if let Some((permission, key_id)) = self.api_key_config.validate_with_identity(key)
+                {
                     // Attach the caller's role + identity to request extensions for handler-level checks
-                    request
-                        .extensions_mut()
-                        .insert(GrpcCaller { role: permission, key_id });
+                    request.extensions_mut().insert(GrpcCaller {
+                        role: permission,
+                        key_id,
+                    });
                     Ok(request)
                 } else {
                     tracing::warn!("gRPC request denied: invalid or locked API key");
@@ -220,7 +222,12 @@ impl KmsService for KmsGrpcService {
 
         // Backup key material (best-effort, failure is logged but not returned)
         if let Some(ref bs) = self.state.backup_service {
-            match self.state.keystore.get_key_material(&meta.id, &tenant_id).await {
+            match self
+                .state
+                .keystore
+                .get_key_material(&meta.id, &tenant_id)
+                .await
+            {
                 Ok(material) => {
                     if let Err(e) = bs.backup_key(&meta, &material, Some(req.name.clone())) {
                         tracing::error!("Failed to backup key {}: {}", meta.id, e);
@@ -259,7 +266,8 @@ impl KmsService for KmsGrpcService {
         let req = request.into_inner();
         let id = uuid::Uuid::parse_str(&req.id)
             .map_err(|_| Status::invalid_argument("invalid key id"))?;
-        self.check_pbac(&caller_id, "get_key", &id.to_string()).await?;
+        self.check_pbac(&caller_id, "get_key", &id.to_string())
+            .await?;
 
         let tenant_id = if req.tenant_id.is_empty() {
             tracing::warn!(
@@ -302,7 +310,8 @@ impl KmsService for KmsGrpcService {
         let req = request.into_inner();
         let id = uuid::Uuid::parse_str(&req.key_id)
             .map_err(|_| Status::invalid_argument("invalid key id"))?;
-        self.check_pbac(&caller_id, "encrypt", &id.to_string()).await?;
+        self.check_pbac(&caller_id, "encrypt", &id.to_string())
+            .await?;
 
         // plaintext is now bytes type in proto (not base64 encoded string)
         let plaintext = req.plaintext;
@@ -344,7 +353,8 @@ impl KmsService for KmsGrpcService {
         let req = request.into_inner();
         let id = uuid::Uuid::parse_str(&req.key_id)
             .map_err(|_| Status::invalid_argument("invalid key id"))?;
-        self.check_pbac(&caller_id, "decrypt", &id.to_string()).await?;
+        self.check_pbac(&caller_id, "decrypt", &id.to_string())
+            .await?;
 
         use base64::{Engine, engine::general_purpose::STANDARD};
 
@@ -396,7 +406,8 @@ impl KmsService for KmsGrpcService {
         let req = request.into_inner();
         let id = uuid::Uuid::parse_str(&req.id)
             .map_err(|_| Status::invalid_argument("invalid key id"))?;
-        self.check_pbac(&caller_id, "rotate_key", &id.to_string()).await?;
+        self.check_pbac(&caller_id, "rotate_key", &id.to_string())
+            .await?;
 
         let tenant_id = if req.tenant_id.is_empty() {
             tracing::warn!(
@@ -439,7 +450,8 @@ impl KmsService for KmsGrpcService {
         let req = request.into_inner();
         let id = uuid::Uuid::parse_str(&req.id)
             .map_err(|_| Status::invalid_argument("invalid key id"))?;
-        self.check_pbac(&caller_id, "delete_key", &id.to_string()).await?;
+        self.check_pbac(&caller_id, "delete_key", &id.to_string())
+            .await?;
 
         // Security: enforce dual-control approval for key deletion
         // GM/T 0028-2014 requires multi-party approval for destructive operations
@@ -595,7 +607,8 @@ impl KmsService for KmsGrpcService {
         let req = request.into_inner();
         let id = uuid::Uuid::parse_str(&req.key_id)
             .map_err(|_| Status::invalid_argument("invalid key id"))?;
-        self.check_pbac(&caller_id, "verify", &id.to_string()).await?;
+        self.check_pbac(&caller_id, "verify", &id.to_string())
+            .await?;
 
         use base64::{Engine, engine::general_purpose::STANDARD};
 
@@ -642,7 +655,8 @@ impl KmsService for KmsGrpcService {
     ) -> Result<Response<Sm9SignResponse>, Status> {
         let (_, caller_id) = check_permission(&request, Permission::SIGN)?;
         let req = request.into_inner();
-        self.check_pbac(&caller_id, "sm9_sign", &req.identity).await?;
+        self.check_pbac(&caller_id, "sm9_sign", &req.identity)
+            .await?;
         use base64::{Engine, engine::general_purpose::STANDARD};
 
         let data = STANDARD
@@ -687,7 +701,8 @@ impl KmsService for KmsGrpcService {
     ) -> Result<Response<Sm9VerifyResponse>, Status> {
         let (_, caller_id) = check_permission(&request, Permission::VERIFY)?;
         let req = request.into_inner();
-        self.check_pbac(&caller_id, "sm9_verify", &req.identity).await?;
+        self.check_pbac(&caller_id, "sm9_verify", &req.identity)
+            .await?;
         use base64::{Engine, engine::general_purpose::STANDARD};
 
         let data = STANDARD
@@ -732,7 +747,8 @@ impl KmsService for KmsGrpcService {
     ) -> Result<Response<Sm9EncryptResponse>, Status> {
         let (_, caller_id) = check_permission(&request, Permission::ENCRYPT)?;
         let req = request.into_inner();
-        self.check_pbac(&caller_id, "sm9_encrypt", &req.identity).await?;
+        self.check_pbac(&caller_id, "sm9_encrypt", &req.identity)
+            .await?;
         use base64::{Engine, engine::general_purpose::STANDARD};
 
         let plaintext = req.plaintext;
@@ -772,7 +788,8 @@ impl KmsService for KmsGrpcService {
     ) -> Result<Response<Sm9DecryptResponse>, Status> {
         let (_, caller_id) = check_permission(&request, Permission::DECRYPT)?;
         let req = request.into_inner();
-        self.check_pbac(&caller_id, "sm9_decrypt", &req.identity).await?;
+        self.check_pbac(&caller_id, "sm9_decrypt", &req.identity)
+            .await?;
         use base64::{Engine, engine::general_purpose::STANDARD};
 
         let ciphertext_bytes = STANDARD
@@ -820,7 +837,8 @@ impl KmsService for KmsGrpcService {
 
         let kek_id = uuid::Uuid::parse_str(&req.kek_id)
             .map_err(|_| Status::invalid_argument("invalid kek_id format"))?;
-        self.check_pbac(&caller_id, "envelope_encrypt", &kek_id.to_string()).await?;
+        self.check_pbac(&caller_id, "envelope_encrypt", &kek_id.to_string())
+            .await?;
 
         let tenant_id = if req.tenant_id.is_empty() {
             tracing::warn!(
@@ -860,7 +878,8 @@ impl KmsService for KmsGrpcService {
 
         let kek_id = uuid::Uuid::parse_str(&req.kek_id)
             .map_err(|_| Status::invalid_argument("invalid kek_id format"))?;
-        self.check_pbac(&caller_id, "envelope_decrypt", &kek_id.to_string()).await?;
+        self.check_pbac(&caller_id, "envelope_decrypt", &kek_id.to_string())
+            .await?;
 
         let tenant_id = if req.tenant_id.is_empty() {
             tracing::warn!(
@@ -906,7 +925,8 @@ impl KmsService for KmsGrpcService {
 
         let kek_id = uuid::Uuid::parse_str(&req.kek_id)
             .map_err(|_| Status::invalid_argument("invalid kek_id format"))?;
-        self.check_pbac(&caller_id, "envelope_rewrap", &kek_id.to_string()).await?;
+        self.check_pbac(&caller_id, "envelope_rewrap", &kek_id.to_string())
+            .await?;
 
         let tenant_id = if req.tenant_id.is_empty() {
             tracing::warn!(
@@ -920,7 +940,13 @@ impl KmsService for KmsGrpcService {
 
         let envelope_svc = crate::service::EnvelopeService::new(&self.state);
         let result = envelope_svc
-            .rewrap_dek(&kek_id, &req.wrapped_dek, &req.dek_nonce, req.old_kek_version, tenant_id)
+            .rewrap_dek(
+                &kek_id,
+                &req.wrapped_dek,
+                &req.dek_nonce,
+                req.old_kek_version,
+                tenant_id,
+            )
             .await
             .map_err(api_error_to_status)?;
 
@@ -943,8 +969,8 @@ impl KmsService for KmsGrpcService {
         let req = request.into_inner();
         self.check_pbac(&caller_id, "import_key", &req.name).await?;
 
-        let spec = crate::service::KeyService::parse_spec(&req.spec)
-            .map_err(api_error_to_status)?;
+        let spec =
+            crate::service::KeyService::parse_spec(&req.spec).map_err(api_error_to_status)?;
 
         let tenant_id = if req.tenant_id.is_empty() {
             tracing::warn!(
@@ -962,9 +988,7 @@ impl KmsService for KmsGrpcService {
             .import_key_material(&spec, &req.name, tenant_id, req.key_material.clone())
             .await
             .map_err(|e| match e {
-                kms_core::Error::KeyNotFound(_) => {
-                    Status::not_found("key not found")
-                }
+                kms_core::Error::KeyNotFound(_) => Status::not_found("key not found"),
                 _ => Status::internal(e.to_string()),
             })?;
 
@@ -993,7 +1017,8 @@ impl KmsService for KmsGrpcService {
 
         let key_id = uuid::Uuid::parse_str(&req.id)
             .map_err(|_| Status::invalid_argument("invalid key id format"))?;
-        self.check_pbac(&caller_id, "export_key", &key_id.to_string()).await?;
+        self.check_pbac(&caller_id, "export_key", &key_id.to_string())
+            .await?;
 
         // Enforce approval gate: key export requires an approved KeyExport request.
         // This mirrors the REST API behaviour (see rest.rs export_key).
@@ -1075,9 +1100,7 @@ impl KmsService for KmsGrpcService {
             "sm3" => {
                 use gm_crypto::sm3::Sm3Hasher;
                 Sm3Hasher::hash(&req.data)
-                    .map_err(|e: gm_crypto::CryptoError| {
-                        Status::internal(e.to_string())
-                    })?
+                    .map_err(|e: gm_crypto::CryptoError| Status::internal(e.to_string()))?
                     .to_vec()
             }
             "sha256" => {
@@ -1104,7 +1127,8 @@ impl KmsService for KmsGrpcService {
 
         let key_id = uuid::Uuid::parse_str(&req.key_id)
             .map_err(|_| Status::invalid_argument("invalid key_id format"))?;
-        self.check_pbac(&caller_id, "dh_derive", &key_id.to_string()).await?;
+        self.check_pbac(&caller_id, "dh_derive", &key_id.to_string())
+            .await?;
 
         // Default to SM2-KEX for gm ecosystem
         let algorithm = kms_core::dh::DhAlgorithm::Sm2Kex;
@@ -1144,7 +1168,8 @@ impl KmsService for KmsGrpcService {
     ) -> Result<Response<pb::QueryAuditEventsResponse>, Status> {
         let (_, caller_id) = check_permission(&request, Permission::VIEW_AUDIT)?;
         let req = request.into_inner();
-        self.check_pbac(&caller_id, "query_audit_events", "audit").await?;
+        self.check_pbac(&caller_id, "query_audit_events", "audit")
+            .await?;
 
         let event_types: Option<Vec<kms_core::event::EventType>> = if req.event_type.is_empty() {
             None
@@ -1182,8 +1207,16 @@ impl KmsService for KmsGrpcService {
             } else {
                 req.end_time.parse().ok()
             },
-            limit: if req.limit == 0 { None } else { Some(req.limit as usize) },
-            offset: if req.offset == 0 { None } else { Some(req.offset as usize) },
+            limit: if req.limit == 0 {
+                None
+            } else {
+                Some(req.limit as usize)
+            },
+            offset: if req.offset == 0 {
+                None
+            } else {
+                Some(req.offset as usize)
+            },
         };
 
         let events = self.state.audit_logger.query(filter).await;
@@ -1198,7 +1231,9 @@ impl KmsService for KmsGrpcService {
                 user_id: e.actor_id.clone(),
                 tenant_id: String::new(), // audit events don't carry tenant_id directly
                 timestamp: e.timestamp.to_rfc3339(),
-                details: e.metadata.get("details")
+                details: e
+                    .metadata
+                    .get("details")
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string(),

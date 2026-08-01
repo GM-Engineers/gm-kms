@@ -166,10 +166,7 @@ impl WormWriter {
     fn open_append_only(path: &Path) -> AuditResult<File> {
         use std::os::unix::io::AsRawFd;
 
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)?;
+        let file = OpenOptions::new().create(true).append(true).open(path)?;
 
         // Set permissions via the file descriptor BEFORE any writes —
         // this avoids the time-of-check-to-time-of-use window between
@@ -196,7 +193,8 @@ impl WormWriter {
     /// Open a new audit file with timestamp-based naming
     async fn open_new_file(&self) -> AuditResult<PathBuf> {
         let timestamp = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH).expect("system clock before UNIX epoch")
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .expect("system clock before UNIX epoch")
             .as_secs();
 
         let filename = format!("audit-{}.jsonl", timestamp);
@@ -288,7 +286,10 @@ impl WormWriter {
     }
 
     /// Verify hash chain integrity
-    pub async fn verify_chain(&self, entries: &[SignedAuditEntry]) -> AuditResult<VerificationReport> {
+    pub async fn verify_chain(
+        &self,
+        entries: &[SignedAuditEntry],
+    ) -> AuditResult<VerificationReport> {
         let mut prev_entry_hash: Option<[u8; 32]> = None;
         let chain = self.hash_chain.lock().await;
 
@@ -341,8 +342,7 @@ impl WormWriter {
         let mut entries: Vec<(u64, SignedAuditEntry)> = Vec::new();
         let mut dir = tokio::fs::read_dir(&self.base_path).await?;
 
-        while let Some(entry) = dir.next_entry().await?
-        {
+        while let Some(entry) = dir.next_entry().await? {
             let path = entry.path();
             if !path.is_file() || path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
                 continue;
@@ -350,9 +350,13 @@ impl WormWriter {
 
             // Extract timestamp from filename for ordering
             let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-            let ts = stem.strip_prefix("audit-").and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+            let ts = stem
+                .strip_prefix("audit-")
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(0);
 
-            let content = tokio::fs::read_to_string(&path).await
+            let content = tokio::fs::read_to_string(&path)
+                .await
                 .map_err(AuditError::Io)?;
 
             for line in content.lines() {
@@ -364,7 +368,8 @@ impl WormWriter {
                     Err(e) => {
                         tracing::warn!(
                             "Failed to parse audit entry from {}: {}",
-                            path.display(), e
+                            path.display(),
+                            e
                         );
                     }
                 }
@@ -535,7 +540,10 @@ mod tests {
         let entry2 = create_test_entry(1);
         let hash1 = WormWriter::compute_entry_hash(&entry1);
         let hash2 = WormWriter::compute_entry_hash(&entry2);
-        assert_ne!(hash1, hash2, "Different entries should produce different hashes");
+        assert_ne!(
+            hash1, hash2,
+            "Different entries should produce different hashes"
+        );
     }
 
     #[test]
@@ -614,8 +622,7 @@ mod tests {
         // Just verify that rotation age can be set without error
         let temp_dir = tempfile::tempdir()?;
         let path = temp_dir.path().join("audit-rotate-cfg");
-        let writer = WormWriter::new(path)?
-            .with_rotation_age(Duration::from_secs(3600));
+        let writer = WormWriter::new(path)?.with_rotation_age(Duration::from_secs(3600));
 
         writer.append(&create_test_entry(0)).await?;
         let state = writer.get_chain_state().await;

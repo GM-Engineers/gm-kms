@@ -806,7 +806,9 @@ impl super::KeystoreBackend for PostgresKeystore {
 
     async fn list_keys(&self, filter: &KeyFilter) -> Result<Vec<KeyMeta>> {
         let tenant_id = filter.tenant_id.as_deref().ok_or_else(|| {
-            Error::Internal("list_keys called without tenant_id — tenant isolation violated".to_string())
+            Error::Internal(
+                "list_keys called without tenant_id — tenant isolation violated".to_string(),
+            )
         })?;
         self.repo
             .list(

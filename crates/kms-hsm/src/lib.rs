@@ -150,7 +150,8 @@ pub enum HsmError {
 /// `tpm2-tss` feature is not enabled at compile time.
 pub fn create_tpm_keystore(
     hsm_type: &str,
-) -> std::result::Result<std::sync::Arc<dyn kms_keystore::KeystoreBackend + Send + Sync>, HsmError> {
+) -> std::result::Result<std::sync::Arc<dyn kms_keystore::KeystoreBackend + Send + Sync>, HsmError>
+{
     match hsm_type {
         "tpm2-tss" => {
             #[cfg(feature = "tpm2-tss")]

@@ -282,41 +282,36 @@ impl SignedAuditConfig {
     /// If the env var is not set, an ephemeral key is generated (not persisted).
     /// This is acceptable for development, but means signatures cannot be
     /// verified across restarts.
-    pub fn from_env_or_ephemeral(
-        base: AuditConfig,
-        initial_sequence: u64,
-    ) -> (Self, bool) {
+    pub fn from_env_or_ephemeral(base: AuditConfig, initial_sequence: u64) -> (Self, bool) {
         let key_path = std::env::var("KMS_AUDIT_SIGNING_KEY_FILE").ok();
         let (key, persisted) = match key_path.as_deref() {
-            Some(path) => {
-                match Self::load_or_create_key_file(path) {
-                    Ok(key_bytes) => {
-                        if key_bytes.len() >= 32 {
-                            tracing::info!(
-                                "Loaded audit signing key from {} ({} bytes)",
-                                path,
-                                key_bytes.len()
-                            );
-                            (key_bytes, true)
-                        } else {
-                            tracing::warn!(
-                                "Audit signing key file {} too short ({} bytes), generating ephemeral key",
-                                path,
-                                key_bytes.len()
-                            );
-                            (Self::generate_key(), false)
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            "Failed to load audit signing key from {}: {} — generating ephemeral key",
+            Some(path) => match Self::load_or_create_key_file(path) {
+                Ok(key_bytes) => {
+                    if key_bytes.len() >= 32 {
+                        tracing::info!(
+                            "Loaded audit signing key from {} ({} bytes)",
                             path,
-                            e
+                            key_bytes.len()
+                        );
+                        (key_bytes, true)
+                    } else {
+                        tracing::warn!(
+                            "Audit signing key file {} too short ({} bytes), generating ephemeral key",
+                            path,
+                            key_bytes.len()
                         );
                         (Self::generate_key(), false)
                     }
                 }
-            }
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to load audit signing key from {}: {} — generating ephemeral key",
+                        path,
+                        e
+                    );
+                    (Self::generate_key(), false)
+                }
+            },
             None => {
                 tracing::info!(
                     "KMS_AUDIT_SIGNING_KEY_FILE not set — using ephemeral signing key (signatures not verifiable across restarts)"
@@ -372,7 +367,10 @@ impl SignedAuditConfig {
                     f.write_all(&raw)?;
                 }
 
-                tracing::info!("Created new audit signing key at {} (32 bytes, mode 0o600)", path);
+                tracing::info!(
+                    "Created new audit signing key at {} (32 bytes, mode 0o600)",
+                    path
+                );
                 Ok(raw)
             }
             Err(e) => Err(e),
@@ -742,7 +740,11 @@ mod tests {
                 ..Default::default()
             })
             .await;
-        assert!(filtered.iter().all(|e| e.resource_id == Some("key-2".to_string())));
+        assert!(
+            filtered
+                .iter()
+                .all(|e| e.resource_id == Some("key-2".to_string()))
+        );
     }
 
     /// Test query with offset

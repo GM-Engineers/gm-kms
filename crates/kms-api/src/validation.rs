@@ -31,8 +31,9 @@ const SUPPORTED_SPECS: &[&str] = &[
 ];
 
 /// Regex for valid key names (alphanumeric, dash, underscore, period, max 256 chars)
-static KEY_NAME_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,255}$").expect("valid static regex"));
+static KEY_NAME_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,255}$").expect("valid static regex")
+});
 
 /// Validation error types
 #[derive(Debug, Clone)]

@@ -3,8 +3,8 @@
 //! This module is only compiled when testing (`#[cfg(test)]`).
 
 use crate::rotation::OperationCounter;
-use std::collections::HashMap;
 use parking_lot::Mutex;
+use std::collections::HashMap;
 use uuid::Uuid;
 
 /// An in-memory [`OperationCounter`] for testing, backed by a `HashMap`.
@@ -21,11 +21,7 @@ impl MockOperationCounter {
 
     /// Synchronous convenience wrapper for get_count
     pub(crate) fn get(&self, key_id: &Uuid) -> u64 {
-        self.counts
-            .lock()
-            .get(key_id)
-            .copied()
-            .unwrap_or(0)
+        self.counts.lock().get(key_id).copied().unwrap_or(0)
     }
 }
 
@@ -39,10 +35,6 @@ impl OperationCounter for MockOperationCounter {
     }
 
     async fn get_count(&self, key_id: &Uuid) -> u64 {
-        self.counts
-            .lock()
-            .get(key_id)
-            .copied()
-            .unwrap_or(0)
+        self.counts.lock().get(key_id).copied().unwrap_or(0)
     }
 }

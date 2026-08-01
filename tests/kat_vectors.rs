@@ -817,18 +817,20 @@ mod kat_vectors {
 
             let mut ct1 = b"test".to_vec();
             let mut ct2 = b"test".to_vec();
-            let _ = key.seal_in_place_separate_tag(
-                Nonce::assume_unique_for_key([0u8; 12]),
-                Aad::empty(),
-                &mut ct1,
-            )
-            .unwrap();
-            let _ = key.seal_in_place_separate_tag(
-                Nonce::assume_unique_for_key([1u8; 12]),
-                Aad::empty(),
-                &mut ct2,
-            )
-            .unwrap();
+            let _ = key
+                .seal_in_place_separate_tag(
+                    Nonce::assume_unique_for_key([0u8; 12]),
+                    Aad::empty(),
+                    &mut ct1,
+                )
+                .unwrap();
+            let _ = key
+                .seal_in_place_separate_tag(
+                    Nonce::assume_unique_for_key([1u8; 12]),
+                    Aad::empty(),
+                    &mut ct2,
+                )
+                .unwrap();
 
             assert_ne!(
                 ct1, ct2,

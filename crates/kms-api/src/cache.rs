@@ -27,9 +27,9 @@
 //! let cache = CacheManager::new(config);
 //! ```
 
+use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::hash::Hash;
-use parking_lot::RwLock;
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};

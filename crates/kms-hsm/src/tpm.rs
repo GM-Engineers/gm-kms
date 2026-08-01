@@ -184,18 +184,14 @@ impl SimulatedTpmKeystore {
 
     /// Extend a PCR with a new measurement (TPM-style)
     pub fn extend_pcr(&self, pcr_index: usize, data: &[u8]) -> Result<()> {
-        let mut bank = self
-            .pcr_bank
-            .write();
+        let mut bank = self.pcr_bank.write();
         bank.extend(pcr_index, data);
         Ok(())
     }
 
     /// Read current PCR value
     pub fn read_pcr(&self, pcr_index: usize) -> Result<Vec<u8>> {
-        let bank = self
-            .pcr_bank
-            .read();
+        let bank = self.pcr_bank.read();
         bank.read(pcr_index)
             .cloned()
             .ok_or_else(|| Error::TpmError(format!("invalid PCR index: {}", pcr_index)))
@@ -1053,9 +1049,15 @@ mod tests {
     #[tokio::test]
     async fn test_tpm_list_keys() {
         let tpm = SimulatedTpmKeystore::new();
-        tpm.generate_key(&KeySpec::Aes256Gcm, "key1", "tenant1").await.unwrap();
-        tpm.generate_key(&KeySpec::Aes256Gcm, "key2", "tenant2").await.unwrap();
-        tpm.generate_key(&KeySpec::Sm2, "key3", "tenant1").await.unwrap();
+        tpm.generate_key(&KeySpec::Aes256Gcm, "key1", "tenant1")
+            .await
+            .unwrap();
+        tpm.generate_key(&KeySpec::Aes256Gcm, "key2", "tenant2")
+            .await
+            .unwrap();
+        tpm.generate_key(&KeySpec::Sm2, "key3", "tenant1")
+            .await
+            .unwrap();
 
         let filter = kms_core::key::KeyFilter::default();
         let all_keys = tpm.list_keys(&filter).await.unwrap();

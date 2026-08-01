@@ -87,7 +87,10 @@ impl Sm2KexSessionManager {
         is_initiator: bool,
     ) -> Result<Sm2KexSessionData, Error> {
         let now = SystemTime::now();
-        let now_ms = now.duration_since(UNIX_EPOCH).expect("system clock before UNIX epoch").as_millis() as u64;
+        let now_ms = now
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock before UNIX epoch")
+            .as_millis() as u64;
 
         let session = Sm2KexSessionData {
             session_id,
@@ -267,7 +270,8 @@ impl Sm2KexSessionManager {
     /// Get current timestamp in milliseconds since epoch
     fn current_timestamp() -> u64 {
         SystemTime::now()
-            .duration_since(UNIX_EPOCH).expect("system clock before UNIX epoch")
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock before UNIX epoch")
             .as_millis() as u64
     }
 }
@@ -365,8 +369,8 @@ mod tests {
     /// Helper to create a Redis connection manager for testing.
     /// Returns None if Redis is not available (tests will be skipped).
     async fn try_create_redis_manager() -> Option<redis::aio::ConnectionManager> {
-        let url = std::env::var("REDIS_URL")
-            .unwrap_or_else(|_| "redis://localhost:6379".to_string());
+        let url =
+            std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".to_string());
 
         let client = redis::Client::open(url.as_str()).ok()?;
         let manager = redis::aio::ConnectionManager::new(client).await.ok()?;
@@ -406,11 +410,7 @@ mod tests {
         assert_eq!(session.nonce, 0);
 
         // Get session back
-        let retrieved = session_mgr
-            .get_session(&session_id)
-            .await
-            .unwrap()
-            .unwrap();
+        let retrieved = session_mgr.get_session(&session_id).await.unwrap().unwrap();
         assert_eq!(retrieved.session_id, session_id);
         assert_eq!(retrieved.key_id, key_id);
         assert_eq!(retrieved.user_id, b"user1".to_vec());
@@ -557,11 +557,7 @@ mod tests {
 
         // Complete the session
         session_mgr
-            .complete_session(
-                &session_id,
-                vec![0x42; 32],
-                Some(vec![0x99; 16]),
-            )
+            .complete_session(&session_id, vec![0x42; 32], Some(vec![0x99; 16]))
             .await
             .unwrap();
 
@@ -617,10 +613,7 @@ mod tests {
         // Set a very short TTL directly via Redis to test expiry
         let mut conn = session_mgr.redis.clone();
         let key = Sm2KexSessionManager::cache_key(&session_id);
-        let _: () = conn
-            .expire(&key, 1)
-            .await
-            .unwrap();
+        let _: () = conn.expire(&key, 1).await.unwrap();
 
         // Wait for expiry
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;

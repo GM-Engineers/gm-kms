@@ -379,7 +379,11 @@ impl ShamirSecretSharing {
             input.extend_from_slice(&(i as u32).to_le_bytes());
             input.extend_from_slice(&coeff.to_le_bytes());
             let hash = digest(&SHA256, &input);
-            let expected = u64::from_le_bytes(hash.as_ref()[..8].try_into().expect("SHA-256 hash is 32 bytes"));
+            let expected = u64::from_le_bytes(
+                hash.as_ref()[..8]
+                    .try_into()
+                    .expect("SHA-256 hash is 32 bytes"),
+            );
 
             if expected != block_commitments[i].value {
                 return ShareVerification {
@@ -616,8 +620,13 @@ impl ShamirSecretSharing {
         if result.success {
             // Check hash
             use ring::digest::{SHA256, digest};
-            let computed_hash =
-                hex::encode(digest(&SHA256, result.secret.as_ref().expect("secret present on success")).as_ref());
+            let computed_hash = hex::encode(
+                digest(
+                    &SHA256,
+                    result.secret.as_ref().expect("secret present on success"),
+                )
+                .as_ref(),
+            );
             let expected_hash = hex::encode(digest(&SHA256, expected_secret).as_ref());
 
             if computed_hash == expected_hash {
@@ -724,7 +733,11 @@ impl ShamirSecretSharing {
                 input.extend_from_slice(&coeff.to_le_bytes());
                 let hash = digest(&SHA256, &input);
                 // Take first 8 bytes as u64 commitment value
-                let value = u64::from_le_bytes(hash.as_ref()[..8].try_into().expect("SHA-256 hash is 32 bytes"));
+                let value = u64::from_le_bytes(
+                    hash.as_ref()[..8]
+                        .try_into()
+                        .expect("SHA-256 hash is 32 bytes"),
+                );
                 Commitment {
                     block_index,
                     index: i as u32,

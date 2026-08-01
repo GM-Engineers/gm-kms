@@ -254,7 +254,8 @@ mod tests {
 
     #[test]
     fn test_export_key_request_optional_transport_key() {
-        let json = r#"{"key_id":"k","target_system":"app","target_public_key":"","purpose":"test"}"#;
+        let json =
+            r#"{"key_id":"k","target_system":"app","target_public_key":"","purpose":"test"}"#;
         let de: ExportKeyRequest = serde_json::from_str(json).unwrap();
         assert!(de.transport_key_id.is_none());
     }
@@ -317,7 +318,10 @@ mod tests {
         // Default policy should be restrictive
         let policy = ExportPolicy::default();
         assert!(!policy.allow_export, "export should be denied by default");
-        assert!(policy.transport_encryption_required, "transport encryption should be required by default");
+        assert!(
+            policy.transport_encryption_required,
+            "transport encryption should be required by default"
+        );
         assert_eq!(policy.min_approvers, 0);
     }
 }

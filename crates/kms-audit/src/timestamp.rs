@@ -282,7 +282,9 @@ impl TimestampAuthority {
         let client = reqwest::Client::builder()
             .timeout(config.timeout)
             .build()
-            .map_err(|e| AuditError::Network(format!("Failed to create HTTP client for TSA: {e}")))?;
+            .map_err(|e| {
+                AuditError::Network(format!("Failed to create HTTP client for TSA: {e}"))
+            })?;
 
         Ok(Self {
             config,
@@ -374,7 +376,11 @@ impl TimestampAuthority {
     }
 
     /// Verify that a timestamp response matches the original digest and nonce
-    pub fn verify_timestamp(&self, digest: &[u8], response: &TimestampResponse) -> AuditResult<bool> {
+    pub fn verify_timestamp(
+        &self,
+        digest: &[u8],
+        response: &TimestampResponse,
+    ) -> AuditResult<bool> {
         // Verify digest is embedded in the response token
         verify_digest_in_token(&response.token, digest)?;
 
@@ -489,7 +495,10 @@ async fn send_tsa_request(
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
-        return Err(AuditError::Network(format!("TSA returned HTTP {}: {}", status, body)));
+        return Err(AuditError::Network(format!(
+            "TSA returned HTTP {}: {}",
+            status, body
+        )));
     }
 
     response
@@ -520,7 +529,10 @@ impl<'a> DerCursor<'a> {
 
     fn peek_tag(&self) -> AuditResult<u8> {
         if self.pos >= self.bytes.len() {
-            return Err(AuditError::Internal(format!("unexpected end of DER at position {}", self.pos)));
+            return Err(AuditError::Internal(format!(
+                "unexpected end of DER at position {}",
+                self.pos
+            )));
         }
         Ok(self.bytes[self.pos])
     }
@@ -533,7 +545,9 @@ impl<'a> DerCursor<'a> {
 
     fn read_length(&mut self) -> AuditResult<usize> {
         if self.pos >= self.bytes.len() {
-            return Err(AuditError::Internal("unexpected end of DER reading length".into()));
+            return Err(AuditError::Internal(
+                "unexpected end of DER reading length".into(),
+            ));
         }
         let first = self.bytes[self.pos];
         self.pos += 1;
@@ -543,7 +557,9 @@ impl<'a> DerCursor<'a> {
         } else {
             let num_octets = (first & 0x7F) as usize;
             if self.pos + num_octets > self.bytes.len() {
-                return Err(AuditError::Internal("DER length extends past end of data".into()));
+                return Err(AuditError::Internal(
+                    "DER length extends past end of data".into(),
+                ));
             }
             let mut len: usize = 0;
             for _ in 0..num_octets {
@@ -556,7 +572,11 @@ impl<'a> DerCursor<'a> {
 
     fn read_bytes(&mut self, count: usize) -> AuditResult<&'a [u8]> {
         if self.pos + count > self.bytes.len() {
-            return Err(AuditError::Internal(format!("not enough bytes: need {} have {}", count, self.remaining())));
+            return Err(AuditError::Internal(format!(
+                "not enough bytes: need {} have {}",
+                count,
+                self.remaining()
+            )));
         }
         let slice = &self.bytes[self.pos..self.pos + count];
         self.pos += count;
@@ -573,7 +593,10 @@ impl<'a> DerCursor<'a> {
     fn read_sequence_content(&mut self) -> AuditResult<DerCursor<'a>> {
         let tag = self.read_tag()?;
         if tag != 0x30 {
-            return Err(AuditError::Internal(format!("expected SEQUENCE (0x30), got 0x{:02x}", tag)));
+            return Err(AuditError::Internal(format!(
+                "expected SEQUENCE (0x30), got 0x{:02x}",
+                tag
+            )));
         }
         let len = self.read_length()?;
         let content = self.read_bytes(len)?;
@@ -584,7 +607,10 @@ impl<'a> DerCursor<'a> {
     fn read_integer(&mut self) -> AuditResult<Vec<u8>> {
         let tag = self.read_tag()?;
         if tag != 0x02 {
-            return Err(AuditError::Internal(format!("expected INTEGER (0x02), got 0x{:02x}", tag)));
+            return Err(AuditError::Internal(format!(
+                "expected INTEGER (0x02), got 0x{:02x}",
+                tag
+            )));
         }
         let len = self.read_length()?;
         Ok(self.read_bytes(len)?.to_vec())
@@ -594,7 +620,10 @@ impl<'a> DerCursor<'a> {
     fn read_oid(&mut self) -> AuditResult<String> {
         let tag = self.read_tag()?;
         if tag != 0x06 {
-            return Err(AuditError::Internal(format!("expected OID (0x06), got 0x{:02x}", tag)));
+            return Err(AuditError::Internal(format!(
+                "expected OID (0x06), got 0x{:02x}",
+                tag
+            )));
         }
         let len = self.read_length()?;
         let bytes = self.read_bytes(len)?;
@@ -605,7 +634,10 @@ impl<'a> DerCursor<'a> {
     fn read_octet_string(&mut self) -> AuditResult<&'a [u8]> {
         let tag = self.read_tag()?;
         if tag != 0x04 {
-            return Err(AuditError::Internal(format!("expected OCTET STRING (0x04), got 0x{:02x}", tag)));
+            return Err(AuditError::Internal(format!(
+                "expected OCTET STRING (0x04), got 0x{:02x}",
+                tag
+            )));
         }
         let len = self.read_length()?;
         self.read_bytes(len)
@@ -630,12 +662,15 @@ impl<'a> DerCursor<'a> {
         }
         let len = self.read_length()?;
         let bytes = self.read_bytes(len)?;
-        let time_str = std::str::from_utf8(bytes).map_err(|e| AuditError::Internal(format!("time is not valid UTF-8: {e}")))?;
+        let time_str = std::str::from_utf8(bytes)
+            .map_err(|e| AuditError::Internal(format!("time is not valid UTF-8: {e}")))?;
 
         // Parse UTCTime: YYMMDDHHMMSSZ  (YY = 00-99, 50-99 -> 1950-1999, 00-49 -> 2000-2049)
         // Parse GeneralizedTime: YYYYMMDDHHMMSS[.fff]Z
         if tag == 0x17 && time_str.len() >= 12 {
-            let yy: i32 = time_str[..2].parse().map_err(|e| AuditError::Internal(format!("invalid UTCTime year: {e}")))?;
+            let yy: i32 = time_str[..2]
+                .parse()
+                .map_err(|e| AuditError::Internal(format!("invalid UTCTime year: {e}")))?;
             let year = if yy >= 50 { 1900 + yy } else { 2000 + yy };
             parse_time_parts(year, &time_str[2..])
         } else if tag == 0x18 && time_str.len() >= 14 {
@@ -644,17 +679,30 @@ impl<'a> DerCursor<'a> {
                 .map_err(|e| AuditError::Internal(format!("invalid GeneralizedTime year: {e}")))?;
             parse_time_parts(year, &time_str[4..])
         } else {
-            Err(AuditError::Internal(format!("invalid time format: {}", time_str)))
+            Err(AuditError::Internal(format!(
+                "invalid time format: {}",
+                time_str
+            )))
         }
     }
 }
 
 fn parse_time_parts(year: i32, rest: &str) -> AuditResult<i64> {
-    let month: u32 = rest[..2].parse().map_err(|e| AuditError::Internal(format!("invalid month: {e}")))?;
-    let day: u32 = rest[2..4].parse().map_err(|e| AuditError::Internal(format!("invalid day: {e}")))?;
-    let hour: u32 = rest[4..6].parse().map_err(|e| AuditError::Internal(format!("invalid hour: {e}")))?;
-    let minute: u32 = rest[6..8].parse().map_err(|e| AuditError::Internal(format!("invalid minute: {e}")))?;
-    let second: u32 = rest[8..10].parse().map_err(|e| AuditError::Internal(format!("invalid second: {e}")))?;
+    let month: u32 = rest[..2]
+        .parse()
+        .map_err(|e| AuditError::Internal(format!("invalid month: {e}")))?;
+    let day: u32 = rest[2..4]
+        .parse()
+        .map_err(|e| AuditError::Internal(format!("invalid day: {e}")))?;
+    let hour: u32 = rest[4..6]
+        .parse()
+        .map_err(|e| AuditError::Internal(format!("invalid hour: {e}")))?;
+    let minute: u32 = rest[6..8]
+        .parse()
+        .map_err(|e| AuditError::Internal(format!("invalid minute: {e}")))?;
+    let second: u32 = rest[8..10]
+        .parse()
+        .map_err(|e| AuditError::Internal(format!("invalid second: {e}")))?;
 
     // Naive UTC -> Unix timestamp (works for dates after 1970)
     let days_before_month: [u32; 12] = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
@@ -752,14 +800,24 @@ fn parse_timestamp_response(
             } else {
                 "no details".to_string()
             };
-            return Err(AuditError::TsaFailed(format!("TSA rejected request (status=2): {}", msg)));
+            return Err(AuditError::TsaFailed(format!(
+                "TSA rejected request (status=2): {}",
+                msg
+            )));
         }
-        _ => return Err(AuditError::TsaFailed(format!("TSA returned unexpected status: {}", status_val))),
+        _ => {
+            return Err(AuditError::TsaFailed(format!(
+                "TSA returned unexpected status: {}",
+                status_val
+            )));
+        }
     }
 
     // Now parse TimeStampToken (ContentInfo)
     if resp_cursor.remaining() == 0 {
-        return Err(AuditError::TsaFailed("TSA response has no TimeStampToken (granted but no token)".into()));
+        return Err(AuditError::TsaFailed(
+            "TSA response has no TimeStampToken (granted but no token)".into(),
+        ));
     }
 
     // Capture raw TimeStampToken bytes for forensic storage
@@ -774,7 +832,10 @@ fn parse_timestamp_response(
     // [0] EXPLICIT — contextual tag 0, constructed
     let tag0 = ci_cursor.read_tag()?;
     if tag0 != 0xA0 {
-        return Err(AuditError::Internal(format!("expected [0] EXPLICIT (0xA0), got 0x{:02x}", tag0)));
+        return Err(AuditError::Internal(format!(
+            "expected [0] EXPLICIT (0xA0), got 0x{:02x}",
+            tag0
+        )));
     }
     let sd_len = ci_cursor.read_length()?;
     let sd_bytes = ci_cursor.read_bytes(sd_len)?;
@@ -794,7 +855,10 @@ fn parse_timestamp_response(
     // [0] EXPLICIT OCTET STRING containing TSTInfo
     let tag0 = eci.read_tag()?;
     if tag0 != 0xA0 {
-        return Err(AuditError::Internal(format!("expected [0] EXPLICIT for eContent, got 0x{:02x}", tag0)));
+        return Err(AuditError::Internal(format!(
+            "expected [0] EXPLICIT for eContent, got 0x{:02x}",
+            tag0
+        )));
     }
     let ec_len = eci.read_length()?;
     let ec_bytes = eci.read_bytes(ec_len)?;
@@ -878,7 +942,10 @@ fn parse_timestamp_response(
 fn skip_set(cursor: &mut DerCursor) -> AuditResult<()> {
     let tag = cursor.read_tag()?;
     if tag != 0x31 {
-        return Err(AuditError::Internal(format!("expected SET (0x31), got 0x{:02x}", tag)));
+        return Err(AuditError::Internal(format!(
+            "expected SET (0x31), got 0x{:02x}",
+            tag
+        )));
     }
     let len = cursor.read_length()?;
     cursor.read_bytes(len)?;

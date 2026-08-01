@@ -14,7 +14,7 @@
 
 use axum::{
     extract::{FromRequestParts, Request},
-    http::{request::Parts, StatusCode},
+    http::{StatusCode, request::Parts},
     middleware::Next,
     response::Response,
 };
@@ -582,7 +582,12 @@ impl ApiKeyConfig {
 
     /// Revoke an API key by its key_id
     pub fn revoke_key(&self, key_id: &str) -> bool {
-        if let Some(key) = self.valid_keys.lock().iter_mut().find(|k| k.key_id == key_id) {
+        if let Some(key) = self
+            .valid_keys
+            .lock()
+            .iter_mut()
+            .find(|k| k.key_id == key_id)
+        {
             key.revoked = true;
             true
         } else {
@@ -593,7 +598,12 @@ impl ApiKeyConfig {
     /// Lock an API key by its key_id (H-2: MFA-API Key linkage).
     /// Called when MFA failures trigger a lockout to also lock the API key.
     pub fn lock_key_by_id(&self, key_id: &str) {
-        if let Some(key) = self.valid_keys.lock().iter_mut().find(|k| k.key_id == key_id) {
+        if let Some(key) = self
+            .valid_keys
+            .lock()
+            .iter_mut()
+            .find(|k| k.key_id == key_id)
+        {
             key.lock(self.lockout_duration);
             tracing::warn!(
                 key_id = %key_id,
@@ -618,9 +628,7 @@ impl ApiKeyConfig {
     ) -> Option<ApiKey> {
         {
             let mut guard = self.valid_keys.lock();
-            let old_key = guard
-                .iter_mut()
-                .find(|k| k.key_id == old_key_id)?;
+            let old_key = guard.iter_mut().find(|k| k.key_id == old_key_id)?;
             old_key.expires_at = Some(Utc::now() + grace_period);
         }
 
@@ -633,7 +641,12 @@ impl ApiKeyConfig {
 
     /// List all valid (non-revoked, non-expired) API keys (cloned for Mutex safety)
     pub fn list_valid_keys(&self) -> Vec<ApiKey> {
-        self.valid_keys.lock().iter().filter(|k| k.is_valid()).cloned().collect()
+        self.valid_keys
+            .lock()
+            .iter()
+            .filter(|k| k.is_valid())
+            .cloned()
+            .collect()
     }
 
     /// Get key metadata (without secret) by key_id

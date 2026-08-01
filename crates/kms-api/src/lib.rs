@@ -48,8 +48,8 @@ pub use rotation::{
 pub use tracing::{TRACE_ID_HEADER, extract_trace_id, generate_trace_id};
 
 use async_trait::async_trait;
-use std::sync::Arc;
 use parking_lot::RwLock;
+use std::sync::Arc;
 
 /// KMS service state shared across REST and gRPC
 #[derive(Clone)]

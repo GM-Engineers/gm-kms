@@ -86,9 +86,7 @@ impl FaultInjector {
 
     pub fn should_fault(&self) -> bool {
         let config = self.config.read();
-        if config.enabled
-            && config.probability > 0.0
-        {
+        if config.enabled && config.probability > 0.0 {
             return rand::random::<f32>() < config.probability;
         }
         false

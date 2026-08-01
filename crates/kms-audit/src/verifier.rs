@@ -481,7 +481,10 @@ mod tests {
     #[test]
     fn test_verification_config_default() {
         let config = VerificationConfig::default();
-        assert_eq!(config.log_path, std::path::PathBuf::from("/var/log/kms/audit"));
+        assert_eq!(
+            config.log_path,
+            std::path::PathBuf::from("/var/log/kms/audit")
+        );
         assert!(config.signing_key.is_empty());
         assert_eq!(config.interval_hours, 24);
     }

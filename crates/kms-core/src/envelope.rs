@@ -152,26 +152,11 @@ mod tests {
         );
 
         // Verify base64 encoding
-        assert_eq!(
-            envelope.wrapped_dek,
-            STANDARD.encode(&raw_dek)
-        );
-        assert_eq!(
-            envelope.dek_nonce,
-            STANDARD.encode(&raw_nonce)
-        );
-        assert_eq!(
-            envelope.ciphertext,
-            STANDARD.encode(&raw_ciphertext)
-        );
-        assert_eq!(
-            envelope.data_nonce,
-            STANDARD.encode(&raw_data_nonce)
-        );
-        assert_eq!(
-            envelope.tag,
-            STANDARD.encode(&raw_tag)
-        );
+        assert_eq!(envelope.wrapped_dek, STANDARD.encode(&raw_dek));
+        assert_eq!(envelope.dek_nonce, STANDARD.encode(&raw_nonce));
+        assert_eq!(envelope.ciphertext, STANDARD.encode(&raw_ciphertext));
+        assert_eq!(envelope.data_nonce, STANDARD.encode(&raw_data_nonce));
+        assert_eq!(envelope.tag, STANDARD.encode(&raw_tag));
         assert_eq!(envelope.kek_version, 3);
     }
 
