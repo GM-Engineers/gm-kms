@@ -26,7 +26,7 @@ reqwest = { version = "0.12", features = ["json", "stream"] }
 bytes = "1"
 
 # Kafka audit stream (Phase 2)
-rdkafka = { version = "0.36", features = ["tokio"], optional = true }
+rdkafka = { version = "0.39", features = ["tokio"], optional = true }
 
 [features]
 default = []
