@@ -179,6 +179,20 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # build-docker 构建的镜像只存在于它自己的 runner 本地，无法跨 job 共享。
+      # 每个 job 是独立的全新 runner，因此这里必须自行构建 gm-kms:latest，
+      # 与 container-security job 的处理方式一致。
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          tags: gm-kms:latest
+          outputs: type=docker
+
       # owasp/zap2docker-* 系列镜像随 ZAP 迁出 OWASP 已停更并从 Docker Hub 下架，
       # 官方镜像现发布在 GHCR：ghcr.io/zaproxy/zaproxy:stable
       # 对照表见 https://www.zaproxy.org/blog/2023-06-13-ghcr-docker-images/
