@@ -672,7 +672,7 @@ async fn test_all_cipher_algorithms() {
             .await
             .unwrap();
 
-        assert_eq!(&dt, plaintext, "Cipher {:?} failed", spec);
+        assert_eq!(&dt, plaintext, "Cipher {spec:?} failed");
     }
 }
 
@@ -695,7 +695,7 @@ async fn test_all_signature_algorithms() {
             .await
             .unwrap();
 
-        assert!(valid, "Signature algorithm {:?} failed", spec);
+        assert!(valid, "Signature algorithm {spec:?} failed");
     }
 }
 
@@ -724,11 +724,7 @@ fn test_kat_sm3_hash_vectors() {
 
     for (input, expected_hex) in test_vectors {
         let result = Sm3Hasher::hash_hex(input.as_bytes()).unwrap();
-        assert_eq!(
-            result, expected_hex,
-            "SM3 KAT failed for input: {:?}",
-            input
-        );
+        assert_eq!(result, expected_hex, "SM3 KAT failed for input: {input:?}");
     }
 }
 
