@@ -238,8 +238,7 @@ pub async fn rate_limit_middleware(
         Err((retry_after, _ttl_ms)) => {
             // Rate limited - return 429
             let body = Body::from(format!(
-                r#"{{"error":"rate_limit_exceeded","message":"Too many requests","retry_after_secs":{}}}"#,
-                retry_after
+                r#"{{"error":"rate_limit_exceeded","message":"Too many requests","retry_after_secs":{retry_after}}}"#
             ));
 
             let mut response = Response::new(body);
