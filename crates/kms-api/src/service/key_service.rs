@@ -420,7 +420,7 @@ mod tests {
 
         for spec_str in specs {
             let spec = KeyService::parse_spec(spec_str);
-            assert!(spec.is_ok(), "Failed to parse: {}", spec_str);
+            assert!(spec.is_ok(), "Failed to parse: {spec_str}");
         }
     }
 
@@ -460,8 +460,7 @@ mod tests {
             let result = KeyService::parse_spec(spec_str);
             assert!(
                 result.is_err(),
-                "Should reject unsupported spec: {}",
-                spec_str
+                "Should reject unsupported spec: {spec_str}"
             );
         }
     }

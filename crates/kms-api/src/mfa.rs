@@ -953,8 +953,7 @@ mod tests {
         let locked = mfa.record_failed_totp_attempt(user_id).await;
         assert!(
             locked,
-            "Should be locked after {} attempts",
-            MAX_TOTP_ATTEMPTS
+            "Should be locked after {MAX_TOTP_ATTEMPTS} attempts"
         );
         assert!(mfa.is_locked_out(user_id).await);
         assert!(mfa.lockout_remaining_secs(user_id).await > 0);
@@ -977,11 +976,7 @@ mod tests {
 
         // One more should exceed
         let exceeded = mfa.record_backup_code_usage(user_id).await;
-        assert!(
-            exceeded,
-            "Should exceed after {} uses",
-            MAX_BACKUP_CODE_USES
-        );
+        assert!(exceeded, "Should exceed after {MAX_BACKUP_CODE_USES} uses");
         assert_eq!(
             mfa.backup_code_usage_count(user_id).await,
             MAX_BACKUP_CODE_USES

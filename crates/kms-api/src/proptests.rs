@@ -47,8 +47,7 @@ fn test_valid_key_names() {
     for name in valid_names {
         assert!(
             validate_key_name(name).is_ok(),
-            "Expected '{}' to be valid",
-            name
+            "Expected '{name}' to be valid"
         );
     }
 }
@@ -68,11 +67,7 @@ fn test_valid_specs() {
     ];
 
     for spec in valid_specs {
-        assert!(
-            validate_spec(spec).is_ok(),
-            "Expected '{}' to be valid",
-            spec
-        );
+        assert!(validate_spec(spec).is_ok(), "Expected '{spec}' to be valid");
     }
 }
 
@@ -89,8 +84,7 @@ fn test_invalid_specs() {
     for spec in invalid_specs {
         assert!(
             validate_spec(spec).is_err(),
-            "Expected '{}' to be invalid",
-            spec
+            "Expected '{spec}' to be invalid"
         );
     }
 }

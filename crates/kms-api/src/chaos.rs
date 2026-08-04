@@ -200,8 +200,7 @@ mod tests {
         let true_count = results.iter().filter(|&&b| b).count();
         assert!(
             true_count > 90,
-            "Expected >90% faults with 100% probability, got {}",
-            true_count
+            "Expected >90% faults with 100% probability, got {true_count}"
         );
     }
 

@@ -632,13 +632,11 @@ mod tests {
             assert!(
                 debug_str.starts_with("MasterKey { id:")
                     || debug_str.starts_with("MasterKey { id "),
-                "Debug output should start with 'MasterKey {{ id:' but got: {}",
-                debug_str
+                "Debug output should start with 'MasterKey {{ id:' but got: {debug_str}"
             );
             assert!(
                 debug_str.contains(".."),
-                "Debug output should contain '..' (finish_non_exhaustive), got: {}",
-                debug_str
+                "Debug output should contain '..' (finish_non_exhaustive), got: {debug_str}"
             );
         }
     }

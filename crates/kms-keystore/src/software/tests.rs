@@ -1159,7 +1159,7 @@ async fn test_concurrent_encrypt_during_rotation() {
             .decrypt(&key_id, ct, None, "test-tenant")
             .await
             .unwrap();
-        assert!(!pt.is_empty(), "ciphertext {} decrypted empty", i);
+        assert!(!pt.is_empty(), "ciphertext {i} decrypted empty");
     }
 }
 

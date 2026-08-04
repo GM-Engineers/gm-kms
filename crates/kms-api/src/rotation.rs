@@ -998,8 +998,7 @@ mod tests {
         let err_msg = result.unwrap_err().to_string();
         assert!(
             err_msg.contains("Sm9RotationAdapter"),
-            "Error should mention Sm9RotationAdapter, got: {}",
-            err_msg
+            "Error should mention Sm9RotationAdapter, got: {err_msg}"
         );
     }
 

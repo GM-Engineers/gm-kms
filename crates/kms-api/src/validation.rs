@@ -228,7 +228,7 @@ mod tests {
     #[test]
     fn test_valid_specs() {
         for spec in SUPPORTED_SPECS {
-            assert!(validate_spec(spec).is_ok(), "spec {} should be valid", spec);
+            assert!(validate_spec(spec).is_ok(), "spec {spec} should be valid");
         }
     }
 
@@ -386,8 +386,7 @@ mod tests {
         for spec in SUPPORTED_SPECS {
             assert!(
                 validate_spec(spec).is_ok(),
-                "valid spec '{}' was rejected",
-                spec
+                "valid spec '{spec}' was rejected"
             );
         }
 
@@ -395,8 +394,7 @@ mod tests {
         for bad in &["aes-128-gcm", "des", "rc4", "md5", "sha1", "null"] {
             assert!(
                 validate_spec(bad).is_err(),
-                "invalid spec '{}' should be rejected",
-                bad
+                "invalid spec '{bad}' should be rejected"
             );
         }
     }
