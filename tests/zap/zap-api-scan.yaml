@@ -8,8 +8,9 @@
 env:
   contexts:
     - name: kms-api
+      # 同 zap-baseline.yaml：根路径返回 404，context 起点须用真实 200 端点
       urls:
-        - "__TARGET_URL__"
+        - "__TARGET_URL__/healthz"
       includePaths:
         - "__TARGET_URL__.*"
   parameters:
@@ -18,10 +19,8 @@ env:
     progressToStdout: true
 
 jobs:
-  - type: requestor
-    parameters:
-      script: "var apikey = control.getEnvVar('KMS_API_KEY'); if (apikey) { replacer.addHeader('x-api-key', apikey); }"
-
+  # 移除无效的 requestor job（script 参数新版 ZAP 不识别）。如需对 /v1/* 鉴权
+  # 接口做扫描，应通过 replacer add-on 或合规 requestor 配置注入 x-api-key。
   - type: openapi
     parameters:
       url: "__TARGET_URL__/swagger/openapi.json"

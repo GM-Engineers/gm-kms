@@ -7,8 +7,11 @@
 env:
   contexts:
     - name: kms-api
+      # 必须以真实返回 200 的端点为 context 起点：根路径 "/" 返回 404，
+      # 若用根路径做 base URL，ZAP 蜘蛛会访问根路径而 404 并以 exit 2 失败。
+      # /healthz 是无条件返回 200 的存活探针（与后端依赖无关），最稳妥。
       urls:
-        - "__TARGET_URL__"
+        - "__TARGET_URL__/healthz"
       includePaths:
         - "__TARGET_URL__.*"
   parameters:
@@ -17,14 +20,14 @@ env:
     progressToStdout: true
 
 jobs:
-  - type: requestor
-    parameters:
-      script: "var apikey = control.getEnvVar('KMS_API_KEY'); if (apikey) { replacer.addHeader('x-api-key', apikey); }"
-
+  # 注：原先的 requestor job 用 script 参数注入 x-api-key 头，但该参数
+  # 在新版 ZAP automation 中不被识别（仅告警、不生效）。/healthz 为公开
+  # 端点无需鉴权，故移除该无效 job。如需扫描 /v1/* 鉴权接口，应通过
+  # replacer add-on 或合规的 requestor 配置注入 API key，而非 script 参数。
   - type: spider
     parameters:
       context: kms-api
-      url: "__TARGET_URL__/v1/health"
+      url: "__TARGET_URL__/healthz"
       maxDuration: 2
       maxDepth: 5
       maxChildren: 30
