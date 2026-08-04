@@ -118,13 +118,32 @@ jobs:
           tags: gm-kms:latest
           outputs: type=docker
 
-      - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@master
+      # 阻断门槛：只对"上游已发布补丁、我们能自行修复"的漏洞失败。
+      # Debian 基础镜像中状态为 affected / fix_deferred / will_not_fix 的 CVE
+      # （Trivy 报告里 Fixed Version 为空）没有可升级的修复版本，无法通过
+      # apt upgrade 或换包解决；若不排除，CI 会被上游永久卡死。
+      - name: Run Trivy vulnerability scanner (fixable only, blocking)
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: 'gm-kms:latest'
           format: 'table'
           exit-code: '1'
           severity: 'CRITICAL,HIGH'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+
+      # 可见性：完整列出全部 CVE（含上游暂无补丁的），仅输出报告、不阻断，
+      # 避免因为上面的过滤而对基础镜像的真实风险失去感知。
+      - name: Trivy full report (informational, non-blocking)
+        if: always()
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: 'gm-kms:latest'
+          format: 'table'
+          exit-code: '0'
+          severity: 'CRITICAL,HIGH,MEDIUM'
+          ignore-unfixed: false
 
   build-docker:
     name: Build Docker Image
@@ -160,8 +179,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # owasp/zap2docker-* 系列镜像随 ZAP 迁出 OWASP 已停更并从 Docker Hub 下架，
+      # 官方镜像现发布在 GHCR：ghcr.io/zaproxy/zaproxy:stable
+      # 对照表见 https://www.zaproxy.org/blog/2023-06-13-ghcr-docker-images/
       - name: Pull ZAP Docker image
-        run: docker pull owasp/zap2docker-stable
+        run: docker pull ghcr.io/zaproxy/zaproxy:stable
 
       - name: Create Docker network
         run: docker network create zap-net
@@ -187,6 +209,9 @@ jobs:
       - name: Prepare ZAP config
         run: |
           mkdir -p tests/zap/reports
+          # ZAP 容器以非 root 用户 zap(uid 1000) 运行，而 runner 工作区属主是
+          # runner(uid 1001)，不放开权限会导致报告写入 /zap/wrk/reports 失败
+          chmod -R a+rwX tests/zap
           # Replace target URL with Docker network address
           sed 's|__TARGET_URL__|http://kms-target:8080|g' \
             tests/zap/zap-baseline.yaml > tests/zap/zap-run-config.yaml
@@ -196,7 +221,7 @@ jobs:
           docker run --rm --name kms-zap --network zap-net \
             -v "$(pwd)/tests/zap:/zap/wrk:rw" \
             -e KMS_API_KEY=zap-ci-test-key \
-            owasp/zap2docker-stable \
+            ghcr.io/zaproxy/zaproxy:stable \
             zap.sh -cmd -autorun /zap/wrk/zap-run-config.yaml
 
       - name: Upload ZAP reports

@@ -52,8 +52,9 @@ RUN cargo build --release --bin kms
 # -----------------------------------------------------------------------------
 FROM debian:bookworm-slim
 
-# Install runtime dependencies
-RUN apt-get update && apt-get install -y \
+# Install runtime dependencies.
+# `apt-get upgrade` 拉取基础镜像打包之后才发布的安全更新，降低镜像 CVE 面。
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     libssl3 \
     libgcc-s1 \
     ca-certificates \

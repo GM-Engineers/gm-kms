@@ -32,7 +32,8 @@ CONFIG_DIR="$SCRIPT_DIR"
 KMS_BINARY="${KMS_BINARY:-$PROJECT_DIR/target/release/kms}"
 KMS_CONFIG="$CONFIG_DIR/kms-zap.toml"
 KMS_PORT="${KMS_PORT:-8080}"
-ZAP_IMAGE="${ZAP_IMAGE:-owasp/zap2docker-stable}"
+# owasp/zap2docker-* 已停更下架，官方镜像迁至 GHCR
+ZAP_IMAGE="${ZAP_IMAGE:-ghcr.io/zaproxy/zaproxy:stable}"
 ZAP_PORT="${ZAP_PORT:-8090}"
 SCAN_MODE="${1:-baseline}"
 
