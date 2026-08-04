@@ -138,7 +138,7 @@ impl IntegrityVerifier {
                 Ok(c) => c,
                 Err(e) => {
                     all_valid = false;
-                    first_error.get_or_insert_with(|| format!("Failed to read {:?}: {}", path, e));
+                    first_error.get_or_insert_with(|| format!("Failed to read {path:?}: {e}"));
                     first_invalid_file.get_or_insert_with(|| path.to_string_lossy().to_string());
                     break;
                 }

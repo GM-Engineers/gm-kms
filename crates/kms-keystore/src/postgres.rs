@@ -333,8 +333,7 @@ impl PostgresKeystore {
                 })
             }
             _ => Err(Error::InvalidAlgorithm(format!(
-                "Encryption not supported for {:?}",
-                spec
+                "Encryption not supported for {spec:?}"
             ))),
         }
     }
@@ -422,8 +421,7 @@ impl PostgresKeystore {
                 Ok(plaintext)
             }
             _ => Err(Error::InvalidAlgorithm(format!(
-                "Decryption not supported for {:?}",
-                spec
+                "Decryption not supported for {spec:?}"
             ))),
         }
     }
@@ -468,8 +466,7 @@ impl PostgresKeystore {
                 })
             }
             _ => Err(Error::InvalidAlgorithm(format!(
-                "Signing not supported for {:?}",
-                spec
+                "Signing not supported for {spec:?}"
             ))),
         }
     }
@@ -504,8 +501,7 @@ impl PostgresKeystore {
                 }
             }
             _ => Err(Error::InvalidAlgorithm(format!(
-                "Verification not supported for {:?}",
-                spec
+                "Verification not supported for {spec:?}"
             ))),
         }
     }
@@ -809,11 +805,7 @@ impl super::KeystoreBackend for PostgresKeystore {
         self.repo
             .list(
                 tenant_id,
-                filter
-                    .status
-                    .as_ref()
-                    .map(|s| format!("{:?}", s))
-                    .as_deref(),
+                filter.status.as_ref().map(|s| format!("{s:?}")).as_deref(),
                 filter.limit.map(|l| l as i64),
                 filter.offset.map(|o| o as i64),
             )

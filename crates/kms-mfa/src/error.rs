@@ -141,7 +141,7 @@ mod tests {
     #[test]
     fn test_mfa_error_debug() {
         let e = MfaError::BackupCodeLocked(60);
-        let debug = format!("{:?}", e);
+        let debug = format!("{e:?}");
         assert!(debug.contains("BackupCodeLocked"));
         assert!(debug.contains("60"));
     }

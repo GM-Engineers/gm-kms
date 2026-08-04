@@ -593,8 +593,7 @@ impl<'a> DerCursor<'a> {
         let tag = self.read_tag()?;
         if tag != 0x30 {
             return Err(AuditError::Internal(format!(
-                "expected SEQUENCE (0x30), got 0x{:02x}",
-                tag
+                "expected SEQUENCE (0x30), got 0x{tag:02x}"
             )));
         }
         let len = self.read_length()?;
@@ -607,8 +606,7 @@ impl<'a> DerCursor<'a> {
         let tag = self.read_tag()?;
         if tag != 0x02 {
             return Err(AuditError::Internal(format!(
-                "expected INTEGER (0x02), got 0x{:02x}",
-                tag
+                "expected INTEGER (0x02), got 0x{tag:02x}"
             )));
         }
         let len = self.read_length()?;
@@ -620,8 +618,7 @@ impl<'a> DerCursor<'a> {
         let tag = self.read_tag()?;
         if tag != 0x06 {
             return Err(AuditError::Internal(format!(
-                "expected OID (0x06), got 0x{:02x}",
-                tag
+                "expected OID (0x06), got 0x{tag:02x}"
             )));
         }
         let len = self.read_length()?;
@@ -634,8 +631,7 @@ impl<'a> DerCursor<'a> {
         let tag = self.read_tag()?;
         if tag != 0x04 {
             return Err(AuditError::Internal(format!(
-                "expected OCTET STRING (0x04), got 0x{:02x}",
-                tag
+                "expected OCTET STRING (0x04), got 0x{tag:02x}"
             )));
         }
         let len = self.read_length()?;
@@ -655,8 +651,7 @@ impl<'a> DerCursor<'a> {
         let tag = self.read_tag()?;
         if tag != 0x17 && tag != 0x18 {
             return Err(AuditError::Internal(format!(
-                "expected UTCTime (0x17) or GeneralizedTime (0x18), got 0x{:02x}",
-                tag
+                "expected UTCTime (0x17) or GeneralizedTime (0x18), got 0x{tag:02x}"
             )));
         }
         let len = self.read_length()?;
@@ -829,8 +824,7 @@ fn parse_timestamp_response(
     let tag0 = ci_cursor.read_tag()?;
     if tag0 != 0xA0 {
         return Err(AuditError::Internal(format!(
-            "expected [0] EXPLICIT (0xA0), got 0x{:02x}",
-            tag0
+            "expected [0] EXPLICIT (0xA0), got 0x{tag0:02x}"
         )));
     }
     let sd_len = ci_cursor.read_length()?;
@@ -852,8 +846,7 @@ fn parse_timestamp_response(
     let tag0 = eci.read_tag()?;
     if tag0 != 0xA0 {
         return Err(AuditError::Internal(format!(
-            "expected [0] EXPLICIT for eContent, got 0x{:02x}",
-            tag0
+            "expected [0] EXPLICIT for eContent, got 0x{tag0:02x}"
         )));
     }
     let ec_len = eci.read_length()?;
@@ -939,8 +932,7 @@ fn skip_set(cursor: &mut DerCursor) -> AuditResult<()> {
     let tag = cursor.read_tag()?;
     if tag != 0x31 {
         return Err(AuditError::Internal(format!(
-            "expected SET (0x31), got 0x{:02x}",
-            tag
+            "expected SET (0x31), got 0x{tag:02x}"
         )));
     }
     let len = cursor.read_length()?;

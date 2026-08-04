@@ -99,7 +99,7 @@ fn test_sm2_sign_timing() {
 
     println!("  Fixed key mean:  {:.6} ms", m_fixed * 1000.0);
     println!("  Random key mean: {:.6} ms", m_random * 1000.0);
-    println!("  t-statistic:     {:.2}", t_stat);
+    println!("  t-statistic:     {t_stat:.2}");
     println!(
         "  Result:          {}",
         if t_stat.abs() > THRESHOLD {
@@ -170,7 +170,7 @@ fn test_sm4_gcm_timing() {
     println!("  SM4 samples:     {}", NUM_SAMPLES / 10);
     println!("  Fixed plaintext mean:  {:.6} ms", m_fixed * 1000.0);
     println!("  Random plaintext mean: {:.6} ms", m_random * 1000.0);
-    println!("  t-statistic:     {:.2}", t_stat);
+    println!("  t-statistic:     {t_stat:.2}");
     println!(
         "  Result:          {}",
         if t_stat.abs() > THRESHOLD {
@@ -228,7 +228,7 @@ fn test_ct_eq_timing() {
 
     println!("  Fixed (identical) mean:  {:.6} us", m_fixed * 1_000_000.0);
     println!("  Random (different) mean: {:.6} us", m_random * 1_000_000.0);
-    println!("  t-statistic:             {:.2}", t_stat);
+    println!("  t-statistic:             {t_stat:.2}");
     println!(
         "  Result:                  {}",
         if t_stat.abs() > THRESHOLD {
@@ -293,7 +293,7 @@ fn test_hmac_sm3_verify_timing() {
 
     println!("  Fixed (correct MAC) mean:  {:.6} us", m_fixed * 1_000_000.0);
     println!("  Random (mixed MAC) mean:   {:.6} us", m_random * 1_000_000.0);
-    println!("  t-statistic:               {:.2}", t_stat);
+    println!("  t-statistic:               {t_stat:.2}");
     println!(
         "  Result:                    {}",
         if t_stat.abs() > THRESHOLD {
@@ -306,8 +306,8 @@ fn test_hmac_sm3_verify_timing() {
 
 fn main() {
     println!("# dudect Timing Side-Channel Analysis — gm-kms");
-    println!("  Samples: {} per class", NUM_SAMPLES);
-    println!("  Threshold: |t| > {}", THRESHOLD);
+    println!("  Samples: {NUM_SAMPLES} per class");
+    println!("  Threshold: |t| > {THRESHOLD}");
     println!("  NOTE: This is a statistical test. Run multiple times for confidence.");
 
     test_sm2_sign_timing();

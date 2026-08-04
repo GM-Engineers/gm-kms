@@ -56,10 +56,7 @@ impl ValidationError {
     pub fn message(&self) -> String {
         match self {
             ValidationError::InvalidSpec { value } => {
-                format!(
-                    "unsupported spec: '{}'. Supported: {:?}",
-                    value, SUPPORTED_SPECS
-                )
+                format!("unsupported spec: '{value}'. Supported: {SUPPORTED_SPECS:?}")
             }
             ValidationError::InvalidKeyName { value, reason } => {
                 format!("invalid key name '{value}': {reason}")

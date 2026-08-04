@@ -526,7 +526,7 @@ mod tests {
         let code = generator.generate().unwrap();
 
         // Should be debuggable without panicking
-        let debug_str = format!("{:?}", code);
+        let debug_str = format!("{code:?}");
         assert!(!debug_str.is_empty());
     }
 }

@@ -497,7 +497,7 @@ async fn main() -> anyhow::Result<()> {
                 .await?;
 
             if resp.status().is_success() {
-                println!("Key {} deleted successfully", key_id);
+                println!("Key {key_id} deleted successfully");
             } else {
                 eprintln!("Error: {}", resp.status());
             }
@@ -779,7 +779,7 @@ async fn main() -> anyhow::Result<()> {
                 Ok(resp) if resp.status().is_success() => match resp.json().await {
                     Ok(keys) => keys,
                     Err(e) => {
-                        eprintln!("Error parsing keys response: {}", e);
+                        eprintln!("Error parsing keys response: {e}");
                         return Ok(());
                     }
                 },
@@ -788,7 +788,7 @@ async fn main() -> anyhow::Result<()> {
                     return Ok(());
                 }
                 Err(e) => {
-                    eprintln!("Error connecting to KMS server: {}", e);
+                    eprintln!("Error connecting to KMS server: {e}");
                     return Ok(());
                 }
             };
@@ -836,13 +836,13 @@ fn write_report_output<T: serde::Serialize + HtmlReport>(
         let json = match serde_json::to_string_pretty(report) {
             Ok(j) => j,
             Err(e) => {
-                eprintln!("Error serializing report to JSON: {}", e);
+                eprintln!("Error serializing report to JSON: {e}");
                 return Ok(());
             }
         };
         let path = format!("{output_dir}/{base_name}.json");
         fs::File::create(&path)?.write_all(json.as_bytes())?;
-        println!("JSON report written to {}", path);
+        println!("JSON report written to {path}");
         Ok(())
     };
 
@@ -851,7 +851,7 @@ fn write_report_output<T: serde::Serialize + HtmlReport>(
         let path = format!("{output_dir}/{base_name}.html");
         let mut f = fs::File::create(&path).expect("create HTML file");
         f.write_all(html.as_bytes()).expect("write HTML file");
-        println!("HTML report written to {}", path);
+        println!("HTML report written to {path}");
     };
 
     match output {

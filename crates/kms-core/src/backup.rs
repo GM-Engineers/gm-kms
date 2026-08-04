@@ -625,7 +625,7 @@ mod tests {
         // Generate multiple keys to ensure no key material bytes leak through Debug
         for _ in 0..10 {
             let mk = MasterKey::generate().unwrap();
-            let debug_str = format!("{:?}", mk);
+            let debug_str = format!("{mk:?}");
             assert!(debug_str.contains("MasterKey"));
             // The Debug impl only shows `id` (UUID) and `..` — never raw key bytes.
             // Check that the debug output matches the expected pattern exactly.

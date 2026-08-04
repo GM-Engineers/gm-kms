@@ -564,7 +564,7 @@ async fn test_encrypt_with_nonexistent_key() {
 
     match result.unwrap_err() {
         kms_core::Error::KeyNotFound(_) => {}
-        e => panic!("Expected KeyNotFound, got: {}", e),
+        e => panic!("Expected KeyNotFound, got: {e}"),
     }
 }
 
@@ -631,7 +631,7 @@ async fn test_delete_nonexistent_key() {
 
     let result = keystore.delete_key(&fake_id, "test-tenant").await;
     // Soft delete of non-existent key might succeed or fail
-    println!("Delete result: {:?}", result);
+    println!("Delete result: {result:?}");
 }
 
 #[tokio::test]
@@ -644,7 +644,7 @@ async fn test_get_metadata_nonexistent_key() {
 
     match result.unwrap_err() {
         kms_core::Error::KeyNotFound(_) => {}
-        e => panic!("Expected KeyNotFound, got: {}", e),
+        e => panic!("Expected KeyNotFound, got: {e}"),
     }
 }
 
@@ -659,7 +659,7 @@ async fn test_all_cipher_algorithms() {
 
     for spec in [KeySpec::Aes256Gcm, KeySpec::Sm4] {
         let meta = keystore
-            .generate_key(&spec, &format!("cipher-{:?}", spec), "test-tenant")
+            .generate_key(&spec, &format!("cipher-{spec:?}"), "test-tenant")
             .await
             .unwrap();
 
@@ -685,7 +685,7 @@ async fn test_all_signature_algorithms() {
     // Software keystore supports: Ed25519, Sm2
     for spec in [KeySpec::Ed25519, KeySpec::Sm2] {
         let meta = keystore
-            .generate_key(&spec, &format!("sign-{:?}", spec), "test-tenant")
+            .generate_key(&spec, &format!("sign-{spec:?}"), "test-tenant")
             .await
             .unwrap();
 

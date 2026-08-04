@@ -1553,7 +1553,7 @@ async fn mfa_setup(
             let mut buf = [0u8; 4];
             rand::rng().fill_bytes(&mut buf);
             let code = u32::from_be_bytes(buf) % 100_000_000;
-            format!("{:08}", code)
+            format!("{code:08}")
         })
         .collect();
 

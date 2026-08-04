@@ -147,8 +147,7 @@ fn check_permission<T>(
                     "gRPC permission denied"
                 );
                 Err(Status::permission_denied(format!(
-                    "insufficient permissions: {:?} required",
-                    required
+                    "insufficient permissions: {required:?} required"
                 )))
             }
         }

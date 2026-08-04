@@ -321,7 +321,7 @@ impl PostgresKeyRepository {
 
     /// Update key status
     pub async fn update_status(&self, id: &uuid::Uuid, status: KeyStatus) -> Result<(), Error> {
-        let status_str = format!("{:?}", status);
+        let status_str = format!("{status:?}");
 
         sqlx::query(
             r#"

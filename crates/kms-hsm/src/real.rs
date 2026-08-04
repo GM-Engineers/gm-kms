@@ -322,7 +322,7 @@ mod tests {
         assert!(result.is_err());
         match result.unwrap_err() {
             Error::NotImplemented(msg) => assert!(msg.contains("tpm2-tss")),
-            other => panic!("Expected NotImplemented, got {:?}", other),
+            other => panic!("Expected NotImplemented, got {other:?}"),
         }
     }
 
@@ -454,7 +454,7 @@ mod tests {
         assert!(result.is_err());
         match result.unwrap_err() {
             Error::KeyNotFound(_) => {}
-            other => panic!("Expected KeyNotFound, got {:?}", other),
+            other => panic!("Expected KeyNotFound, got {other:?}"),
         }
     }
 

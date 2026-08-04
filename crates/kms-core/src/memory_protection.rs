@@ -541,7 +541,7 @@ mod tests {
     #[test]
     fn test_secure_box_debug_does_not_leak_data() {
         let sb = SecureBox::new(32).expect("allocation");
-        let debug_str = format!("{:?}", sb);
+        let debug_str = format!("{sb:?}");
         // Debug output must not contain the buffer contents
         assert!(debug_str.contains("len"));
         assert!(!debug_str.contains("0x"));

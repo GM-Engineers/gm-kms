@@ -214,7 +214,7 @@ mod tests {
     #[test]
     fn test_error_debug_format() {
         let e = Error::TpmAuthFailed("bad password".to_string());
-        let debug = format!("{:?}", e);
+        let debug = format!("{e:?}");
         assert!(debug.contains("TpmAuthFailed"));
         assert!(debug.contains("bad password"));
     }

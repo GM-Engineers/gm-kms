@@ -78,7 +78,7 @@ impl BackupCodeGenerator {
         let mut bytes = [0u8; 4];
         rand::rng().fill_bytes(&mut bytes);
         let value = u32::from_ne_bytes(bytes) % 100_000_000;
-        format!("{:08}", value)
+        format!("{value:08}")
     }
 
     /// Compute SHA-256 hash of a normalized code for secure storage

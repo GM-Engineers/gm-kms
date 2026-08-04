@@ -499,7 +499,7 @@ async fn benchmark_key_generation() {
     let duration = start.elapsed();
 
     println!("\n=== Key Generation (AES-256-GCM) ===");
-    println!("100 keys in {:?}", duration);
+    println!("100 keys in {duration:?}");
     println!("Rate: {:.2} keys/sec", 100.0 / duration.as_secs_f64());
 }
 
@@ -562,7 +562,7 @@ async fn benchmark_sm2_kex() {
     let duration = start.elapsed();
 
     println!("\n=== SM2-KEX (full exchange) ===");
-    println!("100 exchanges in {:?}", duration);
+    println!("100 exchanges in {duration:?}");
     println!("Rate: {:.2} exchanges/sec", 100.0 / duration.as_secs_f64());
 }
 
