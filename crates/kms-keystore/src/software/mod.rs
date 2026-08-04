@@ -387,14 +387,15 @@ impl SoftwareKeystore {
         // Check if session has been revoked
         if self.is_session_revoked(session_id) {
             return Err(Error::KeyExchangeFailed(format!(
-                "SM2-KEX session {session_id} has been revoked")));
+                "SM2-KEX session {session_id} has been revoked"
+            )));
         }
 
         let mut sessions = self.sm2_kex_sessions.write();
 
-        let entry = sessions.get_mut(session_id).ok_or_else(|| {
-            Error::KeyNotFound(format!("SM2-KEX session {session_id} not found"))
-        })?;
+        let entry = sessions
+            .get_mut(session_id)
+            .ok_or_else(|| Error::KeyNotFound(format!("SM2-KEX session {session_id} not found")))?;
 
         // === Replay Protection: Check Session Expiration ===
         if entry.created_at.elapsed() > Duration::from_secs(SM2_KEX_SESSION_TIMEOUT_SECS) {
@@ -455,14 +456,16 @@ impl SoftwareKeystore {
             match entry.session.process_msg2(msg, &peer_pub_key) {
                 Ok(msg3) => Ok(Some(msg3)),
                 Err(e) => Err(Error::KeyExchangeFailed(format!(
-                    "msg2 processing failed: {e}"))),
+                    "msg2 processing failed: {e}"
+                ))),
             }
         } else {
             // Responder processes msg3 (confirmation from initiator)
             match entry.session.process_msg3(msg) {
                 Ok(()) => Ok(None),
                 Err(e) => Err(Error::KeyExchangeFailed(format!(
-                    "msg3 processing failed: {e}"))),
+                    "msg3 processing failed: {e}"
+                ))),
             }
         }
     }
@@ -472,14 +475,15 @@ impl SoftwareKeystore {
         // Check if session has been revoked
         if self.is_session_revoked(session_id) {
             return Err(Error::KeyExchangeFailed(format!(
-                "SM2-KEX session {session_id} has been revoked")));
+                "SM2-KEX session {session_id} has been revoked"
+            )));
         }
 
         let sessions = self.sm2_kex_sessions.read();
 
-        let entry = sessions.get(session_id).ok_or_else(|| {
-            Error::KeyNotFound(format!("SM2-KEX session {session_id} not found"))
-        })?;
+        let entry = sessions
+            .get(session_id)
+            .ok_or_else(|| Error::KeyNotFound(format!("SM2-KEX session {session_id} not found")))?;
 
         entry
             .session
@@ -496,9 +500,9 @@ impl SoftwareKeystore {
         let mut sessions = self.sm2_kex_sessions.write();
 
         // Verify session exists
-        sessions.get(session_id).ok_or_else(|| {
-            Error::KeyNotFound(format!("SM2-KEX session {session_id} not found"))
-        })?;
+        sessions
+            .get(session_id)
+            .ok_or_else(|| Error::KeyNotFound(format!("SM2-KEX session {session_id} not found")))?;
 
         // Add to revocation list before removal (prevents replay of old session IDs)
         let now = Instant::now();
@@ -521,9 +525,9 @@ impl SoftwareKeystore {
         }
 
         // Remove from active sessions
-        sessions.remove(session_id).ok_or_else(|| {
-            Error::KeyNotFound(format!("SM2-KEX session {session_id} not found"))
-        })?;
+        sessions
+            .remove(session_id)
+            .ok_or_else(|| Error::KeyNotFound(format!("SM2-KEX session {session_id} not found")))?;
 
         Ok(())
     }
@@ -596,8 +600,7 @@ fn deserialize_sm2_kex_message(
 
     let msg_type = bytes[0];
     if expected_type != 0 && msg_type != expected_type {
-        return Err(format!(
-            "expected msg_type {expected_type}, got {msg_type}"));
+        return Err(format!("expected msg_type {expected_type}, got {msg_type}"));
     }
 
     let mut offset = 1;
@@ -773,7 +776,8 @@ impl super::KeystoreBackend for SoftwareKeystore {
 
         if entry.meta.status != KeyStatus::Active {
             return Err(Error::KeyOperationNotAllowed(format!(
-                "Key {key_id} is not active for export")));
+                "Key {key_id} is not active for export"
+            )));
         }
 
         Ok(entry.material.as_slice().to_vec())
@@ -815,8 +819,7 @@ impl super::KeystoreBackend for SoftwareKeystore {
             .find(|(v, _)| *v == version)
             .map(|(_, mat)| mat.as_slice().to_vec())
             .ok_or_else(|| {
-                Error::InvalidAlgorithm(format!(
-                    "Key version {version} not found for key {key_id}"))
+                Error::InvalidAlgorithm(format!("Key version {version} not found for key {key_id}"))
             })
     }
 
@@ -841,7 +844,8 @@ impl super::KeystoreBackend for SoftwareKeystore {
 
         if entry.meta.status != KeyStatus::Active {
             return Err(Error::KeyOperationNotAllowed(format!(
-                "Key {key_id} is not active")));
+                "Key {key_id} is not active"
+            )));
         }
 
         match entry.meta.spec {
@@ -956,7 +960,8 @@ impl super::KeystoreBackend for SoftwareKeystore {
 
         if !entry.meta.status.can_decrypt() {
             return Err(Error::KeyOperationNotAllowed(format!(
-                "Key {key_id} cannot decrypt")));
+                "Key {key_id} cannot decrypt"
+            )));
         }
 
         // Select key material based on version
@@ -1076,7 +1081,8 @@ impl super::KeystoreBackend for SoftwareKeystore {
 
         if entry.meta.status != KeyStatus::Active {
             return Err(Error::KeyOperationNotAllowed(format!(
-                "Key {key_id} is not active")));
+                "Key {key_id} is not active"
+            )));
         }
 
         match entry.meta.spec {
@@ -1164,7 +1170,8 @@ impl super::KeystoreBackend for SoftwareKeystore {
 
         if !entry.meta.status.can_rotate() {
             return Err(Error::KeyOperationNotAllowed(format!(
-                "Key {key_id} cannot be rotated")));
+                "Key {key_id} cannot be rotated"
+            )));
         }
 
         // Archive current material to versions before rotation.
@@ -1310,7 +1317,8 @@ impl super::KeystoreBackend for SoftwareKeystore {
 
         if entry.meta.status != KeyStatus::Active {
             return Err(Error::KeyOperationNotAllowed(format!(
-                "Key {key_id} is not active")));
+                "Key {key_id} is not active"
+            )));
         }
 
         let shared_secret = match algorithm {

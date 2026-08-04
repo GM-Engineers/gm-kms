@@ -354,7 +354,8 @@ impl KeyService {
             "sm9-encryption" | "sm9encryption" => Ok(KeySpec::Sm9Encryption),
             "rsa-4096" | "rsa4096" => Ok(KeySpec::Rsa4096),
             _ => Err(ApiError::InvalidRequest(format!(
-                "unsupported spec: {spec_str}"))),
+                "unsupported spec: {spec_str}"
+            ))),
         }
     }
 }

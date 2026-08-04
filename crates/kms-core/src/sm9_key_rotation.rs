@@ -161,9 +161,9 @@ impl Sm9RotationAdapter {
             .entry(tenant_id.to_string())
             .or_insert_with(KeyRotationManager::new);
 
-        let version = manager.register_sign_key(key.clone()).map_err(|e| {
-            Error::MasterKeyError(format!("SM9 sign key registration failed: {e}"))
-        })?;
+        let version = manager
+            .register_sign_key(key.clone())
+            .map_err(|e| Error::MasterKeyError(format!("SM9 sign key registration failed: {e}")))?;
 
         // Persist key material
         let key_bytes = serialize_sign_master_key(&key)?;
@@ -195,9 +195,9 @@ impl Sm9RotationAdapter {
             .entry(tenant_id.to_string())
             .or_insert_with(KeyRotationManager::new);
 
-        let version = manager.register_enc_key(key.clone()).map_err(|e| {
-            Error::MasterKeyError(format!("SM9 enc key registration failed: {e}"))
-        })?;
+        let version = manager
+            .register_enc_key(key.clone())
+            .map_err(|e| Error::MasterKeyError(format!("SM9 enc key registration failed: {e}")))?;
 
         let key_bytes = serialize_enc_master_key(&key)?;
         self.kek_store.encrypt(&key_bytes).await?;

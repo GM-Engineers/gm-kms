@@ -170,8 +170,9 @@ fn api_error_to_status(e: ApiError) -> Status {
             resource,
             current,
             limit,
-        } => Status::resource_exhausted(format!(
-            "quota exceeded for {resource}: {current}/{limit}")),
+        } => {
+            Status::resource_exhausted(format!("quota exceeded for {resource}: {current}/{limit}"))
+        }
         // Sanitized: log full error server-side, return generic message to client
         ApiError::Internal(msg) => {
             tracing::error!(error = %msg, "internal server error");

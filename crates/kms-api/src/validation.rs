@@ -72,7 +72,8 @@ impl ValidationError {
             }
             ValidationError::InvalidTenantId { value } => {
                 format!(
-                    "invalid tenant ID: '{value}'. Tenant IDs must be 1-128 alphanumeric characters")
+                    "invalid tenant ID: '{value}'. Tenant IDs must be 1-128 alphanumeric characters"
+                )
             }
             ValidationError::EmptyField { field } => {
                 format!("{field} cannot be empty")
@@ -102,8 +103,7 @@ pub fn validate_key_name(name: &str) -> Result<(), ValidationError> {
     if name.len() > MAX_KEY_NAME_LENGTH {
         return Err(ValidationError::InvalidKeyName {
             value: name.to_string(),
-            reason: format!(
-                "exceeds maximum length of {MAX_KEY_NAME_LENGTH} characters"),
+            reason: format!("exceeds maximum length of {MAX_KEY_NAME_LENGTH} characters"),
         });
     }
     if !KEY_NAME_REGEX.is_match(name) {

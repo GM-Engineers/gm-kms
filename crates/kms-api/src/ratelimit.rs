@@ -137,7 +137,7 @@ impl TenantRateLimiter {
     }
 
     /// Get current usage for a tenant
-    pub async fn get_usage(&self, tenant_id: &str) -> Result<u64, ()> {
+    pub async fn get_usage(&self, tenant_id: &str) -> Result<u64, RateLimitBackendError> {
         let mut conn = self.redis.clone();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -146,7 +146,10 @@ impl TenantRateLimiter {
 
         let window_key = format!("ratelimit:{}:{}", tenant_id, now / 1000);
 
-        let count: Option<i64> = conn.get(&window_key).await.map_err(|_| ())?;
+        let count: Option<i64> = conn
+            .get(&window_key)
+            .await
+            .map_err(|e| RateLimitBackendError(e.to_string()))?;
         Ok(count.unwrap_or(0) as u64)
     }
 }
@@ -264,6 +267,18 @@ pub struct RateLimitError {
     pub error: String,
     pub retry_after_secs: u64,
 }
+
+/// Errors that can occur when interacting with the rate limiter's storage backend.
+#[derive(Debug, Clone)]
+pub struct RateLimitBackendError(pub String);
+
+impl std::fmt::Display for RateLimitBackendError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "rate limit storage error: {}", self.0)
+    }
+}
+
+impl std::error::Error for RateLimitBackendError {}
 
 #[cfg(test)]
 mod tests {

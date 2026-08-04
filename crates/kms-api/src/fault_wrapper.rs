@@ -37,13 +37,17 @@ impl FaultWrappedKeystore {
     async fn maybe_fault(&self, operation: &str) -> Result<()> {
         match self.injector.apply_fault::<()>().await {
             Err(FaultError::InjectedFailure) => Err(kms_core::Error::Internal(format!(
-                "fault injected: {operation} failed"))),
+                "fault injected: {operation} failed"
+            ))),
             Err(FaultError::DataCorrupted) => Err(kms_core::Error::Internal(format!(
-                "fault injected: {operation} returned corrupted data"))),
+                "fault injected: {operation} returned corrupted data"
+            ))),
             Err(FaultError::ConnectionLost) => Err(kms_core::Error::Internal(format!(
-                "fault injected: {operation} connection lost"))),
+                "fault injected: {operation} connection lost"
+            ))),
             Err(FaultError::Timeout) => Err(kms_core::Error::Internal(format!(
-                "fault injected: {operation} timed out"))),
+                "fault injected: {operation} timed out"
+            ))),
             _ => Ok(()),
         }
     }

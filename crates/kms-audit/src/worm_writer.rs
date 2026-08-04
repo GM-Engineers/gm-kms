@@ -304,7 +304,8 @@ impl WormWriter {
                 if entry_prev != expected_prev.as_slice() {
                     first_invalid = first_invalid.or(Some(i));
                     error_desc = Some(format!(
-                        "chain broken at entry {i}: stored previous_signature does not match computed prev_entry_hash"));
+                        "chain broken at entry {i}: stored previous_signature does not match computed prev_entry_hash"
+                    ));
                     break;
                 }
             }

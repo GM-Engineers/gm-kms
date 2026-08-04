@@ -496,7 +496,8 @@ async fn send_tsa_request(
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
         return Err(AuditError::Network(format!(
-            "TSA returned HTTP {status}: {body}")));
+            "TSA returned HTTP {status}: {body}"
+        )));
     }
 
     response
@@ -678,7 +679,8 @@ impl<'a> DerCursor<'a> {
             parse_time_parts(year, &time_str[4..])
         } else {
             Err(AuditError::Internal(format!(
-                "invalid time format: {time_str}")))
+                "invalid time format: {time_str}"
+            )))
         }
     }
 }
@@ -797,11 +799,13 @@ fn parse_timestamp_response(
                 "no details".to_string()
             };
             return Err(AuditError::TsaFailed(format!(
-                "TSA rejected request (status=2): {msg}")));
+                "TSA rejected request (status=2): {msg}"
+            )));
         }
         _ => {
             return Err(AuditError::TsaFailed(format!(
-                "TSA returned unexpected status: {status_val}")));
+                "TSA returned unexpected status: {status_val}"
+            )));
         }
     }
 

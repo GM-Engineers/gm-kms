@@ -28,7 +28,8 @@ impl KeyFormatParser {
             "pkcs8" | "pkcs#8" | "pem" => Self::parse_pkcs8(key_data),
             "jwk" => Self::parse_jwk(key_data),
             _ => Err(KeyFormatError::UnsupportedFormat(format!(
-                "unsupported key format: {format} (use: raw, pkcs8, jwk)"))),
+                "unsupported key format: {format} (use: raw, pkcs8, jwk)"
+            ))),
         }
     }
 
@@ -88,7 +89,8 @@ impl KeyFormatParser {
             "EC" => Self::parse_jwk_ec(&jwk),
             "SM2" => Self::parse_jwk_sm2(&jwk),
             _ => Err(KeyFormatError::InvalidRequest(format!(
-                "unsupported JWK key type '{kty}' (supported: oct, RSA, EC, SM2)"))),
+                "unsupported JWK key type '{kty}' (supported: oct, RSA, EC, SM2)"
+            ))),
         }
     }
 

@@ -126,8 +126,7 @@ impl ComplianceReport {
             standard_ref: "GM/T 0054-2018 §5.2.4".into(),
             status: RuleStatus::Pass,
             evidence: if destroyed > 0 {
-                format!(
-                    "{destroyed} keys properly destroyed via destroy_key_with_proof")
+                format!("{destroyed} keys properly destroyed via destroy_key_with_proof")
             } else {
                 "No destroyed keys (system supports destroy_key_with_proof)".into()
             },

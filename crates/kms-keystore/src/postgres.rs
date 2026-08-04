@@ -594,7 +594,8 @@ impl super::KeystoreBackend for PostgresKeystore {
 
         if entry.meta.status != KeyStatus::Active {
             return Err(Error::KeyOperationNotAllowed(format!(
-                "Key {key_id} is not active")));
+                "Key {key_id} is not active"
+            )));
         }
 
         Self::crypto_encrypt(
@@ -623,7 +624,8 @@ impl super::KeystoreBackend for PostgresKeystore {
 
         if !entry.meta.status.can_decrypt() {
             return Err(Error::KeyOperationNotAllowed(format!(
-                "Key {key_id} cannot decrypt")));
+                "Key {key_id} cannot decrypt"
+            )));
         }
 
         Self::crypto_decrypt(&entry.material, &entry.meta.spec, ciphertext, _aad).await
@@ -638,7 +640,8 @@ impl super::KeystoreBackend for PostgresKeystore {
 
         if entry.meta.status != KeyStatus::Active {
             return Err(Error::KeyOperationNotAllowed(format!(
-                "Key {key_id} is not active")));
+                "Key {key_id} is not active"
+            )));
         }
 
         Self::crypto_sign(
@@ -676,7 +679,8 @@ impl super::KeystoreBackend for PostgresKeystore {
 
             if !entry.meta.status.can_rotate() {
                 return Err(Error::KeyOperationNotAllowed(format!(
-                    "Key {key_id} cannot be rotated")));
+                    "Key {key_id} cannot be rotated"
+                )));
             }
 
             entry.meta.status = KeyStatus::Obsolete;
@@ -906,7 +910,8 @@ impl super::KeystoreBackend for PostgresKeystore {
 
         if entry.meta.status != KeyStatus::Active {
             return Err(Error::KeyOperationNotAllowed(format!(
-                "Key {key_id} is not active for export")));
+                "Key {key_id} is not active for export"
+            )));
         }
 
         Ok(entry.material.to_vec())

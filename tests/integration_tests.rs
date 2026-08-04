@@ -494,12 +494,8 @@ async fn test_concurrent_key_generation() {
         .map(|i| {
             let ks = keystore.clone();
             tokio::spawn(async move {
-                ks.generate_key(
-                    &KeySpec::Sm4,
-                    &format!("concurrent-gen-{i}"),
-                    "test-tenant",
-                )
-                .await
+                ks.generate_key(&KeySpec::Sm4, &format!("concurrent-gen-{i}"), "test-tenant")
+                    .await
             })
         })
         .collect();

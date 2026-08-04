@@ -74,28 +74,40 @@ impl TenantQuotaTracker {
     }
 
     /// Increment key count for tenant
-    pub async fn increment_key_count(&self, tenant_id: &str) -> Result<u64, ()> {
+    pub async fn increment_key_count(&self, tenant_id: &str) -> Result<u64, QuotaError> {
         let mut conn = self.redis.clone();
         let key = format!("quota:{tenant_id}:keys");
 
-        let new_count: u64 = conn.incr(&key, 1).await.map_err(|_| ())?;
+        let new_count: u64 = conn
+            .incr(&key, 1)
+            .await
+            .map_err(|e| QuotaError::Storage(e.to_string()))?;
 
         // Set TTL of 30 days for key count
-        let _: () = conn.expire(&key, 60 * 60 * 24 * 30).await.map_err(|_| ())?;
+        let _: () = conn
+            .expire(&key, 60 * 60 * 24 * 30)
+            .await
+            .map_err(|e| QuotaError::Storage(e.to_string()))?;
 
         Ok(new_count)
     }
 
     /// Decrement key count for tenant (when key is deleted)
-    pub async fn decrement_key_count(&self, tenant_id: &str) -> Result<u64, ()> {
+    pub async fn decrement_key_count(&self, tenant_id: &str) -> Result<u64, QuotaError> {
         let mut conn = self.redis.clone();
         let key = format!("quota:{tenant_id}:keys");
 
-        let new_count: u64 = conn.decr(&key, 1).await.map_err(|_| ())?;
+        let new_count: u64 = conn
+            .decr(&key, 1)
+            .await
+            .map_err(|e| QuotaError::Storage(e.to_string()))?;
 
         // Ensure it doesn't go negative
         if new_count > self.config.max_keys {
-            let _: () = conn.set::<_, _, ()>(&key, 0).await.map_err(|_| ())?;
+            let _: () = conn
+                .set::<_, _, ()>(&key, 0)
+                .await
+                .map_err(|e| QuotaError::Storage(e.to_string()))?;
             return Ok(0);
         }
 
@@ -156,12 +168,15 @@ impl TenantQuotaTracker {
     }
 
     /// Get current quota usage for a tenant
-    pub async fn get_usage(&self, tenant_id: &str) -> Result<QuotaUsage, ()> {
+    pub async fn get_usage(&self, tenant_id: &str) -> Result<QuotaUsage, QuotaError> {
         let mut conn = self.redis.clone();
 
         // Get key count
         let key_key = format!("quota:{tenant_id}:keys");
-        let key_count: u64 = conn.get(&key_key).await.unwrap_or(0);
+        let key_count: u64 = conn
+            .get(&key_key)
+            .await
+            .map_err(|e| QuotaError::Storage(e.to_string()))?;
 
         // Get requests this minute
         let minute_key = format!(
@@ -169,7 +184,10 @@ impl TenantQuotaTracker {
             tenant_id,
             chrono::Utc::now().format("%Y%m%d%H%M")
         );
-        let requests_this_minute: u64 = conn.get(&minute_key).await.unwrap_or(0);
+        let requests_this_minute: u64 = conn
+            .get(&minute_key)
+            .await
+            .map_err(|e| QuotaError::Storage(e.to_string()))?;
 
         // Get requests today
         let day_key = format!(
@@ -177,7 +195,10 @@ impl TenantQuotaTracker {
             tenant_id,
             chrono::Utc::now().format("%Y%m%d")
         );
-        let requests_today: u64 = conn.get(&day_key).await.unwrap_or(0);
+        let requests_today: u64 = conn
+            .get(&day_key)
+            .await
+            .map_err(|e| QuotaError::Storage(e.to_string()))?;
 
         Ok(QuotaUsage {
             tenant_id: tenant_id.to_string(),
@@ -212,6 +233,26 @@ impl std::fmt::Display for QuotaExceeded {
 }
 
 impl std::error::Error for QuotaExceeded {}
+
+/// Errors that can occur when interacting with the quota tracker.
+#[derive(Debug, Clone)]
+pub enum QuotaError {
+    /// The tenant has exceeded the configured quota limit.
+    Exceeded(QuotaExceeded),
+    /// The underlying storage backend (Redis) returned an error.
+    Storage(String),
+}
+
+impl std::fmt::Display for QuotaError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Exceeded(e) => write!(f, "{e}"),
+            Self::Storage(msg) => write!(f, "storage error: {msg}"),
+        }
+    }
+}
+
+impl std::error::Error for QuotaError {}
 
 #[cfg(test)]
 mod tests {

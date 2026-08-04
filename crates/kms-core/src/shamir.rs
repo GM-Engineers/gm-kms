@@ -188,7 +188,7 @@ impl ShamirSecretSharing {
         // M-7: Multi-block support with PKCS#7 padding
         let original_len = secret.len();
         let block_size = 7; // 7 bytes per field element (2^56 < FIELD_PRIME = 2^61-1)
-        let padded_len = if original_len % block_size == 0 {
+        let padded_len = if original_len.is_multiple_of(block_size) {
             original_len + block_size
         } else {
             ((original_len / block_size) + 1) * block_size
@@ -309,7 +309,8 @@ impl ShamirSecretSharing {
                 valid: false,
                 x: share.x,
                 error: Some(format!(
-                    "No commitments available for block {block_index} — cannot verify share")),
+                    "No commitments available for block {block_index} — cannot verify share"
+                )),
             };
         }
 
@@ -334,7 +335,8 @@ impl ShamirSecretSharing {
                 None
             } else {
                 Some(format!(
-                    "Share y value out of range for block {block_index}"))
+                    "Share y value out of range for block {block_index}"
+                ))
             },
         }
     }
@@ -386,7 +388,8 @@ impl ShamirSecretSharing {
                     valid: false,
                     x: 0,
                     error: Some(format!(
-                        "Coefficient {i} verification failed for block {block_index}")),
+                        "Coefficient {i} verification failed for block {block_index}"
+                    )),
                 };
             }
         }
@@ -478,7 +481,7 @@ impl ShamirSecretSharing {
             };
         }
 
-        if shares.len() % num_blocks != 0 {
+        if !shares.len().is_multiple_of(num_blocks) {
             return ReconstructionResult {
                 success: false,
                 secret: None,

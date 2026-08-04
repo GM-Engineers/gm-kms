@@ -507,7 +507,7 @@ impl KmsMetrics {
         let mut map = self.per_tenant_rate_limit_hits.lock();
         let count = map.entry(tenant.to_string()).or_insert(0);
         *count += 1;
-        if *count >= 100 && *count % 100 == 0 {
+        if *count >= 100 && count.is_multiple_of(100) {
             tracing::warn!("Tenant '{}' has hit rate limit {} times", tenant, count);
         }
     }

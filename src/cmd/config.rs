@@ -465,15 +465,15 @@ impl Config {
     /// Apply environment variable overrides
     fn apply_env_overrides(&mut self) {
         // Server ports
-        if let Ok(port) = std::env::var("REST_PORT") {
-            if let Ok(port) = port.parse() {
-                self.server.rest_port = port;
-            }
+        if let Ok(port) = std::env::var("REST_PORT")
+            && let Ok(port) = port.parse()
+        {
+            self.server.rest_port = port;
         }
-        if let Ok(port) = std::env::var("GRPC_PORT") {
-            if let Ok(port) = port.parse() {
-                self.server.grpc_port = port;
-            }
+        if let Ok(port) = std::env::var("GRPC_PORT")
+            && let Ok(port) = port.parse()
+        {
+            self.server.grpc_port = port;
         }
 
         // Backend
@@ -490,34 +490,34 @@ impl Config {
         }
 
         // TLS
-        if let Ok(cert) = std::env::var("TLS_CERT_PATH") {
-            if self.tls.is_none() {
-                self.tls = Some(TlsConfig {
-                    cert_path: cert,
-                    key_path: std::env::var("TLS_KEY_PATH").unwrap_or_default(),
-                    ca_path: std::env::var("TLS_CA_PATH").unwrap_or_default(),
-                    require_client_cert: std::env::var("TLS_REQUIRE_CLIENT_CERT")
-                        .map(|v| v == "true")
-                        .unwrap_or(true),
-                });
-            }
+        if let Ok(cert) = std::env::var("TLS_CERT_PATH")
+            && self.tls.is_none()
+        {
+            self.tls = Some(TlsConfig {
+                cert_path: cert,
+                key_path: std::env::var("TLS_KEY_PATH").unwrap_or_default(),
+                ca_path: std::env::var("TLS_CA_PATH").unwrap_or_default(),
+                require_client_cert: std::env::var("TLS_REQUIRE_CLIENT_CERT")
+                    .map(|v| v == "true")
+                    .unwrap_or(true),
+            });
         }
 
         // REST TLS
-        if let Ok(cert) = std::env::var("REST_TLS_CERT_PATH") {
-            if self.rest_tls.is_none() {
-                self.rest_tls = Some(RestTlsConfig {
-                    enabled: true,
-                    backend: std::env::var("REST_TLS_BACKEND")
-                        .unwrap_or_else(|_| default_rest_tls_backend()),
-                    cert_path: cert,
-                    key_path: std::env::var("REST_TLS_KEY_PATH").unwrap_or_default(),
-                    ca_path: std::env::var("REST_TLS_CA_PATH").ok(),
-                    require_client_auth: std::env::var("REST_TLS_REQUIRE_CLIENT_AUTH")
-                        .map(|v| v == "true")
-                        .unwrap_or(false),
-                });
-            }
+        if let Ok(cert) = std::env::var("REST_TLS_CERT_PATH")
+            && self.rest_tls.is_none()
+        {
+            self.rest_tls = Some(RestTlsConfig {
+                enabled: true,
+                backend: std::env::var("REST_TLS_BACKEND")
+                    .unwrap_or_else(|_| default_rest_tls_backend()),
+                cert_path: cert,
+                key_path: std::env::var("REST_TLS_KEY_PATH").unwrap_or_default(),
+                ca_path: std::env::var("REST_TLS_CA_PATH").ok(),
+                require_client_auth: std::env::var("REST_TLS_REQUIRE_CLIENT_AUTH")
+                    .map(|v| v == "true")
+                    .unwrap_or(false),
+            });
         }
         // Patch existing rest_tls with env overrides if already loaded from file
         if let Some(ref mut tls) = self.rest_tls {
@@ -552,21 +552,21 @@ impl Config {
             let tsa = self.audit.tsa.get_or_insert_with(TsaConfig::default);
             tsa.endpoints = endpoint.split(',').map(|s| s.trim().to_string()).collect();
         }
-        if let Ok(timeout) = std::env::var("TSA_TIMEOUT") {
-            if let Ok(timeout) = timeout.parse() {
-                let tsa = self.audit.tsa.get_or_insert_with(TsaConfig::default);
-                tsa.timeout_secs = timeout;
-            }
+        if let Ok(timeout) = std::env::var("TSA_TIMEOUT")
+            && let Ok(timeout) = timeout.parse()
+        {
+            let tsa = self.audit.tsa.get_or_insert_with(TsaConfig::default);
+            tsa.timeout_secs = timeout;
         }
         if let Ok(require) = std::env::var("TSA_REQUIRE") {
             let tsa = self.audit.tsa.get_or_insert_with(TsaConfig::default);
             tsa.require_tsa = require == "true";
         }
-        if let Ok(interval) = std::env::var("TSA_INTERVAL") {
-            if let Ok(interval) = interval.parse() {
-                let tsa = self.audit.tsa.get_or_insert_with(TsaConfig::default);
-                tsa.interval_secs = interval;
-            }
+        if let Ok(interval) = std::env::var("TSA_INTERVAL")
+            && let Ok(interval) = interval.parse()
+        {
+            let tsa = self.audit.tsa.get_or_insert_with(TsaConfig::default);
+            tsa.interval_secs = interval;
         }
         if let Ok(username) = std::env::var("TSA_USERNAME") {
             let tsa = self.audit.tsa.get_or_insert_with(TsaConfig::default);
@@ -586,10 +586,10 @@ impl Config {
         }
 
         // Rate limit settings
-        if let Ok(rps) = std::env::var("RATE_LIMIT_RPS") {
-            if let Ok(rps) = rps.parse() {
-                self.rate_limit.requests_per_second = rps;
-            }
+        if let Ok(rps) = std::env::var("RATE_LIMIT_RPS")
+            && let Ok(rps) = rps.parse()
+        {
+            self.rate_limit.requests_per_second = rps;
         }
         if let Ok(enabled) = std::env::var("RATE_LIMIT_ENABLED") {
             self.rate_limit.enabled = enabled == "true";
@@ -602,10 +602,10 @@ impl Config {
         if let Ok(host) = std::env::var("POSTGRES_HOST") {
             self.database.host = host;
         }
-        if let Ok(port) = std::env::var("POSTGRES_PORT") {
-            if let Ok(port) = port.parse() {
-                self.database.port = port;
-            }
+        if let Ok(port) = std::env::var("POSTGRES_PORT")
+            && let Ok(port) = port.parse()
+        {
+            self.database.port = port;
         }
         if let Ok(name) = std::env::var("POSTGRES_DB") {
             self.database.name = name;
@@ -635,20 +635,20 @@ impl Config {
         if let Ok(path) = std::env::var("BACKUP_PATH") {
             self.backup.backup_path = path;
         }
-        if let Ok(count) = std::env::var("BACKUP_RETENTION_COUNT") {
-            if let Ok(count) = count.parse() {
-                self.backup.retention_count = count;
-            }
+        if let Ok(count) = std::env::var("BACKUP_RETENTION_COUNT")
+            && let Ok(count) = count.parse()
+        {
+            self.backup.retention_count = count;
         }
-        if let Ok(days) = std::env::var("BACKUP_RETENTION_DAYS") {
-            if let Ok(days) = days.parse() {
-                self.backup.retention_days = days;
-            }
+        if let Ok(days) = std::env::var("BACKUP_RETENTION_DAYS")
+            && let Ok(days) = days.parse()
+        {
+            self.backup.retention_days = days;
         }
-        if let Ok(kdf_iter) = std::env::var("BACKUP_KDF_ITERATIONS") {
-            if let Ok(kdf_iter) = kdf_iter.parse() {
-                self.backup.kdf_iterations = kdf_iter;
-            }
+        if let Ok(kdf_iter) = std::env::var("BACKUP_KDF_ITERATIONS")
+            && let Ok(kdf_iter) = kdf_iter.parse()
+        {
+            self.backup.kdf_iterations = kdf_iter;
         }
     }
 }

@@ -1601,7 +1601,8 @@ async fn mfa_verify(
     if mfa.is_locked_out(&user_id).await {
         let remaining = mfa.lockout_remaining_secs(&user_id).await;
         return Err(ApiError::TooManyRequests(format!(
-            "Account locked. Try again in {remaining} seconds")));
+            "Account locked. Try again in {remaining} seconds"
+        )));
     }
 
     let config = mfa
@@ -1646,7 +1647,8 @@ async fn mfa_verify(
             let event = kms_core::event::Event::mfa_failed(&user_id, "account_locked");
             state.audit_logger.log_event(&event).await;
             Err(ApiError::TooManyRequests(format!(
-                "Too many failed attempts. Account locked for {remaining} seconds")))
+                "Too many failed attempts. Account locked for {remaining} seconds"
+            )))
         }
         MfaVerifyResult::Invalid { attempts_remaining } => {
             let event = kms_core::event::Event::mfa_failed(&user_id, "invalid_totp_code");

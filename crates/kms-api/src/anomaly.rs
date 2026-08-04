@@ -376,8 +376,7 @@ impl AnomalyDetector {
                 AnomalyAlert::new(
                     AnomalyType::AuthFailure,
                     Severity::High,
-                    format!(
-                        "{failure_count} failed authentication attempts in last 15 minutes"),
+                    format!("{failure_count} failed authentication attempts in last 15 minutes"),
                     ctx.tenant_id.clone(),
                 )
                 .with_user(&ctx.user_id),
