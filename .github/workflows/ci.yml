@@ -26,7 +26,7 @@ jobs:
 
       - name: Install GmSSL 3.1.1
         run: |
-          sudo apt-get update && sudo apt-get install -y cmake build-essential
+          sudo apt-get update && sudo apt-get install -y cmake build-essential protobuf-compiler
           git clone --depth 1 --branch v3.1.1 https://github.com/guanzhi/GmSSL.git /tmp/gmssl
           mkdir -p /tmp/gmssl/build && cd /tmp/gmssl/build
           cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local -DBUILD_SHARED_LIBS=ON
@@ -63,6 +63,16 @@ jobs:
 
       - name: Cache cargo registry
         uses: Swatinem/rust-cache@v2
+
+      - name: Install build dependencies (protoc + GmSSL)
+        run: |
+          sudo apt-get update && sudo apt-get install -y cmake build-essential protobuf-compiler
+          git clone --depth 1 --branch v3.1.1 https://github.com/guanzhi/GmSSL.git /tmp/gmssl
+          mkdir -p /tmp/gmssl/build && cd /tmp/gmssl/build
+          cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local -DBUILD_SHARED_LIBS=ON
+          make -j$(nproc) && sudo make install
+          sudo ldconfig
+          rm -rf /tmp/gmssl
 
       - name: Run cargo-audit
         run: |
