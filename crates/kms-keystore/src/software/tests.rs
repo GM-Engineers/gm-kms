@@ -1672,8 +1672,7 @@ async fn test_many_rotate_encrypt_cycles() {
         assert_eq!(
             pt,
             expected.as_bytes(),
-            "version {} decrypt mismatch",
-            version
+            "version {version} decrypt mismatch"
         );
     }
 
