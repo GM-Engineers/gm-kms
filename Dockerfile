@@ -2,10 +2,11 @@
 # gm-kms Docker Image
 # Multi-stage build for minimal image size
 #
-# Build context should be the parent directory of gm-kms (i.e., the directory
-# containing both gm-kms and gm folders).
+# Build context is the gm-kms repository root (the directory that contains
+# Cargo.toml). The gm-* dependencies are resolved from crates.io by version,
+# so no sibling `gm/` checkout is required.
 #
-# Build command: docker build -f gm-kms/Dockerfile -t gm-kms:test .
+# Build command: docker build -t gm-kms:test .
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -37,17 +38,13 @@ RUN git clone --depth 1 --branch v3.1.1 https://github.com/guanzhi/GmSSL.git /tm
     ldconfig && \
     rm -rf /tmp/gmssl
 
-# Copy workspace files from gm-kms (preserving directory structure)
-COPY gm-kms/Cargo.toml gm-kms/Cargo.lock ./gm-kms/
-COPY gm-kms/crates ./gm-kms/crates
-COPY gm-kms/src ./gm-kms/src
-COPY gm-kms/examples ./gm-kms/examples
+# Copy workspace files from the build context (repo root)
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+COPY src ./src
+COPY examples ./examples
 
-# Copy gm dependency
-COPY gm ./gm
-
-# Build release binary from the gm-kms workspace
-WORKDIR /app/gm-kms
+# Build release binary
 RUN cargo build --release --bin kms
 
 # -----------------------------------------------------------------------------
@@ -71,14 +68,14 @@ RUN useradd -m -u 1000 kms && \
 WORKDIR /app
 
 # Copy binary from builder
-COPY --from=builder /app/gm-kms/target/release/kms /app/kms
+COPY --from=builder /app/target/release/kms /app/kms
 
 # Copy GmSSL shared library from builder
 COPY --from=builder /usr/local/lib/libgmssl.so* /usr/local/lib/
 RUN ldconfig
 
-# Copy config example from build context
-COPY gm-kms/kms.toml.example /app/config/kms.toml.example
+# Copy config example from the build context
+COPY kms.toml.example /app/config/kms.toml.example
 
 # Create a Docker-specific config that disables Redis
 RUN echo '[redis]' > /app/config/kms-docker.toml && \

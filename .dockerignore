@@ -1,0 +1,36 @@
+# Build context exclusions for the gm-kms Docker image.
+# The Dockerfile only needs: Cargo.toml, Cargo.lock, crates/, src/, examples/,
+# and kms.toml.example. Everything else is excluded to keep the build context small.
+
+target/
+.git/
+.github/
+docs/
+deploy/
+operators/
+sdk/
+fuzz/
+tests/
+benches/
+
+# Documentation and project meta
+*.md
+LICENSE
+LICENSE-APACHE
+LICENSE-MIT
+NOTICE
+CODE_OF_CONDUCT.md
+CONTRIBUTING.md
+SECURITY.md
+SECURITY.zh-CN.md
+ARCHITECTURE.md
+CHANGELOG.md
+README.md
+OSS_*
+gm-*
+
+# Editor / tooling
+.idea/
+.vscode/
+*.swp
+.dockerignore
