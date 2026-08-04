@@ -90,7 +90,7 @@ edition = "2024"
 authors = ["Eric Zhang"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/GM-Engineers/gm-kms"
-rust-version = "1.85"
+rust-version = "1.88"
 publish = false
 
 [workspace.dependencies]
