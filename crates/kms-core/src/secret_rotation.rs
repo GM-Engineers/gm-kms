@@ -202,7 +202,7 @@ impl SecretRotationManager {
         let config = self
             .configs
             .get(name)
-            .ok_or_else(|| crate::Error::Internal(format!("Secret {} not found", name)))?;
+            .ok_or_else(|| crate::Error::Internal(format!("Secret {name} not found")))?;
 
         let old_version = self.get_active(name).map(|v| v.version);
 
@@ -275,13 +275,13 @@ impl SecretRotationManager {
         let versions = self
             .secrets
             .get_mut(name)
-            .ok_or_else(|| crate::Error::Internal(format!("Secret {} not found", name)))?;
+            .ok_or_else(|| crate::Error::Internal(format!("Secret {name} not found")))?;
 
         // Find target index
         let target_idx = versions
             .iter()
             .position(|v| v.version == version)
-            .ok_or_else(|| crate::Error::Internal(format!("Version {} not found", version)))?;
+            .ok_or_else(|| crate::Error::Internal(format!("Version {version} not found")))?;
 
         // Deactivate all and reactivate target
         for v in versions.iter_mut() {

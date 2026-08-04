@@ -96,9 +96,7 @@ pub fn mlock(data: &[u8]) -> Result<()> {
         if result != 0 {
             let errno = std::io::Error::last_os_error();
             return Err(crate::Error::Internal(format!(
-                "Failed to lock memory (mlock): {}",
-                errno
-            )));
+                "Failed to lock memory (mlock): {errno}")));
         }
 
         tracing::debug!("Locked {} bytes of memory", len);
@@ -311,9 +309,7 @@ impl SecureBox {
                 libc::munmap(ptr, capacity);
             }
             return Err(crate::Error::Internal(format!(
-                "mlock failed ({} bytes): {} — refusing to use unprotected memory",
-                capacity, errno
-            )));
+                "mlock failed ({capacity} bytes): {errno} — refusing to use unprotected memory")));
         }
 
         // Exclude from core dumps (Linux only)

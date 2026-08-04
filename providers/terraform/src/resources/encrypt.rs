@@ -43,7 +43,7 @@ impl KmsEncryptResource {
         // Decode base64 plaintext
         let plaintext_bytes = STANDARD
             .decode(plaintext)
-            .map_err(|e| format!("Invalid base64 plaintext: {}", e))?;
+            .map_err(|e| format!("Invalid base64 plaintext: {e}"))?;
 
         let response = state
             .client

@@ -244,7 +244,7 @@ mod tests {
 
         // Second code - with spaces should work
         let code2 = &codes[1].code;
-        assert!(generator.consume_code(&format!("  {}  ", code2)).is_ok());
+        assert!(generator.consume_code(&format!("  {code2}  ")).is_ok());
     }
 
     // --- Additional tests ---

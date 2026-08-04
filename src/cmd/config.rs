@@ -440,10 +440,10 @@ impl Config {
     /// Load configuration from a TOML file
     pub fn from_file(path: &str) -> anyhow::Result<Self> {
         let content = std::fs::read_to_string(path)
-            .map_err(|e| anyhow::anyhow!("Failed to read config file {}: {}", path, e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to read config file {path}: {e}"))?;
 
         toml::from_str(&content)
-            .map_err(|e| anyhow::anyhow!("Failed to parse config file {}: {}", path, e))
+            .map_err(|e| anyhow::anyhow!("Failed to parse config file {path}: {e}"))
     }
 
     /// Load configuration with environment variable overrides

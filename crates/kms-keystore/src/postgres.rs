@@ -67,7 +67,7 @@ impl PostgresKeystore {
         // If KMS_KEK is set, use it (hex-decoded)
         if let Ok(kek_hex) = std::env::var("KMS_KEK") {
             let kek = hex::decode(&kek_hex)
-                .map_err(|e| Error::Internal(format!("Invalid KMS_KEK hex: {}", e)))?
+                .map_err(|e| Error::Internal(format!("Invalid KMS_KEK hex: {e}")))?
                 .try_into()
                 .map_err(|_| {
                     Error::Internal("KMS_KEK must be 32 bytes (64 hex characters)".to_string())
@@ -594,9 +594,7 @@ impl super::KeystoreBackend for PostgresKeystore {
 
         if entry.meta.status != KeyStatus::Active {
             return Err(Error::KeyOperationNotAllowed(format!(
-                "Key {} is not active",
-                key_id
-            )));
+                "Key {key_id} is not active")));
         }
 
         Self::crypto_encrypt(
@@ -625,9 +623,7 @@ impl super::KeystoreBackend for PostgresKeystore {
 
         if !entry.meta.status.can_decrypt() {
             return Err(Error::KeyOperationNotAllowed(format!(
-                "Key {} cannot decrypt",
-                key_id
-            )));
+                "Key {key_id} cannot decrypt")));
         }
 
         Self::crypto_decrypt(&entry.material, &entry.meta.spec, ciphertext, _aad).await
@@ -642,9 +638,7 @@ impl super::KeystoreBackend for PostgresKeystore {
 
         if entry.meta.status != KeyStatus::Active {
             return Err(Error::KeyOperationNotAllowed(format!(
-                "Key {} is not active",
-                key_id
-            )));
+                "Key {key_id} is not active")));
         }
 
         Self::crypto_sign(
@@ -682,9 +676,7 @@ impl super::KeystoreBackend for PostgresKeystore {
 
             if !entry.meta.status.can_rotate() {
                 return Err(Error::KeyOperationNotAllowed(format!(
-                    "Key {} cannot be rotated",
-                    key_id
-                )));
+                    "Key {key_id} cannot be rotated")));
             }
 
             entry.meta.status = KeyStatus::Obsolete;
@@ -914,9 +906,7 @@ impl super::KeystoreBackend for PostgresKeystore {
 
         if entry.meta.status != KeyStatus::Active {
             return Err(Error::KeyOperationNotAllowed(format!(
-                "Key {} is not active for export",
-                key_id
-            )));
+                "Key {key_id} is not active for export")));
         }
 
         Ok(entry.material.to_vec())

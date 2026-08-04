@@ -171,9 +171,7 @@ fn api_error_to_status(e: ApiError) -> Status {
             current,
             limit,
         } => Status::resource_exhausted(format!(
-            "quota exceeded for {}: {}/{}",
-            resource, current, limit
-        )),
+            "quota exceeded for {resource}: {current}/{limit}")),
         // Sanitized: log full error server-side, return generic message to client
         ApiError::Internal(msg) => {
             tracing::error!(error = %msg, "internal server error");
@@ -715,7 +713,7 @@ impl KmsService for KmsGrpcService {
 
         let signature = gm_sm9_rs::Signature::from_der(&signature_bytes)
             .or_else(|_| gm_sm9_rs::Signature::from_bytes(&signature_bytes))
-            .map_err(|e| Status::invalid_argument(format!("invalid signature format: {}", e)))?;
+            .map_err(|e| Status::invalid_argument(format!("invalid signature format: {e}")))?;
 
         let verifier = gm_sm9_rs::Verifier::new(
             req.identity.as_bytes(),
@@ -803,7 +801,7 @@ impl KmsService for KmsGrpcService {
             .derive_encryption_key(req.identity.as_bytes())
             .map_err(|e| Status::internal(e.to_string()))?;
         let ciphertext = gm_sm9_rs::Ciphertext::from_bytes(&ciphertext_bytes)
-            .map_err(|e| Status::invalid_argument(format!("invalid ciphertext: {}", e)))?;
+            .map_err(|e| Status::invalid_argument(format!("invalid ciphertext: {e}")))?;
 
         let decryptor = gm_sm9_rs::Decryptor::new(enc_key);
 
@@ -1066,7 +1064,7 @@ impl KmsService for KmsGrpcService {
             .await
             .map_err(|e| match e {
                 kms_core::Error::KeyNotFound(_) => {
-                    Status::not_found(format!("key {} not found", key_id))
+                    Status::not_found(format!("key {key_id} not found"))
                 }
                 _ => Status::internal(e.to_string()),
             })?;
@@ -1140,7 +1138,7 @@ impl KmsService for KmsGrpcService {
             .await
             .map_err(|e| match e {
                 kms_core::Error::KeyNotFound(_) => {
-                    Status::not_found(format!("key {} not found", key_id))
+                    Status::not_found(format!("key {key_id} not found"))
                 }
                 _ => Status::internal(e.to_string()),
             })?;

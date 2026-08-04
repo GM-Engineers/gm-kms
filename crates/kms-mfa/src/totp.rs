@@ -213,7 +213,7 @@ impl TotpGenerator {
 
     /// Generate provisioning URI for QR code
     pub fn get_provisioning_uri(&self, account_name: &str, issuer: &str) -> String {
-        let label = format!("{}:{}", issuer, account_name);
+        let label = format!("{issuer}:{account_name}");
         let secret_b32 = base32::encode(
             base32::Alphabet::Rfc4648 { padding: false },
             &self.config.secret,
@@ -229,11 +229,11 @@ impl TotpGenerator {
 
         let query = params
             .iter()
-            .map(|(k, v)| format!("{}={}", k, v))
+            .map(|(k, v)| format!("{k}={v}"))
             .collect::<Vec<_>>()
             .join("&");
 
-        format!("otpauth://totp/{}?{}", label, query)
+        format!("otpauth://totp/{label}?{query}")
     }
 }
 

@@ -116,7 +116,7 @@ impl SlidingWindowRateLimiter {
         let window = now / self.config.window_secs;
         let window_start = window * self.config.window_secs;
         let window_end = window_start + self.config.window_secs;
-        let key = format!("rate_limit:{}:{}", tenant_id, window);
+        let key = format!("rate_limit:{tenant_id}:{window}");
 
         let mut conn = self.redis.clone();
 
@@ -210,7 +210,7 @@ impl SlidingWindowRateLimiter {
         let window = now / self.config.window_secs;
         let window_start = window * self.config.window_secs;
         let window_end = window_start + self.config.window_secs;
-        let key = format!("rate_limit:{}:{}", tenant_id, window);
+        let key = format!("rate_limit:{tenant_id}:{window}");
 
         let mut conn = self.redis.clone();
 
@@ -268,7 +268,7 @@ impl SlidingWindowRateLimiter {
             .as_secs();
 
         let window = now / self.config.window_secs;
-        let key = format!("rate_limit:{}:{}", tenant_id, window);
+        let key = format!("rate_limit:{tenant_id}:{window}");
 
         let mut conn = self.redis.clone();
         let _: () = conn
@@ -308,7 +308,7 @@ impl ClusterRateLimiter {
 
         let window = now / self.config.window_secs;
         let window_end = window * self.config.window_secs + self.config.window_secs;
-        let key = format!("rate_limit:{}:{}", tenant_id, window);
+        let key = format!("rate_limit:{tenant_id}:{window}");
 
         let mut conn = self.cluster.clone();
 

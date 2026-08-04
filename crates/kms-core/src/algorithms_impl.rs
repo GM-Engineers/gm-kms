@@ -33,7 +33,7 @@ impl crate::Encryptor for Aes256GcmEncryptor {
         _aad: Option<&[u8]>,
     ) -> crate::EncryptResult {
         let unbound_key = UnboundKey::new(&aead::AES_256_GCM, key_material)
-            .map_err(|e| Error::EncryptionFailed(format!("invalid AES-256-GCM key: {}", e)))?;
+            .map_err(|e| Error::EncryptionFailed(format!("invalid AES-256-GCM key: {e}")))?;
 
         // Generate random starting counter value for unique nonces
         let mut starting_counter_bytes = [0u8; 16];
@@ -100,7 +100,7 @@ impl crate::Decryptor for Aes256GcmDecryptor {
         _aad: Option<&[u8]>,
     ) -> crate::DecryptResult {
         let unbound_key = UnboundKey::new(&aead::AES_256_GCM, key_material)
-            .map_err(|e| Error::DecryptionFailed(format!("invalid AES-256-GCM key: {}", e)))?;
+            .map_err(|e| Error::DecryptionFailed(format!("invalid AES-256-GCM key: {e}")))?;
 
         let less_safe_key = LessSafeKey::new(unbound_key);
 

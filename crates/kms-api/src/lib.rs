@@ -140,7 +140,7 @@ impl Sm9State {
 
         let bytes = repo.load().await?;
         let master_key = gm_sm9_rs::KgcMasterKey::from_bytes(&bytes).map_err(|e| {
-            crate::ApiError::Internal(format!("failed to deserialize master key: {}", e))
+            crate::ApiError::Internal(format!("failed to deserialize master key: {e}"))
         })?;
 
         Ok(Self {

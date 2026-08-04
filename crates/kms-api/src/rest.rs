@@ -1601,9 +1601,7 @@ async fn mfa_verify(
     if mfa.is_locked_out(&user_id).await {
         let remaining = mfa.lockout_remaining_secs(&user_id).await;
         return Err(ApiError::TooManyRequests(format!(
-            "Account locked. Try again in {} seconds",
-            remaining
-        )));
+            "Account locked. Try again in {remaining} seconds")));
     }
 
     let config = mfa
@@ -1648,9 +1646,7 @@ async fn mfa_verify(
             let event = kms_core::event::Event::mfa_failed(&user_id, "account_locked");
             state.audit_logger.log_event(&event).await;
             Err(ApiError::TooManyRequests(format!(
-                "Too many failed attempts. Account locked for {} seconds",
-                remaining
-            )))
+                "Too many failed attempts. Account locked for {remaining} seconds")))
         }
         MfaVerifyResult::Invalid { attempts_remaining } => {
             let event = kms_core::event::Event::mfa_failed(&user_id, "invalid_totp_code");
@@ -2156,7 +2152,7 @@ async fn dh_derive(
         .await
         .map_err(|e| match e {
             kms_core::Error::KeyNotFound(_) => {
-                ApiError::NotFound(format!("key {} not found", key_id))
+                ApiError::NotFound(format!("key {key_id} not found"))
             }
             kms_core::Error::NotImplemented(_) => ApiError::NotImplemented,
             kms_core::Error::KeyOperationNotAllowed(msg) => ApiError::InvalidRequest(msg),
@@ -2388,7 +2384,7 @@ async fn get_policy(
         .get_policy(&id)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
-        .ok_or_else(|| ApiError::NotFound(format!("policy {} not found", id)))?;
+        .ok_or_else(|| ApiError::NotFound(format!("policy {id} not found")))?;
 
     Ok(Json(PolicyResponse {
         id: policy.id.to_string(),
@@ -2525,7 +2521,7 @@ async fn sm9_verify(
 
     let signature = gm_sm9_rs::Signature::from_der(&signature_bytes)
         .or_else(|_| gm_sm9_rs::Signature::from_bytes(&signature_bytes))
-        .map_err(|e| ApiError::InvalidRequest(format!("invalid signature format: {}", e)))?;
+        .map_err(|e| ApiError::InvalidRequest(format!("invalid signature format: {e}")))?;
 
     let verifier = Verifier::new(
         req.identity.as_bytes(),
@@ -2624,7 +2620,7 @@ async fn sm9_decrypt(
         .map_err(|_| ApiError::InvalidRequest("invalid base64 ciphertext".to_string()))?;
 
     let ciphertext = gm_sm9_rs::Ciphertext::from_bytes(&ciphertext_bytes)
-        .map_err(|e| ApiError::InvalidRequest(format!("invalid ciphertext: {}", e)))?;
+        .map_err(|e| ApiError::InvalidRequest(format!("invalid ciphertext: {e}")))?;
 
     // Derive decryption key for this identity
     let enc_key = state

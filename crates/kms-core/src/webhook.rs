@@ -267,7 +267,7 @@ impl WebhookClient {
 
         // Serialize event to JSON
         let payload =
-            serde_json::to_vec(event).map_err(|e| format!("failed to serialize event: {}", e))?;
+            serde_json::to_vec(event).map_err(|e| format!("failed to serialize event: {e}"))?;
 
         // Generate HMAC signature
         let signing_key = Key::new(HMAC_SHA256, &self.config.secret);
@@ -288,7 +288,7 @@ impl WebhookClient {
             .body(payload)
             .send()
             .await
-            .map_err(|e| format!("failed to send webhook: {}", e))?;
+            .map_err(|e| format!("failed to send webhook: {e}"))?;
 
         let status = response.status();
 
@@ -466,7 +466,7 @@ mod tests {
         let mut manager = WebhookManager::new();
         for i in 0..3 {
             manager.register(WebhookConfig {
-                url: format!("http://example{}.com/hook", i),
+                url: format!("http://example{i}.com/hook"),
                 secret: b"secret".to_vec(),
                 ..Default::default()
             });

@@ -62,22 +62,20 @@ impl ValidationError {
                 )
             }
             ValidationError::InvalidKeyName { value, reason } => {
-                format!("invalid key name '{}': {}", value, reason)
+                format!("invalid key name '{value}': {reason}")
             }
             ValidationError::DataTooLarge { size, max } => {
-                format!("data size {} exceeds maximum {}", size, max)
+                format!("data size {size} exceeds maximum {max}")
             }
             ValidationError::InvalidBase64 { reason } => {
-                format!("invalid base64 encoding: {}", reason)
+                format!("invalid base64 encoding: {reason}")
             }
             ValidationError::InvalidTenantId { value } => {
                 format!(
-                    "invalid tenant ID: '{}'. Tenant IDs must be 1-128 alphanumeric characters",
-                    value
-                )
+                    "invalid tenant ID: '{value}'. Tenant IDs must be 1-128 alphanumeric characters")
             }
             ValidationError::EmptyField { field } => {
-                format!("{} cannot be empty", field)
+                format!("{field} cannot be empty")
             }
         }
     }
@@ -105,9 +103,7 @@ pub fn validate_key_name(name: &str) -> Result<(), ValidationError> {
         return Err(ValidationError::InvalidKeyName {
             value: name.to_string(),
             reason: format!(
-                "exceeds maximum length of {} characters",
-                MAX_KEY_NAME_LENGTH
-            ),
+                "exceeds maximum length of {MAX_KEY_NAME_LENGTH} characters"),
         });
     }
     if !KEY_NAME_REGEX.is_match(name) {

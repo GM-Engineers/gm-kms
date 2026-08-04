@@ -75,7 +75,7 @@ impl EnvelopeService {
             .await
             .map_err(|e| match e {
                 kms_core::Error::KeyNotFound(_) => {
-                    ApiError::NotFound(format!("KEK {} not found", kek_id))
+                    ApiError::NotFound(format!("KEK {kek_id} not found"))
                 }
                 _ => ApiError::Internal(e.to_string()),
             })?;
@@ -93,7 +93,7 @@ impl EnvelopeService {
             .await
             .map_err(|e| match e {
                 kms_core::Error::KeyNotFound(_) => {
-                    ApiError::NotFound(format!("KEK {} not found", kek_id))
+                    ApiError::NotFound(format!("KEK {kek_id} not found"))
                 }
                 kms_core::Error::NotImplemented(_) => ApiError::Internal(
                     "KEK material not available for envelope encryption".to_string(),
@@ -107,16 +107,16 @@ impl EnvelopeService {
         // Generate DEK (Data Encryption Key)
         let mut dek_bytes = vec![0u8; dek_length];
         rng.fill(&mut dek_bytes)
-            .map_err(|e| ApiError::Internal(format!("failed to generate DEK: {}", e)))?;
+            .map_err(|e| ApiError::Internal(format!("failed to generate DEK: {e}")))?;
 
         // Generate DEK nonce (12 bytes for AES-GCM)
         let mut dek_nonce_bytes = [0u8; 12];
         rng.fill(&mut dek_nonce_bytes)
-            .map_err(|e| ApiError::Internal(format!("failed to generate dek nonce: {}", e)))?;
+            .map_err(|e| ApiError::Internal(format!("failed to generate dek nonce: {e}")))?;
 
         // Wrap DEK with KEK using AES-256-GCM
         let unbound_kek = UnboundKey::new(&AES_256_GCM, &kek_bytes)
-            .map_err(|e| ApiError::Internal(format!("invalid KEK: {}", e)))?;
+            .map_err(|e| ApiError::Internal(format!("invalid KEK: {e}")))?;
         let less_safe_kek = LessSafeKey::new(unbound_kek);
 
         let mut in_out = dek_bytes.clone();
@@ -126,7 +126,7 @@ impl EnvelopeService {
                 Aad::empty(),
                 &mut in_out,
             )
-            .map_err(|e| ApiError::Internal(format!("failed to wrap DEK: {}", e)))?;
+            .map_err(|e| ApiError::Internal(format!("failed to wrap DEK: {e}")))?;
 
         // wrapped_dek = in_out (encrypted DEK) + tag
         let mut wrapped_dek = in_out;
@@ -135,10 +135,10 @@ impl EnvelopeService {
         // Generate data nonce and encrypt plaintext with DEK
         let mut data_nonce_bytes = [0u8; 12];
         rng.fill(&mut data_nonce_bytes)
-            .map_err(|e| ApiError::Internal(format!("failed to generate data nonce: {}", e)))?;
+            .map_err(|e| ApiError::Internal(format!("failed to generate data nonce: {e}")))?;
 
         let unbound_dek = UnboundKey::new(&AES_256_GCM, &dek_bytes)
-            .map_err(|e| ApiError::Internal(format!("invalid DEK: {}", e)))?;
+            .map_err(|e| ApiError::Internal(format!("invalid DEK: {e}")))?;
         let less_safe_dek = LessSafeKey::new(unbound_dek);
 
         let mut in_out = plaintext.to_vec();
@@ -148,7 +148,7 @@ impl EnvelopeService {
                 Aad::empty(),
                 &mut in_out,
             )
-            .map_err(|e| ApiError::Internal(format!("encryption failed: {}", e)))?;
+            .map_err(|e| ApiError::Internal(format!("encryption failed: {e}")))?;
 
         // in_out now contains ciphertext + tag (ring appends tag automatically)
         let ciphertext_with_tag = in_out;
@@ -189,7 +189,7 @@ impl EnvelopeService {
             .await
             .map_err(|e| match e {
                 kms_core::Error::KeyNotFound(_) => {
-                    ApiError::NotFound(format!("KEK {} not found", kek_id))
+                    ApiError::NotFound(format!("KEK {kek_id} not found"))
                 }
                 _ => ApiError::Internal(e.to_string()),
             })?;
@@ -219,7 +219,7 @@ impl EnvelopeService {
             .await
             .map_err(|e| match e {
                 kms_core::Error::KeyNotFound(_) => {
-                    ApiError::NotFound(format!("KEK {} not found", kek_id))
+                    ApiError::NotFound(format!("KEK {kek_id} not found"))
                 }
                 _ => ApiError::Internal(e.to_string()),
             })?;
@@ -231,7 +231,7 @@ impl EnvelopeService {
             .await
             .map_err(|e| match e {
                 kms_core::Error::KeyNotFound(_) => {
-                    ApiError::NotFound(format!("KEK {} not found", kek_id))
+                    ApiError::NotFound(format!("KEK {kek_id} not found"))
                 }
                 _ => ApiError::Internal(e.to_string()),
             })?;
@@ -248,7 +248,7 @@ impl EnvelopeService {
         let (encrypted_dek, stored_tag) = wrapped_dek_vec.split_at_mut(wrapped_dek.len() - tag_len);
 
         let unbound_old_kek = UnboundKey::new(&AES_256_GCM, &old_kek_bytes)
-            .map_err(|e| ApiError::Internal(format!("invalid old KEK: {}", e)))?;
+            .map_err(|e| ApiError::Internal(format!("invalid old KEK: {e}")))?;
         let less_safe_old_kek = LessSafeKey::new(unbound_old_kek);
 
         let mut dek_nonce_array = [0u8; 12];
@@ -275,10 +275,10 @@ impl EnvelopeService {
         let rng = ring::rand::SystemRandom::new();
         let mut new_dek_nonce = [0u8; 12];
         rng.fill(&mut new_dek_nonce)
-            .map_err(|e| ApiError::Internal(format!("failed to generate dek nonce: {}", e)))?;
+            .map_err(|e| ApiError::Internal(format!("failed to generate dek nonce: {e}")))?;
 
         let unbound_new_kek = UnboundKey::new(&AES_256_GCM, &new_kek_bytes)
-            .map_err(|e| ApiError::Internal(format!("invalid new KEK: {}", e)))?;
+            .map_err(|e| ApiError::Internal(format!("invalid new KEK: {e}")))?;
         let less_safe_new_kek = LessSafeKey::new(unbound_new_kek);
 
         let mut rewrapped_dek = dek_bytes.clone();
@@ -288,7 +288,7 @@ impl EnvelopeService {
                 Aad::empty(),
                 &mut rewrapped_dek,
             )
-            .map_err(|e| ApiError::Internal(format!("failed to rewrap DEK: {}", e)))?;
+            .map_err(|e| ApiError::Internal(format!("failed to rewrap DEK: {e}")))?;
 
         rewrapped_dek.extend_from_slice(new_tag.as_ref());
 
@@ -360,7 +360,7 @@ impl EnvelopeService {
             .await
             .map_err(|e| match e {
                 kms_core::Error::KeyNotFound(_) => {
-                    ApiError::NotFound(format!("KEK {} not found", kek_id))
+                    ApiError::NotFound(format!("KEK {kek_id} not found"))
                 }
                 _ => ApiError::Internal(e.to_string()),
             })?;
@@ -379,7 +379,7 @@ impl EnvelopeService {
 
         // Unwrap DEK using AES-256-GCM
         let unbound_kek = UnboundKey::new(&AES_256_GCM, &kek_bytes)
-            .map_err(|e| ApiError::Internal(format!("invalid KEK: {}", e)))?;
+            .map_err(|e| ApiError::Internal(format!("invalid KEK: {e}")))?;
         let less_safe_kek = LessSafeKey::new(unbound_kek);
 
         // Use the provided dek_nonce for unwrapping
@@ -407,7 +407,7 @@ impl EnvelopeService {
         data_nonce_array.copy_from_slice(&data_nonce[..12.min(data_nonce.len())]);
 
         let unbound_key = UnboundKey::new(&AES_256_GCM, &dek_bytes)
-            .map_err(|e| ApiError::Internal(format!("invalid DEK after unwrap: {}", e)))?;
+            .map_err(|e| ApiError::Internal(format!("invalid DEK after unwrap: {e}")))?;
         let less_safe_dek = LessSafeKey::new(unbound_key);
 
         // Append the data tag (passed as parameter) for decryption

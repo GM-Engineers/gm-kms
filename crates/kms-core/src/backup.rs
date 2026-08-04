@@ -174,14 +174,14 @@ fn derive_key_from_passphrase(passphrase: &str, salt: &[u8], iterations: u32) ->
     buf.extend_from_slice(salt);
     buf.extend_from_slice(passphrase.as_bytes());
     let mut hash = gm_crypto::sm3::Sm3Hasher::hash(&buf)
-        .map_err(|e| anyhow::anyhow!("SM3 KDF failed: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("SM3 KDF failed: {e}"))?;
 
     // Iterate
     for _ in 1..iterations {
         let mut input = hash.clone();
         input.extend_from_slice(&buf);
         hash = gm_crypto::sm3::Sm3Hasher::hash(&input)
-            .map_err(|e| anyhow::anyhow!("SM3 KDF failed: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("SM3 KDF failed: {e}"))?;
     }
 
     key.copy_from_slice(&hash[..SM4_KEY_SIZE]);
@@ -207,11 +207,11 @@ impl MasterKey {
         rand::Rng::fill_bytes(&mut rand::rng(), &mut nonce);
 
         let cipher = gm_crypto::sm4::Sm4Cipher::new(&derived_key)
-            .map_err(|e| anyhow::anyhow!("Failed to create SM4 cipher for export: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to create SM4 cipher for export: {e}"))?;
 
         let (ciphertext, tag) = cipher
             .encrypt_gcm(&self.material[..], &nonce, &[])
-            .map_err(|e| anyhow::anyhow!("Failed to encrypt master key: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to encrypt master key: {e}"))?;
 
         // Append tag to ciphertext
         let mut encrypted_material = ciphertext;
@@ -232,7 +232,7 @@ impl MasterKey {
             derive_key_from_passphrase(passphrase, &encrypted.salt, encrypted.kdf_iterations)?;
 
         let cipher = gm_crypto::sm4::Sm4Cipher::new(&derived_key)
-            .map_err(|e| anyhow::anyhow!("Failed to create SM4 cipher for import: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to create SM4 cipher for import: {e}"))?;
 
         // Split ciphertext and tag (tag is last 16 bytes)
         if encrypted.encrypted_material.len() < 16 {
@@ -249,7 +249,7 @@ impl MasterKey {
 
         let plaintext = cipher
             .decrypt_gcm(ciphertext, &nonce, &[], tag)
-            .map_err(|e| anyhow::anyhow!("Failed to decrypt master key: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to decrypt master key: {e}"))?;
 
         let mut sb = SecureBox::new(plaintext.len())?;
         sb.copy_from_slice(&plaintext);
@@ -347,7 +347,7 @@ impl KeyBackupService {
 
         // Compute SM3 hash of original material for integrity check
         let material_hash = gm_crypto::sm3::Sm3Hasher::hash_hex(key_material)
-            .map_err(|e| anyhow::anyhow!("SM3 hash failed: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("SM3 hash failed: {e}"))?;
 
         // Encrypt key material with master key using SM4-GCM
         let encrypted_material = self.encrypt_with_master(key_material, &nonce)?;
@@ -400,7 +400,7 @@ impl KeyBackupService {
 
         // Verify SM3 integrity hash
         let computed_hash = gm_crypto::sm3::Sm3Hasher::hash_hex(&key_material)
-            .map_err(|e| anyhow::anyhow!("SM3 hash failed: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("SM3 hash failed: {e}"))?;
 
         if computed_hash != backup.material_hash {
             anyhow::bail!(
@@ -455,11 +455,11 @@ impl KeyBackupService {
     /// Encrypt plaintext with SM4-GCM using the master key.
     fn encrypt_with_master(&self, plaintext: &[u8], nonce: &[u8; 12]) -> Result<Vec<u8>> {
         let cipher = gm_crypto::sm4::Sm4Cipher::new(self.master_key.sm4_key())
-            .map_err(|e| anyhow::anyhow!("Failed to create SM4 cipher: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to create SM4 cipher: {e}"))?;
 
         let (ciphertext, tag) = cipher
             .encrypt_gcm(plaintext, nonce, &[])
-            .map_err(|e| anyhow::anyhow!("SM4-GCM encryption failed: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("SM4-GCM encryption failed: {e}"))?;
 
         // Append 16-byte GCM tag to ciphertext
         let mut result = ciphertext;
@@ -478,18 +478,18 @@ impl KeyBackupService {
         let tag = &ciphertext[split_at..];
 
         let cipher = gm_crypto::sm4::Sm4Cipher::new(self.master_key.sm4_key())
-            .map_err(|e| anyhow::anyhow!("Failed to create SM4 cipher: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to create SM4 cipher: {e}"))?;
 
         cipher
             .decrypt_gcm(ct, nonce, &[], tag)
-            .map_err(|e| anyhow::anyhow!("SM4-GCM decryption failed: {}", e))
+            .map_err(|e| anyhow::anyhow!("SM4-GCM decryption failed: {e}"))
     }
 
     /// Compute SM3-HMAC of data using the HMAC signing key.
     fn compute_hmac(&self, data: &[u8]) -> Result<String> {
         let hmac = gm_crypto::sm3::Sm3Hmac::new(self.master_key.hmac_key());
         hmac.compute_hex(data)
-            .map_err(|e| anyhow::anyhow!("SM3-HMAC computation failed: {}", e))
+            .map_err(|e| anyhow::anyhow!("SM3-HMAC computation failed: {e}"))
     }
 
     /// Save backup to persistent storage with SM3-HMAC signing.

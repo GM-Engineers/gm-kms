@@ -390,7 +390,7 @@ mod tests {
 
     fn make_key(name: &str, spec: &str, status: &str, tenant: &str) -> KeyEntry {
         KeyEntry {
-            key_id: format!("uuid-{}", name),
+            key_id: format!("uuid-{name}"),
             name: name.into(),
             spec: spec.into(),
             status: status.into(),
@@ -468,7 +468,7 @@ mod tests {
     #[test]
     fn test_obsolete_keys_warn_threshold() {
         let keys: Vec<KeyEntry> = (0..5)
-            .map(|i| make_key(&format!("k{}", i), "aes-256-gcm", "Obsolete", "default"))
+            .map(|i| make_key(&format!("k{i}"), "aes-256-gcm", "Obsolete", "default"))
             .collect();
         let result = check_keymgmt003(&keys);
         assert_eq!(result.status, RuleStatus::Warn);

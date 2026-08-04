@@ -132,7 +132,7 @@ impl Sm3SelfTest {
                 return AlgorithmTestResult {
                     algorithm: "SM3".to_string(),
                     passed: false,
-                    error_message: Some(format!("SM3 hash failed: {}", e)),
+                    error_message: Some(format!("SM3 hash failed: {e}")),
                 };
             }
         };
@@ -210,7 +210,7 @@ impl Sm4SelfTest {
                 return AlgorithmTestResult {
                     algorithm: "SM4".to_string(),
                     passed: false,
-                    error_message: Some(format!("SM4 key setup failed: {}", e)),
+                    error_message: Some(format!("SM4 key setup failed: {e}")),
                 };
             }
         };
@@ -220,7 +220,7 @@ impl Sm4SelfTest {
                 return AlgorithmTestResult {
                     algorithm: "SM4".to_string(),
                     passed: false,
-                    error_message: Some(format!("SM4 encryption failed: {}", e)),
+                    error_message: Some(format!("SM4 encryption failed: {e}")),
                 };
             }
         };
@@ -298,7 +298,7 @@ impl Aes256GcmSelfTest {
                 return AlgorithmTestResult {
                     algorithm: "AES-256-GCM".to_string(),
                     passed: false,
-                    error_message: Some(format!("Failed to create key: {}", e)),
+                    error_message: Some(format!("Failed to create key: {e}")),
                 };
             }
         };
@@ -330,7 +330,7 @@ impl Aes256GcmSelfTest {
             Err(e) => AlgorithmTestResult {
                 algorithm: "AES-256-GCM".to_string(),
                 passed: false,
-                error_message: Some(format!("Encryption failed: {}", e)),
+                error_message: Some(format!("Encryption failed: {e}")),
             },
         }
     }
@@ -373,7 +373,7 @@ impl Sm2SelfTest {
                 return AlgorithmTestResult {
                     algorithm: "SM2".to_string(),
                     passed: false,
-                    error_message: Some(format!("SM2 key generation failed: {}", e)),
+                    error_message: Some(format!("SM2 key generation failed: {e}")),
                 };
             }
         };
@@ -393,7 +393,7 @@ impl Sm2SelfTest {
                 return AlgorithmTestResult {
                     algorithm: "SM2".to_string(),
                     passed: false,
-                    error_message: Some(format!("SM2 signer creation failed: {}", e)),
+                    error_message: Some(format!("SM2 signer creation failed: {e}")),
                 };
             }
         };
@@ -405,7 +405,7 @@ impl Sm2SelfTest {
                     return AlgorithmTestResult {
                         algorithm: "SM2".to_string(),
                         passed: false,
-                        error_message: Some(format!("SM2 verifier creation failed: {}", e)),
+                        error_message: Some(format!("SM2 verifier creation failed: {e}")),
                     };
                 }
             };
@@ -417,7 +417,7 @@ impl Sm2SelfTest {
                 return AlgorithmTestResult {
                     algorithm: "SM2".to_string(),
                     passed: false,
-                    error_message: Some(format!("SM2 signing failed: {}", e)),
+                    error_message: Some(format!("SM2 signing failed: {e}")),
                 };
             }
         };
@@ -439,7 +439,7 @@ impl Sm2SelfTest {
             Err(e) => AlgorithmTestResult {
                 algorithm: "SM2".to_string(),
                 passed: false,
-                error_message: Some(format!("SM2 verification failed: {}", e)),
+                error_message: Some(format!("SM2 verification failed: {e}")),
             },
         }
     }
@@ -483,7 +483,7 @@ impl Sm9SelfTest {
         use gm_sm9_rs::sign::{Signer, Verifier};
 
         // ── SM9 Signature Roundtrip ──
-        let kgc = KgcMasterKey::generate().map_err(|e| format!("SM9 KGC generation failed: {}", e));
+        let kgc = KgcMasterKey::generate().map_err(|e| format!("SM9 KGC generation failed: {e}"));
         let kgc = match kgc {
             Ok(k) => k,
             Err(e) => {
@@ -503,7 +503,7 @@ impl Sm9SelfTest {
                 return AlgorithmTestResult {
                     algorithm: "SM9-Sign".to_string(),
                     passed: false,
-                    error_message: Some(format!("SM9 sign key extraction failed: {}", e)),
+                    error_message: Some(format!("SM9 sign key extraction failed: {e}")),
                 };
             }
         };
@@ -516,7 +516,7 @@ impl Sm9SelfTest {
                 return AlgorithmTestResult {
                     algorithm: "SM9-Sign".to_string(),
                     passed: false,
-                    error_message: Some(format!("SM9 signing failed: {}", e)),
+                    error_message: Some(format!("SM9 signing failed: {e}")),
                 };
             }
         };
@@ -535,7 +535,7 @@ impl Sm9SelfTest {
                 return AlgorithmTestResult {
                     algorithm: "SM9-Sign".to_string(),
                     passed: false,
-                    error_message: Some(format!("SM9 signature verification error: {}", e)),
+                    error_message: Some(format!("SM9 signature verification error: {e}")),
                 };
             }
         }
@@ -552,7 +552,7 @@ impl Sm9SelfTest {
                 return AlgorithmTestResult {
                     algorithm: "SM9-Encrypt".to_string(),
                     passed: false,
-                    error_message: Some(format!("SM9 encryption failed: {}", e)),
+                    error_message: Some(format!("SM9 encryption failed: {e}")),
                 };
             }
         };
@@ -563,7 +563,7 @@ impl Sm9SelfTest {
                 return AlgorithmTestResult {
                     algorithm: "SM9-Encrypt".to_string(),
                     passed: false,
-                    error_message: Some(format!("SM9 decrypt key extraction failed: {}", e)),
+                    error_message: Some(format!("SM9 decrypt key extraction failed: {e}")),
                 };
             }
         };
@@ -583,7 +583,7 @@ impl Sm9SelfTest {
             Err(e) => AlgorithmTestResult {
                 algorithm: "SM9-Encrypt".to_string(),
                 passed: false,
-                error_message: Some(format!("SM9 decryption failed: {}", e)),
+                error_message: Some(format!("SM9 decryption failed: {e}")),
             },
         }
     }

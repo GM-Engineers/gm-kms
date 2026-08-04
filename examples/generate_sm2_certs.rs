@@ -265,14 +265,14 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         "server-key.pem",
         &server_keypair
             .private_key_pem()
-            .map_err(|e| anyhow::anyhow!("{}", e))?,
+            .map_err(|e| anyhow::anyhow!("{e}"))?,
     );
     write_str("client.pem", &client_cert_pem.0);
     write_str(
         "client-key.pem",
         &client_keypair
             .private_key_pem()
-            .map_err(|e| anyhow::anyhow!("{}", e))?,
+            .map_err(|e| anyhow::anyhow!("{e}"))?,
     );
 
     println!("\nCertificate generation complete!");

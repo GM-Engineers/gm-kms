@@ -197,7 +197,7 @@ impl WormWriter {
             .expect("system clock before UNIX epoch")
             .as_secs();
 
-        let filename = format!("audit-{}.jsonl", timestamp);
+        let filename = format!("audit-{timestamp}.jsonl");
         let path = self.base_path.join(&filename);
 
         let file = OpenOptions::new()
@@ -304,9 +304,7 @@ impl WormWriter {
                 if entry_prev != expected_prev.as_slice() {
                     first_invalid = first_invalid.or(Some(i));
                     error_desc = Some(format!(
-                        "chain broken at entry {}: stored previous_signature does not match computed prev_entry_hash",
-                        i
-                    ));
+                        "chain broken at entry {i}: stored previous_signature does not match computed prev_entry_hash"));
                     break;
                 }
             }

@@ -309,9 +309,7 @@ impl ShamirSecretSharing {
                 valid: false,
                 x: share.x,
                 error: Some(format!(
-                    "No commitments available for block {} — cannot verify share",
-                    block_index
-                )),
+                    "No commitments available for block {block_index} — cannot verify share")),
             };
         }
 
@@ -336,9 +334,7 @@ impl ShamirSecretSharing {
                 None
             } else {
                 Some(format!(
-                    "Share y value out of range for block {}",
-                    block_index
-                ))
+                    "Share y value out of range for block {block_index}"))
             },
         }
     }
@@ -390,9 +386,7 @@ impl ShamirSecretSharing {
                     valid: false,
                     x: 0,
                     error: Some(format!(
-                        "Coefficient {} verification failed for block {}",
-                        i, block_index
-                    )),
+                        "Coefficient {i} verification failed for block {block_index}")),
                 };
             }
         }

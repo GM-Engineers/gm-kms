@@ -137,16 +137,16 @@ impl BackendTlsConfig {
         };
 
         let separator = if base_url.contains('?') { "&" } else { "?" };
-        let mut url = format!("{}{}sslmode={}", base_url, separator, sslmode);
+        let mut url = format!("{base_url}{separator}sslmode={sslmode}");
 
         if let Some(ca) = &self.ca_cert_path {
-            url.push_str(&format!("&sslrootcert={}", ca));
+            url.push_str(&format!("&sslrootcert={ca}"));
         }
         if let Some(cert) = &self.client_cert_path {
-            url.push_str(&format!("&sslcert={}", cert));
+            url.push_str(&format!("&sslcert={cert}"));
         }
         if let Some(key) = &self.client_key_path {
-            url.push_str(&format!("&sslkey={}", key));
+            url.push_str(&format!("&sslkey={key}"));
         }
 
         url

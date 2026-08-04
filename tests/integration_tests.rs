@@ -496,7 +496,7 @@ async fn test_concurrent_key_generation() {
             tokio::spawn(async move {
                 ks.generate_key(
                     &KeySpec::Sm4,
-                    &format!("concurrent-gen-{}", i),
+                    &format!("concurrent-gen-{i}"),
                     "test-tenant",
                 )
                 .await

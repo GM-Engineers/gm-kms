@@ -486,7 +486,7 @@ pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()
                     e
                 );
                 let sm9_master_key = gm_sm9_rs::KgcMasterKey::generate()
-                    .map_err(|e| anyhow::anyhow!("Failed to generate SM9 master key: {}", e))?;
+                    .map_err(|e| anyhow::anyhow!("Failed to generate SM9 master key: {e}"))?;
                 Sm9State::from_key(sm9_master_key)
             } else {
                 // Bridge adapter: wraps kms_keystore Sm9MasterKeyRepository and
@@ -503,7 +503,7 @@ pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()
                     Err(_) => {
                         // No key found or deserialization failed — generate and store
                         let sm9_master_key = gm_sm9_rs::KgcMasterKey::generate().map_err(|e| {
-                            anyhow::anyhow!("Failed to generate SM9 master key: {}", e)
+                            anyhow::anyhow!("Failed to generate SM9 master key: {e}")
                         })?;
                         let state = Sm9State::from_key(sm9_master_key);
                         if let Err(e) = state.store_to_repository(&adapter).await {
@@ -518,7 +518,7 @@ pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()
         } else {
             // No PostgreSQL available — in-memory only
             let sm9_master_key = gm_sm9_rs::KgcMasterKey::generate()
-                .map_err(|e| anyhow::anyhow!("Failed to generate SM9 master key: {}", e))?;
+                .map_err(|e| anyhow::anyhow!("Failed to generate SM9 master key: {e}"))?;
             Sm9State::from_key(sm9_master_key)
         }
     };
@@ -707,7 +707,7 @@ pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()
                             );
                             let tpm_keystore = create_tpm_keystore(&config.backend.tpm_backend)
                                 .map_err(|e| {
-                                    anyhow::anyhow!("Failed to create TPM keystore: {}", e)
+                                    anyhow::anyhow!("Failed to create TPM keystore: {e}")
                                 })?;
                             build_kms_state(
                                 tpm_keystore,
@@ -1019,7 +1019,7 @@ pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()
 
     // Load API key configuration for REST
     let api_key_config = ApiKeyConfig::from_env("X-API-Key", "KMS_API_KEY")
-        .map_err(|e: AuthError| anyhow::anyhow!("{}", e))?;
+        .map_err(|e: AuthError| anyhow::anyhow!("{e}"))?;
     let api_key_config_arc = std::sync::Arc::new(api_key_config.clone());
     tracing::info!("REST API authentication: API Key configured");
 
@@ -1067,7 +1067,7 @@ pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()
                 let gm_config =
                     gm_tls::TlsConfig::load(tls.cert_path.as_str(), tls.key_path.as_str(), ca_path)
                         .map(|cfg| cfg.with_require_client_auth(tls.require_client_auth))
-                        .map_err(|e| anyhow::anyhow!("Failed to load GM/TLS config: {}", e))
+                        .map_err(|e| anyhow::anyhow!("Failed to load GM/TLS config: {e}"))
                         .expect("GM/TLS config load failed");
 
                 let gm_listener =

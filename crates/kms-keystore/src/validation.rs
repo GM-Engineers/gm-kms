@@ -149,7 +149,7 @@ fn validate_ecdsa_key(material: &[u8], curve: &str) -> Result<KeyValidationResul
     let expected_size = match curve {
         "P-256" => 32,
         "P-384" => 48,
-        _ => return Err(Error::InvalidAlgorithm(format!("Unknown curve: {}", curve))),
+        _ => return Err(Error::InvalidAlgorithm(format!("Unknown curve: {curve}"))),
     };
 
     if material.len() == expected_size {
@@ -207,7 +207,7 @@ fn validate_pkcs8_ec(curve: &str, material: &[u8]) -> Result<(), Error> {
     // In production, use asn1 crate
     match curve {
         "P-256" | "P-384" => Ok(()),
-        _ => Err(Error::InvalidAlgorithm(format!("Unknown curve: {}", curve))),
+        _ => Err(Error::InvalidAlgorithm(format!("Unknown curve: {curve}"))),
     }
 }
 

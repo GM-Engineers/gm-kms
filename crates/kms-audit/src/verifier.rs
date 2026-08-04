@@ -58,7 +58,7 @@ impl IntegrityVerifier {
                         valid: false,
                         entries_checked: i,
                         first_invalid_index: Some(i),
-                        error: Some(format!("Failed to parse entry {}: {}", i, e)),
+                        error: Some(format!("Failed to parse entry {i}: {e}")),
                     });
                 }
             };
@@ -76,7 +76,7 @@ impl IntegrityVerifier {
                     valid: false,
                     entries_checked: i + 1,
                     first_invalid_index: Some(i),
-                    error: Some(format!("Signature verification failed at entry {}", i)),
+                    error: Some(format!("Signature verification failed at entry {i}")),
                 });
             }
 
@@ -89,7 +89,7 @@ impl IntegrityVerifier {
             valid: first_invalid_index.is_none(),
             entries_checked,
             first_invalid_index,
-            error: first_invalid_index.map(|i| format!("Chain broken at entry {}", i)),
+            error: first_invalid_index.map(|i| format!("Chain broken at entry {i}")),
         };
 
         Ok(report)
@@ -162,7 +162,7 @@ impl IntegrityVerifier {
             first_invalid_index: None, // File-level, not entry-level
             error: first_error.clone().map(|e| {
                 if let Some(ref file) = first_invalid_file {
-                    format!("{} (file: {})", e, file)
+                    format!("{e} (file: {file})")
                 } else {
                     e
                 }
@@ -469,7 +469,7 @@ mod tests {
 
         let entry0 = create_test_entry(0, None);
         let valid_json = serde_json::to_string(&entry0).unwrap();
-        let content = format!("{}\n{{invalid json}}", valid_json);
+        let content = format!("{valid_json}\n{{invalid json}}");
 
         let report = verifier.verify_content(&content).unwrap();
         assert!(!report.valid);

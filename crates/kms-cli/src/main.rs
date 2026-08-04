@@ -433,7 +433,7 @@ async fn main() -> anyhow::Result<()> {
                 {
                     let bytes = STANDARD
                         .decode(encoded)
-                        .map_err(|e| anyhow::anyhow!("Base64 decode error: {}", e))?;
+                        .map_err(|e| anyhow::anyhow!("Base64 decode error: {e}"))?;
                     println!("{}", String::from_utf8_lossy(&bytes));
                 }
             } else {
@@ -663,7 +663,7 @@ async fn main() -> anyhow::Result<()> {
                 {
                     let bytes = STANDARD
                         .decode(encoded)
-                        .map_err(|e| anyhow::anyhow!("Base64 decode error: {}", e))?;
+                        .map_err(|e| anyhow::anyhow!("Base64 decode error: {e}"))?;
                     println!("{}", String::from_utf8_lossy(&bytes));
                 }
             } else {
@@ -840,7 +840,7 @@ fn write_report_output<T: serde::Serialize + HtmlReport>(
                 return Ok(());
             }
         };
-        let path = format!("{}/{}.json", output_dir, base_name);
+        let path = format!("{output_dir}/{base_name}.json");
         fs::File::create(&path)?.write_all(json.as_bytes())?;
         println!("JSON report written to {}", path);
         Ok(())
@@ -848,7 +848,7 @@ fn write_report_output<T: serde::Serialize + HtmlReport>(
 
     let write_html = |report: &T| {
         let html = report.to_html();
-        let path = format!("{}/{}.html", output_dir, base_name);
+        let path = format!("{output_dir}/{base_name}.html");
         let mut f = fs::File::create(&path).expect("create HTML file");
         f.write_all(html.as_bytes()).expect("write HTML file");
         println!("HTML report written to {}", path);

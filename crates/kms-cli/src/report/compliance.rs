@@ -127,9 +127,7 @@ impl ComplianceReport {
             status: RuleStatus::Pass,
             evidence: if destroyed > 0 {
                 format!(
-                    "{} keys properly destroyed via destroy_key_with_proof",
-                    destroyed
-                )
+                    "{destroyed} keys properly destroyed via destroy_key_with_proof")
             } else {
                 "No destroyed keys (system supports destroy_key_with_proof)".into()
             },

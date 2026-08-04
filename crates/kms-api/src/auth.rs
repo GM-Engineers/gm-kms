@@ -633,7 +633,7 @@ impl ApiKeyConfig {
         }
 
         let new_key =
-            ApiKey::new(new_secret, new_permission).with_key_id(format!("{}-rotated", old_key_id));
+            ApiKey::new(new_secret, new_permission).with_key_id(format!("{old_key_id}-rotated"));
 
         self.valid_keys.lock().push(new_key.clone());
         Some(new_key)

@@ -263,10 +263,10 @@ impl KeyService {
             .await
             .map_err(|e| match e {
                 kms_core::Error::KeyNotFound(_) => {
-                    ApiError::NotFound(format!("key {} not found", key_id))
+                    ApiError::NotFound(format!("key {key_id} not found"))
                 }
                 kms_core::Error::KeyOperationNotAllowed(_) => {
-                    ApiError::Forbidden(format!("key {} cannot be exported", key_id))
+                    ApiError::Forbidden(format!("key {key_id} cannot be exported"))
                 }
                 _ => ServiceError::from(e).into_api_error(),
             })?;
@@ -282,23 +282,23 @@ impl KeyService {
         let rng = ring::rand::SystemRandom::new();
         let mut transport_key = vec![0u8; 32];
         ring::rand::SecureRandom::fill(&rng, &mut transport_key)
-            .map_err(|e| ApiError::Internal(format!("failed to generate transport key: {}", e)))?;
+            .map_err(|e| ApiError::Internal(format!("failed to generate transport key: {e}")))?;
 
         // Wrap key material with transport key using AES-256-GCM
         use ring::aead::{AES_256_GCM, Aad, LessSafeKey, Nonce, UnboundKey};
         let unbound_kek = UnboundKey::new(&AES_256_GCM, &transport_key)
-            .map_err(|e| ApiError::Internal(format!("failed to create KEK: {}", e)))?;
+            .map_err(|e| ApiError::Internal(format!("failed to create KEK: {e}")))?;
         let less_safe_kek = LessSafeKey::new(unbound_kek);
 
         // Generate random nonce for each encryption (critical for AES-GCM security)
         let mut nonce_bytes = [0u8; 12];
         rng.fill(&mut nonce_bytes)
-            .map_err(|e| ApiError::Internal(format!("failed to generate nonce: {}", e)))?;
+            .map_err(|e| ApiError::Internal(format!("failed to generate nonce: {e}")))?;
         let nonce = Nonce::assume_unique_for_key(nonce_bytes);
         let mut in_out = key_material.clone();
         let tag = less_safe_kek
             .seal_in_place_separate_tag(nonce, Aad::empty(), &mut in_out)
-            .map_err(|e| ApiError::Internal(format!("failed to wrap key: {}", e)))?;
+            .map_err(|e| ApiError::Internal(format!("failed to wrap key: {e}")))?;
 
         // Append tag to ciphertext (combined = wrapped_key)
         let mut wrapped_key = in_out;
@@ -317,7 +317,7 @@ impl KeyService {
         let padding = Oaep::new::<Sha256>();
         let encrypted_transport_key = rsa_public_key
             .encrypt(&mut os_rng, padding, &transport_key)
-            .map_err(|e| ApiError::Internal(format!("failed to encrypt transport key: {}", e)))?;
+            .map_err(|e| ApiError::Internal(format!("failed to encrypt transport key: {e}")))?;
 
         let export_id = uuid::Uuid::new_v4().to_string();
         let expires_at = (chrono::Utc::now() + chrono::Duration::minutes(5)).to_rfc3339();
@@ -354,9 +354,7 @@ impl KeyService {
             "sm9-encryption" | "sm9encryption" => Ok(KeySpec::Sm9Encryption),
             "rsa-4096" | "rsa4096" => Ok(KeySpec::Rsa4096),
             _ => Err(ApiError::InvalidRequest(format!(
-                "unsupported spec: {}",
-                spec_str
-            ))),
+                "unsupported spec: {spec_str}"))),
         }
     }
 }

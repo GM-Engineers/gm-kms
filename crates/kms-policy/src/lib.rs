@@ -157,11 +157,11 @@ impl AccessContext {
         }
 
         for (k, v) in &self.subject_attrs {
-            ctx.attributes.insert(format!("subject.{}", k), v.clone());
+            ctx.attributes.insert(format!("subject.{k}"), v.clone());
         }
 
         for (k, v) in &self.environment {
-            ctx.attributes.insert(format!("env.{}", k), v.clone());
+            ctx.attributes.insert(format!("env.{k}"), v.clone());
         }
 
         ctx

@@ -26,7 +26,7 @@ impl<B> RedisCachedKeystore<B> {
 }
 
 fn cache_key_id(key_id: &uuid::Uuid, tenant_id: &str) -> String {
-    format!("kms:{}:key:{}", tenant_id, key_id)
+    format!("kms:{tenant_id}:key:{key_id}")
 }
 
 #[async_trait]

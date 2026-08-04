@@ -389,7 +389,7 @@ mod tests {
         // Log multiple events
         for i in 0..5 {
             let mut event = create_test_event();
-            event.action = format!("action_{}", i);
+            event.action = format!("action_{i}");
             logger.log(event).await;
         }
 

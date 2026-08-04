@@ -58,7 +58,7 @@ impl TenantQuotaTracker {
     /// Check if tenant can create a new key
     pub async fn can_create_key(&self, tenant_id: &str) -> Result<bool, QuotaExceeded> {
         let mut conn = self.redis.clone();
-        let key = format!("quota:{}:keys", tenant_id);
+        let key = format!("quota:{tenant_id}:keys");
 
         let current: u64 = conn.get(&key).await.unwrap_or(0);
 
@@ -76,7 +76,7 @@ impl TenantQuotaTracker {
     /// Increment key count for tenant
     pub async fn increment_key_count(&self, tenant_id: &str) -> Result<u64, ()> {
         let mut conn = self.redis.clone();
-        let key = format!("quota:{}:keys", tenant_id);
+        let key = format!("quota:{tenant_id}:keys");
 
         let new_count: u64 = conn.incr(&key, 1).await.map_err(|_| ())?;
 
@@ -89,7 +89,7 @@ impl TenantQuotaTracker {
     /// Decrement key count for tenant (when key is deleted)
     pub async fn decrement_key_count(&self, tenant_id: &str) -> Result<u64, ()> {
         let mut conn = self.redis.clone();
-        let key = format!("quota:{}:keys", tenant_id);
+        let key = format!("quota:{tenant_id}:keys");
 
         let new_count: u64 = conn.decr(&key, 1).await.map_err(|_| ())?;
 
@@ -160,7 +160,7 @@ impl TenantQuotaTracker {
         let mut conn = self.redis.clone();
 
         // Get key count
-        let key_key = format!("quota:{}:keys", tenant_id);
+        let key_key = format!("quota:{tenant_id}:keys");
         let key_count: u64 = conn.get(&key_key).await.unwrap_or(0);
 
         // Get requests this minute

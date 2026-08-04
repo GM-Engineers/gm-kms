@@ -493,7 +493,7 @@ async fn benchmark_key_generation() {
     let start = Instant::now();
     for i in 0..100 {
         let _ = store
-            .generate_key(&spec, &format!("bench-key-{}", i), "bench-tenant")
+            .generate_key(&spec, &format!("bench-key-{i}"), "bench-tenant")
             .await;
     }
     let duration = start.elapsed();
@@ -1130,7 +1130,7 @@ async fn test_concurrent_encrypt_during_rotation() {
         let store = store.clone();
         encrypt_handles.push(tokio::spawn(async move {
             store
-                .encrypt(&key_id, format!("msg{}", i).as_bytes(), None, "test-tenant")
+                .encrypt(&key_id, format!("msg{i}").as_bytes(), None, "test-tenant")
                 .await
         }));
     }
@@ -1330,7 +1330,7 @@ async fn test_concurrent_encrypt_delete_race() {
         let store = store.clone();
         handles.push(tokio::spawn(async move {
             store
-                .encrypt(&key_id, format!("enc{}", i).as_bytes(), None, "test-tenant")
+                .encrypt(&key_id, format!("enc{i}").as_bytes(), None, "test-tenant")
                 .await
         }));
     }
@@ -1465,7 +1465,7 @@ async fn test_concurrent_reads_no_interference() {
             store
                 .encrypt(
                     &key_id,
-                    format!("concurrent{}", i).as_bytes(),
+                    format!("concurrent{i}").as_bytes(),
                     None,
                     "test-tenant",
                 )
@@ -1482,7 +1482,7 @@ async fn test_concurrent_reads_no_interference() {
 
     // All must decrypt correctly
     for (i, ct) in ciphertexts.iter().enumerate() {
-        let expected = format!("concurrent{}", i);
+        let expected = format!("concurrent{i}");
         let pt = store
             .decrypt(&key_id, ct, None, "test-tenant")
             .await
@@ -1510,7 +1510,7 @@ async fn test_concurrent_sign_during_rotation() {
         let store = store.clone();
         sign_handles.push(tokio::spawn(async move {
             store
-                .sign(&key_id, format!("signed{}", i).as_bytes(), "test-tenant")
+                .sign(&key_id, format!("signed{i}").as_bytes(), "test-tenant")
                 .await
         }));
     }
@@ -1604,7 +1604,7 @@ async fn test_concurrent_encrypt_destroy_race() {
         let store = store.clone();
         handles.push(tokio::spawn(async move {
             store
-                .encrypt(&key_id, format!("enc{}", i).as_bytes(), None, "test-tenant")
+                .encrypt(&key_id, format!("enc{i}").as_bytes(), None, "test-tenant")
                 .await
         }));
     }
@@ -1649,7 +1649,7 @@ async fn test_many_rotate_encrypt_cycles() {
     let mut all_cts: Vec<(u32, Ciphertext)> = vec![];
 
     for cycle in 1..=n_cycles {
-        let msg = format!("cycle-{}", cycle);
+        let msg = format!("cycle-{cycle}");
         let ct = store
             .encrypt(&key_id, msg.as_bytes(), None, "test-tenant")
             .await
@@ -1664,7 +1664,7 @@ async fn test_many_rotate_encrypt_cycles() {
 
     // All ciphertexts must decrypt correctly with their respective plaintexts
     for (version, ct) in &all_cts {
-        let expected = format!("cycle-{}", version);
+        let expected = format!("cycle-{version}");
         let pt = store
             .decrypt(&key_id, ct, None, "test-tenant")
             .await

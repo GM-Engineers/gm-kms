@@ -79,7 +79,7 @@ impl IntoResponse for ApiError {
                 limit,
             } => (
                 StatusCode::TOO_MANY_REQUESTS,
-                format!("quota exceeded: {} ({}/{})", resource, current, limit),
+                format!("quota exceeded: {resource} ({current}/{limit})"),
             ),
             ApiError::TooManyRequests(msg) => (StatusCode::TOO_MANY_REQUESTS, msg.clone()),
             ApiError::NotImplemented => {

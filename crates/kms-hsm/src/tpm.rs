@@ -194,7 +194,7 @@ impl SimulatedTpmKeystore {
         let bank = self.pcr_bank.read();
         bank.read(pcr_index)
             .cloned()
-            .ok_or_else(|| Error::TpmError(format!("invalid PCR index: {}", pcr_index)))
+            .ok_or_else(|| Error::TpmError(format!("invalid PCR index: {pcr_index}")))
     }
 
     /// Allocate a new TPM NV handle
@@ -212,7 +212,7 @@ impl SimulatedTpmKeystore {
             for (pcr_index, expected) in bindings {
                 let actual = bank
                     .read(*pcr_index)
-                    .ok_or_else(|| Error::TpmError(format!("invalid PCR index: {}", pcr_index)))?;
+                    .ok_or_else(|| Error::TpmError(format!("invalid PCR index: {pcr_index}")))?;
                 if actual != expected {
                     return Err(Error::TpmPcrMismatch {
                         expected: expected.clone(),
@@ -471,10 +471,10 @@ impl SimulatedTpmKeystore {
         use gm_crypto::sm2::{Sm2KeyPair, Sm2Signer};
 
         let key_pair = Sm2KeyPair::from_private_key(private_key)
-            .map_err(|e| Error::SignatureFailed(format!("invalid SM2 key: {}", e)))?;
+            .map_err(|e| Error::SignatureFailed(format!("invalid SM2 key: {e}")))?;
 
         let signer = Sm2Signer::new(&key_pair)
-            .map_err(|e| Error::SignatureFailed(format!("failed to create signer: {}", e)))?;
+            .map_err(|e| Error::SignatureFailed(format!("failed to create signer: {e}")))?;
 
         signer
             .sign(data)
@@ -486,11 +486,11 @@ impl SimulatedTpmKeystore {
 
         // Derive public key from private key
         let key_pair = Sm2KeyPair::from_private_key(private_key)
-            .map_err(|e| Error::VerificationFailed(format!("invalid SM2 key: {}", e)))?;
+            .map_err(|e| Error::VerificationFailed(format!("invalid SM2 key: {e}")))?;
         let public_key = key_pair.public_key_bytes();
 
         let verifier = Sm2Verifier::new(&public_key, "1234567812345678")
-            .map_err(|e| Error::VerificationFailed(format!("invalid public key: {}", e)))?;
+            .map_err(|e| Error::VerificationFailed(format!("invalid public key: {e}")))?;
 
         match verifier.verify(data, signature) {
             Ok(()) => Ok(true),

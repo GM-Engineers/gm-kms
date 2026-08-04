@@ -51,7 +51,7 @@ impl RedisOperationCounter {
 #[async_trait::async_trait]
 impl OperationCounter for RedisOperationCounter {
     async fn increment(&self, key_id: &Uuid) -> u64 {
-        let key = format!("kms:key:{}:ops", key_id);
+        let key = format!("kms:key:{key_id}:ops");
         redis::cmd("INCR")
             .arg(&key)
             .query_async(&mut self.conn.clone())
@@ -60,7 +60,7 @@ impl OperationCounter for RedisOperationCounter {
     }
 
     async fn get_count(&self, key_id: &Uuid) -> u64 {
-        let key = format!("kms:key:{}:ops", key_id);
+        let key = format!("kms:key:{key_id}:ops");
         redis::cmd("GET")
             .arg(&key)
             .query_async(&mut self.conn.clone())
@@ -870,13 +870,13 @@ mod tests {
             let mut store = self.store.lock();
             let id = store.len();
             store.push(plaintext.to_vec());
-            Ok(format!("kek:{}", id).into_bytes())
+            Ok(format!("kek:{id}").into_bytes())
         }
 
         async fn decrypt(&self, ciphertext: &[u8]) -> kms_core::Result<Vec<u8>> {
             let store = self.store.lock();
             let s = String::from_utf8(ciphertext.to_vec())
-                .map_err(|e| kms_core::Error::MasterKeyError(format!("invalid KEK ref: {}", e)))?;
+                .map_err(|e| kms_core::Error::MasterKeyError(format!("invalid KEK ref: {e}")))?;
             let id: usize = s
                 .strip_prefix("kek:")
                 .and_then(|n| n.parse().ok())

@@ -75,7 +75,7 @@ impl Sm2KexSessionManager {
 
     /// Generate a cache key for a session
     fn cache_key(session_id: &Uuid) -> String {
-        format!("{}{}", SM2_KEX_SESSION_PREFIX, session_id)
+        format!("{SM2_KEX_SESSION_PREFIX}{session_id}")
     }
 
     /// Create a new session entry
@@ -146,7 +146,7 @@ impl Sm2KexSessionManager {
         let mut session = self
             .get_session(session_id)
             .await?
-            .ok_or_else(|| Error::KeyNotFound(format!("session {} not found", session_id)))?;
+            .ok_or_else(|| Error::KeyNotFound(format!("session {session_id} not found")))?;
 
         session.state = new_state;
         session.last_activity_ms = Self::current_timestamp();
@@ -165,7 +165,7 @@ impl Sm2KexSessionManager {
         let mut session = self
             .get_session(session_id)
             .await?
-            .ok_or_else(|| Error::KeyNotFound(format!("session {} not found", session_id)))?;
+            .ok_or_else(|| Error::KeyNotFound(format!("session {session_id} not found")))?;
 
         let now_ms = Self::current_timestamp();
 
@@ -206,7 +206,7 @@ impl Sm2KexSessionManager {
         let mut session = self
             .get_session(session_id)
             .await?
-            .ok_or_else(|| Error::KeyNotFound(format!("session {} not found", session_id)))?;
+            .ok_or_else(|| Error::KeyNotFound(format!("session {session_id} not found")))?;
 
         session.state = SessionState::Completed;
         session.shared_secret = Some(shared_secret);
@@ -234,7 +234,7 @@ impl Sm2KexSessionManager {
         let session = self
             .get_session(session_id)
             .await?
-            .ok_or_else(|| Error::KeyNotFound(format!("session {} not found", session_id)))?;
+            .ok_or_else(|| Error::KeyNotFound(format!("session {session_id} not found")))?;
 
         let now_ms = Self::current_timestamp();
         let age_secs = (now_ms - session.created_at_ms) / 1000;

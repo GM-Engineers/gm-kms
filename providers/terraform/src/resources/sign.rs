@@ -36,7 +36,7 @@ impl KmsSignResource {
         // Decode base64 data
         let data_bytes = STANDARD
             .decode(data)
-            .map_err(|e| format!("Invalid base64 data: {}", e))?;
+            .map_err(|e| format!("Invalid base64 data: {e}"))?;
 
         let response = state
             .client

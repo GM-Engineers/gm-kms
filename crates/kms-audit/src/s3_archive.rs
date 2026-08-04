@@ -172,9 +172,7 @@ impl S3ArchiveClient {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
             Err(AuditError::Network(format!(
-                "S3 upload failed: {} - {}",
-                status, body
-            )))
+                "S3 upload failed: {status} - {body}")))
         }
     }
 
@@ -209,9 +207,7 @@ impl S3ArchiveClient {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
             Err(AuditError::Network(format!(
-                "S3 list failed: {} - {}",
-                status, body
-            )))
+                "S3 list failed: {status} - {body}")))
         }
     }
 

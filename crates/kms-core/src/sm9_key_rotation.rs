@@ -162,7 +162,7 @@ impl Sm9RotationAdapter {
             .or_insert_with(KeyRotationManager::new);
 
         let version = manager.register_sign_key(key.clone()).map_err(|e| {
-            Error::MasterKeyError(format!("SM9 sign key registration failed: {}", e))
+            Error::MasterKeyError(format!("SM9 sign key registration failed: {e}"))
         })?;
 
         // Persist key material
@@ -196,7 +196,7 @@ impl Sm9RotationAdapter {
             .or_insert_with(KeyRotationManager::new);
 
         let version = manager.register_enc_key(key.clone()).map_err(|e| {
-            Error::MasterKeyError(format!("SM9 enc key registration failed: {}", e))
+            Error::MasterKeyError(format!("SM9 enc key registration failed: {e}"))
         })?;
 
         let key_bytes = serialize_enc_master_key(&key)?;
@@ -236,7 +236,7 @@ impl Sm9RotationAdapter {
 
         // Generate new master key
         let new_key = SignMasterKey::generate(&mut rand::rng())
-            .map_err(|e| Error::MasterKeyError(format!("SM9 key generation failed: {}", e)))?;
+            .map_err(|e| Error::MasterKeyError(format!("SM9 key generation failed: {e}")))?;
 
         let mut managers = self.managers.write().await;
         let manager = managers
@@ -246,7 +246,7 @@ impl Sm9RotationAdapter {
         let _old_version = manager.current_sign_version();
         let rotation = manager
             .rotate_sign_key(new_key.clone(), grace_period_secs)
-            .map_err(|e| Error::MasterKeyError(format!("SM9 sign key rotation failed: {}", e)))?;
+            .map_err(|e| Error::MasterKeyError(format!("SM9 sign key rotation failed: {e}")))?;
 
         // Persist new key material
         let key_bytes = serialize_sign_master_key(&new_key)?;
@@ -279,7 +279,7 @@ impl Sm9RotationAdapter {
         }
 
         let new_key = EncMasterKey::generate(&mut rand::rng())
-            .map_err(|e| Error::MasterKeyError(format!("SM9 key generation failed: {}", e)))?;
+            .map_err(|e| Error::MasterKeyError(format!("SM9 key generation failed: {e}")))?;
 
         let mut managers = self.managers.write().await;
         let manager = managers
@@ -289,7 +289,7 @@ impl Sm9RotationAdapter {
         let _old_version = manager.current_enc_version();
         let rotation = manager
             .rotate_enc_key(new_key.clone(), grace_period_secs)
-            .map_err(|e| Error::MasterKeyError(format!("SM9 enc key rotation failed: {}", e)))?;
+            .map_err(|e| Error::MasterKeyError(format!("SM9 enc key rotation failed: {e}")))?;
 
         let key_bytes = serialize_enc_master_key(&new_key)?;
         self.kek_store.encrypt(&key_bytes).await?;

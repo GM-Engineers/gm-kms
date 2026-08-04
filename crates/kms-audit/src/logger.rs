@@ -617,7 +617,7 @@ mod tests {
                 actor_type: "user".to_string(),
                 action: "test".to_string(),
                 resource_type: "key".to_string(),
-                resource_id: Some(format!("key-{}", i)),
+                resource_id: Some(format!("key-{i}")),
                 result: "success".to_string(),
                 metadata: std::collections::HashMap::new(),
             };
@@ -727,7 +727,7 @@ mod tests {
                 actor_type: "user".to_string(),
                 action: "test".to_string(),
                 resource_type: "key".to_string(),
-                resource_id: Some(format!("key-{}", i)),
+                resource_id: Some(format!("key-{i}")),
                 result: "success".to_string(),
                 metadata: std::collections::HashMap::new(),
             };
@@ -757,7 +757,7 @@ mod tests {
                 event_id: uuid::Uuid::new_v4(),
                 timestamp: chrono::Utc::now(),
                 event_type: EventType::KeyCreated,
-                actor_id: format!("user{}", i),
+                actor_id: format!("user{i}"),
                 actor_type: "user".to_string(),
                 action: "test".to_string(),
                 resource_type: "key".to_string(),
@@ -1341,7 +1341,7 @@ mod timestamped_tests {
                 actor_type: "user".to_string(),
                 action: "test".to_string(),
                 resource_type: "key".to_string(),
-                resource_id: Some(format!("key-{}", i)),
+                resource_id: Some(format!("key-{i}")),
                 result: "success".to_string(),
                 metadata: std::collections::HashMap::new(),
             };

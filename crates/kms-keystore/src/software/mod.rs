@@ -140,7 +140,7 @@ impl SoftwareKeystore {
         // Parse peer's public key from SEC1 encoded bytes
         // Accepts uncompressed (65 bytes), compressed (33 bytes), or hybrid format
         let peer_public_key = PublicKey::from_sec1_bytes(peer_public_key)
-            .map_err(|e| Error::KeyExchangeFailed(format!("invalid P-256 public key: {}", e)))?;
+            .map_err(|e| Error::KeyExchangeFailed(format!("invalid P-256 public key: {e}")))?;
 
         // Perform ECDH
         let shared_secret = secret
@@ -173,7 +173,7 @@ impl SoftwareKeystore {
 
         // Parse peer's public key from SEC1 encoded bytes
         let peer_public_key = PublicKey::from_sec1_bytes(peer_public_key)
-            .map_err(|e| Error::KeyExchangeFailed(format!("invalid P-384 public key: {}", e)))?;
+            .map_err(|e| Error::KeyExchangeFailed(format!("invalid P-384 public key: {e}")))?;
 
         // Perform ECDH
         let shared_secret = secret
@@ -262,16 +262,16 @@ impl SoftwareKeystore {
 
         // Create Sm2KeyPair from stored material
         let key_pair = Sm2KeyPair::from_private_key(entry.material.as_slice())
-            .map_err(|e| Error::KeyExchangeFailed(format!("invalid SM2 key: {}", e)))?;
+            .map_err(|e| Error::KeyExchangeFailed(format!("invalid SM2 key: {e}")))?;
 
         // Create initiator session
         let session = KexSession::new_initiator(&key_pair, user_id)
-            .map_err(|e| Error::KeyExchangeFailed(format!("failed to create session: {}", e)))?;
+            .map_err(|e| Error::KeyExchangeFailed(format!("failed to create session: {e}")))?;
 
         // Generate first message
         let msg1 = session
             .generate_msg1()
-            .map_err(|e| Error::KeyExchangeFailed(format!("failed to generate msg1: {}", e)))?;
+            .map_err(|e| Error::KeyExchangeFailed(format!("failed to generate msg1: {e}")))?;
 
         // Generate session ID
         let session_id = Uuid::new_v4();
@@ -326,15 +326,15 @@ impl SoftwareKeystore {
 
         // Create Sm2KeyPair from stored material
         let key_pair = Sm2KeyPair::from_private_key(entry.material.as_slice())
-            .map_err(|e| Error::KeyExchangeFailed(format!("invalid SM2 key: {}", e)))?;
+            .map_err(|e| Error::KeyExchangeFailed(format!("invalid SM2 key: {e}")))?;
 
         // Create responder session
         let mut session = KexSession::new_responder(&key_pair, user_id)
-            .map_err(|e| Error::KeyExchangeFailed(format!("failed to create session: {}", e)))?;
+            .map_err(|e| Error::KeyExchangeFailed(format!("failed to create session: {e}")))?;
 
         // Parse peer's public key for signature verification
         let peer_pub_key = PublicKey::from_sec1_bytes(peer_public_key)
-            .map_err(|e| Error::KeyExchangeFailed(format!("invalid peer public key: {}", e)))?;
+            .map_err(|e| Error::KeyExchangeFailed(format!("invalid peer public key: {e}")))?;
 
         // === SM2-KEX Security: Validate R1 in msg1 is not identity ===
         // Per GM/T 002-2012, the ephemeral public key R1 must be validated
@@ -344,7 +344,7 @@ impl SoftwareKeystore {
         // Process msg1 and generate msg2
         let msg2 = session
             .process_msg1(msg1, &peer_pub_key)
-            .map_err(|e| Error::KeyExchangeFailed(format!("failed to process msg1: {}", e)))?;
+            .map_err(|e| Error::KeyExchangeFailed(format!("failed to process msg1: {e}")))?;
 
         // Generate session ID
         let session_id = Uuid::new_v4();
@@ -387,15 +387,13 @@ impl SoftwareKeystore {
         // Check if session has been revoked
         if self.is_session_revoked(session_id) {
             return Err(Error::KeyExchangeFailed(format!(
-                "SM2-KEX session {} has been revoked",
-                session_id
-            )));
+                "SM2-KEX session {session_id} has been revoked")));
         }
 
         let mut sessions = self.sm2_kex_sessions.write();
 
         let entry = sessions.get_mut(session_id).ok_or_else(|| {
-            Error::KeyNotFound(format!("SM2-KEX session {} not found", session_id))
+            Error::KeyNotFound(format!("SM2-KEX session {session_id} not found"))
         })?;
 
         // === Replay Protection: Check Session Expiration ===
@@ -450,25 +448,21 @@ impl SoftwareKeystore {
 
         // Parse peer's public key for signature verification
         let peer_pub_key = PublicKey::from_sec1_bytes(peer_public_key)
-            .map_err(|e| Error::KeyExchangeFailed(format!("invalid peer public key: {}", e)))?;
+            .map_err(|e| Error::KeyExchangeFailed(format!("invalid peer public key: {e}")))?;
 
         if entry.is_initiator {
             // Initiator processes msg2 (responder's message with signature)
             match entry.session.process_msg2(msg, &peer_pub_key) {
                 Ok(msg3) => Ok(Some(msg3)),
                 Err(e) => Err(Error::KeyExchangeFailed(format!(
-                    "msg2 processing failed: {}",
-                    e
-                ))),
+                    "msg2 processing failed: {e}"))),
             }
         } else {
             // Responder processes msg3 (confirmation from initiator)
             match entry.session.process_msg3(msg) {
                 Ok(()) => Ok(None),
                 Err(e) => Err(Error::KeyExchangeFailed(format!(
-                    "msg3 processing failed: {}",
-                    e
-                ))),
+                    "msg3 processing failed: {e}"))),
             }
         }
     }
@@ -478,15 +472,13 @@ impl SoftwareKeystore {
         // Check if session has been revoked
         if self.is_session_revoked(session_id) {
             return Err(Error::KeyExchangeFailed(format!(
-                "SM2-KEX session {} has been revoked",
-                session_id
-            )));
+                "SM2-KEX session {session_id} has been revoked")));
         }
 
         let sessions = self.sm2_kex_sessions.read();
 
         let entry = sessions.get(session_id).ok_or_else(|| {
-            Error::KeyNotFound(format!("SM2-KEX session {} not found", session_id))
+            Error::KeyNotFound(format!("SM2-KEX session {session_id} not found"))
         })?;
 
         entry
@@ -505,7 +497,7 @@ impl SoftwareKeystore {
 
         // Verify session exists
         sessions.get(session_id).ok_or_else(|| {
-            Error::KeyNotFound(format!("SM2-KEX session {} not found", session_id))
+            Error::KeyNotFound(format!("SM2-KEX session {session_id} not found"))
         })?;
 
         // Add to revocation list before removal (prevents replay of old session IDs)
@@ -530,7 +522,7 @@ impl SoftwareKeystore {
 
         // Remove from active sessions
         sessions.remove(session_id).ok_or_else(|| {
-            Error::KeyNotFound(format!("SM2-KEX session {} not found", session_id))
+            Error::KeyNotFound(format!("SM2-KEX session {session_id} not found"))
         })?;
 
         Ok(())
@@ -605,9 +597,7 @@ fn deserialize_sm2_kex_message(
     let msg_type = bytes[0];
     if expected_type != 0 && msg_type != expected_type {
         return Err(format!(
-            "expected msg_type {}, got {}",
-            expected_type, msg_type
-        ));
+            "expected msg_type {expected_type}, got {msg_type}"));
     }
 
     let mut offset = 1;
@@ -728,7 +718,7 @@ impl super::KeystoreBackend for SoftwareKeystore {
     ) -> Result<KeyMeta> {
         // Validate key material format using comprehensive validation
         let validation = crate::validation::validate_key_material(spec, &material)
-            .map_err(|e| Error::InvalidAlgorithm(format!("key validation failed: {}", e)))?;
+            .map_err(|e| Error::InvalidAlgorithm(format!("key validation failed: {e}")))?;
 
         if !validation.valid {
             return Err(Error::InvalidAlgorithm(format!(
@@ -783,9 +773,7 @@ impl super::KeystoreBackend for SoftwareKeystore {
 
         if entry.meta.status != KeyStatus::Active {
             return Err(Error::KeyOperationNotAllowed(format!(
-                "Key {} is not active for export",
-                key_id
-            )));
+                "Key {key_id} is not active for export")));
         }
 
         Ok(entry.material.as_slice().to_vec())
@@ -828,9 +816,7 @@ impl super::KeystoreBackend for SoftwareKeystore {
             .map(|(_, mat)| mat.as_slice().to_vec())
             .ok_or_else(|| {
                 Error::InvalidAlgorithm(format!(
-                    "Key version {} not found for key {}",
-                    version, key_id
-                ))
+                    "Key version {version} not found for key {key_id}"))
             })
     }
 
@@ -855,9 +841,7 @@ impl super::KeystoreBackend for SoftwareKeystore {
 
         if entry.meta.status != KeyStatus::Active {
             return Err(Error::KeyOperationNotAllowed(format!(
-                "Key {} is not active",
-                key_id
-            )));
+                "Key {key_id} is not active")));
         }
 
         match entry.meta.spec {
@@ -972,9 +956,7 @@ impl super::KeystoreBackend for SoftwareKeystore {
 
         if !entry.meta.status.can_decrypt() {
             return Err(Error::KeyOperationNotAllowed(format!(
-                "Key {} cannot decrypt",
-                key_id
-            )));
+                "Key {key_id} cannot decrypt")));
         }
 
         // Select key material based on version
@@ -1094,9 +1076,7 @@ impl super::KeystoreBackend for SoftwareKeystore {
 
         if entry.meta.status != KeyStatus::Active {
             return Err(Error::KeyOperationNotAllowed(format!(
-                "Key {} is not active",
-                key_id
-            )));
+                "Key {key_id} is not active")));
         }
 
         match entry.meta.spec {
@@ -1184,9 +1164,7 @@ impl super::KeystoreBackend for SoftwareKeystore {
 
         if !entry.meta.status.can_rotate() {
             return Err(Error::KeyOperationNotAllowed(format!(
-                "Key {} cannot be rotated",
-                key_id
-            )));
+                "Key {key_id} cannot be rotated")));
         }
 
         // Archive current material to versions before rotation.
@@ -1332,9 +1310,7 @@ impl super::KeystoreBackend for SoftwareKeystore {
 
         if entry.meta.status != KeyStatus::Active {
             return Err(Error::KeyOperationNotAllowed(format!(
-                "Key {} is not active",
-                key_id
-            )));
+                "Key {key_id} is not active")));
         }
 
         let shared_secret = match algorithm {
@@ -1384,7 +1360,7 @@ impl super::KeystoreBackend for SoftwareKeystore {
     ) -> Result<(Uuid, Vec<u8>)> {
         let user_id_bytes = user_id.to_vec();
         let msg1 = deserialize_sm2_kex_message(msg1_bytes, 1)
-            .map_err(|e| Error::Internal(format!("invalid msg1: {}", e)))?;
+            .map_err(|e| Error::Internal(format!("invalid msg1: {e}")))?;
 
         let (session_id, msg2) = self
             .accept_sm2_kex_session(key_id, &user_id_bytes, &msg1, peer_public_key)
@@ -1403,7 +1379,7 @@ impl super::KeystoreBackend for SoftwareKeystore {
     ) -> Result<Option<Vec<u8>>> {
         // Determine message type from bytes
         let msg = deserialize_sm2_kex_message(msg_bytes, 0) // 0 means detect from bytes
-            .map_err(|e| Error::Internal(format!("invalid message: {}", e)))?;
+            .map_err(|e| Error::Internal(format!("invalid message: {e}")))?;
 
         let result_msg = self
             .process_sm2_kex_message(session_id, &msg, peer_public_key)

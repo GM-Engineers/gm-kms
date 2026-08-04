@@ -66,7 +66,7 @@ impl IntoApiError for ServiceError {
                 ApiError::Forbidden("rate limit exceeded".to_string())
             }
             ServiceError::InvalidSpec(spec) => {
-                ApiError::InvalidRequest(format!("invalid spec: {}", spec))
+                ApiError::InvalidRequest(format!("invalid spec: {spec}"))
             }
             ServiceError::ValidationError(msg) => ApiError::InvalidRequest(msg),
             ServiceError::EncryptionFailed(msg) => ApiError::Internal(msg),

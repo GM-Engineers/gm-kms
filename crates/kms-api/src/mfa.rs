@@ -778,7 +778,7 @@ impl MfaManager {
         )
         .fetch_all(pool)
         .await
-        .map_err(|e| format!("Failed to query TOTP configs: {}", e))?;
+        .map_err(|e| format!("Failed to query TOTP configs: {e}"))?;
 
         let mut migrated = 0u64;
         for (user_id, secret) in &rows {
@@ -808,7 +808,7 @@ impl MfaManager {
                 .bind(user_id)
                 .execute(pool)
                 .await
-                .map_err(|e| format!("Failed to update secret for user {}: {}", user_id, e))?;
+                .map_err(|e| format!("Failed to update secret for user {user_id}: {e}"))?;
 
             migrated += 1;
         }

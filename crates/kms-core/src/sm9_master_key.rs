@@ -89,13 +89,13 @@ impl EnvVarKekStore {
                 if s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit()) {
                     // Hex format
                     hex::decode(&s)
-                        .map_err(|e| Error::MasterKeyError(format!("invalid hex KEK: {}", e)))
+                        .map_err(|e| Error::MasterKeyError(format!("invalid hex KEK: {e}")))
                 } else {
                     // Assume base64
                     use base64::Engine;
                     base64::engine::general_purpose::STANDARD
                         .decode(&s)
-                        .map_err(|e| Error::MasterKeyError(format!("invalid base64 KEK: {}", e)))
+                        .map_err(|e| Error::MasterKeyError(format!("invalid base64 KEK: {e}")))
                 }
             })
     }

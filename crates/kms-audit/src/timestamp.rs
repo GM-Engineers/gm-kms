@@ -372,7 +372,7 @@ impl TimestampAuthority {
 
         // Parse and verify response
         parse_timestamp_response(&response, digest, &nonce)
-            .map_err(|e| AuditError::TsaFailed(format!("TSA response parsing failed: {}", e)))
+            .map_err(|e| AuditError::TsaFailed(format!("TSA response parsing failed: {e}")))
     }
 
     /// Verify that a timestamp response matches the original digest and nonce
@@ -496,9 +496,7 @@ async fn send_tsa_request(
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
         return Err(AuditError::Network(format!(
-            "TSA returned HTTP {}: {}",
-            status, body
-        )));
+            "TSA returned HTTP {status}: {body}")));
     }
 
     response
@@ -680,9 +678,7 @@ impl<'a> DerCursor<'a> {
             parse_time_parts(year, &time_str[4..])
         } else {
             Err(AuditError::Internal(format!(
-                "invalid time format: {}",
-                time_str
-            )))
+                "invalid time format: {time_str}")))
         }
     }
 }
@@ -801,15 +797,11 @@ fn parse_timestamp_response(
                 "no details".to_string()
             };
             return Err(AuditError::TsaFailed(format!(
-                "TSA rejected request (status=2): {}",
-                msg
-            )));
+                "TSA rejected request (status=2): {msg}")));
         }
         _ => {
             return Err(AuditError::TsaFailed(format!(
-                "TSA returned unexpected status: {}",
-                status_val
-            )));
+                "TSA returned unexpected status: {status_val}")));
         }
     }
 
@@ -1002,7 +994,7 @@ fn oid_bytes_to_string(bytes: &[u8]) -> String {
     // First two components: bytes[0] = 40*x + y
     let first = (bytes[0] / 40) as u32;
     let second = (bytes[0] % 40) as u32;
-    let mut result = format!("{}.{}", first, second);
+    let mut result = format!("{first}.{second}");
 
     let mut i = 1;
     while i < bytes.len() {
@@ -1015,7 +1007,7 @@ fn oid_bytes_to_string(bytes: &[u8]) -> String {
             }
             i += 1;
         }
-        result.push_str(&format!(".{}", val));
+        result.push_str(&format!(".{val}"));
     }
     result
 }
