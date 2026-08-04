@@ -41,24 +41,24 @@ pub enum ServiceError {
 impl fmt::Display for ServiceError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ServiceError::KeyNotFound(id) => write!(f, "key not found: {}", id),
-            ServiceError::KeyOperationNotAllowed(msg) => write!(f, "{}", msg),
+            ServiceError::KeyNotFound(id) => write!(f, "key not found: {id}"),
+            ServiceError::KeyOperationNotAllowed(msg) => write!(f, "{msg}"),
             ServiceError::InvalidCiphertext => write!(f, "invalid ciphertext"),
-            ServiceError::InvalidAlgorithm(msg) => write!(f, "invalid algorithm: {}", msg),
+            ServiceError::InvalidAlgorithm(msg) => write!(f, "invalid algorithm: {msg}"),
             ServiceError::QuotaExceeded {
                 resource,
                 current,
                 limit,
             } => {
-                write!(f, "quota exceeded for {}: {}/{}", resource, current, limit)
+                write!(f, "quota exceeded for {resource}: {current}/{limit}")
             }
             ServiceError::RateLimitExceeded => write!(f, "rate limit exceeded"),
-            ServiceError::InvalidSpec(spec) => write!(f, "invalid spec: {}", spec),
-            ServiceError::ValidationError(msg) => write!(f, "validation error: {}", msg),
-            ServiceError::EncryptionFailed(msg) => write!(f, "encryption failed: {}", msg),
-            ServiceError::DecryptionFailed(msg) => write!(f, "decryption failed: {}", msg),
-            ServiceError::SignatureFailed(msg) => write!(f, "signature failed: {}", msg),
-            ServiceError::Internal(msg) => write!(f, "internal error: {}", msg),
+            ServiceError::InvalidSpec(spec) => write!(f, "invalid spec: {spec}"),
+            ServiceError::ValidationError(msg) => write!(f, "validation error: {msg}"),
+            ServiceError::EncryptionFailed(msg) => write!(f, "encryption failed: {msg}"),
+            ServiceError::DecryptionFailed(msg) => write!(f, "decryption failed: {msg}"),
+            ServiceError::SignatureFailed(msg) => write!(f, "signature failed: {msg}"),
+            ServiceError::Internal(msg) => write!(f, "internal error: {msg}"),
         }
     }
 }

@@ -219,7 +219,7 @@ impl WormSignedAuditLogger {
 
         for entry in &entries {
             if let Ok(line) = serde_json::to_string(entry) {
-                let _ = writeln!(output, "{}", line);
+                let _ = writeln!(output, "{line}");
             }
         }
     }

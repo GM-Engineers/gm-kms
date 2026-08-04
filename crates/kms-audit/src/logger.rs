@@ -137,7 +137,7 @@ impl AuditLogger {
 
             for event in &events {
                 if let Ok(line) = serde_json::to_string(event) {
-                    let _ = writeln!(output, "{}", line);
+                    let _ = writeln!(output, "{line}");
                 }
             }
         } // `output` dropped here, before any .await
@@ -501,7 +501,7 @@ impl SignedAuditLogger {
 
         for entry in &entries {
             if let Ok(line) = serde_json::to_string(entry) {
-                let _ = writeln!(output, "{}", line);
+                let _ = writeln!(output, "{line}");
             }
         }
 
@@ -1100,7 +1100,7 @@ impl TimestampedAuditLogger {
 
         for entry in &entries {
             if let Ok(line) = serde_json::to_string(entry) {
-                let _ = writeln!(output, "{}", line);
+                let _ = writeln!(output, "{line}");
             }
         }
     }

@@ -190,8 +190,7 @@ impl TotpGenerator {
         let otp = binary % modulus;
 
         Ok(format!(
-            "{:0>width$}",
-            otp,
+            "{otp:0>width$}",
             width = self.config.digits as usize
         ))
     }
