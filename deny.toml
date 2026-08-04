@@ -7,12 +7,18 @@ db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
 
 ignore = [
-    # RUSTSEC-2026-0190: anyhow Error::downcast_mut unsound
-    #   only affects code calling downcast_mut(); kms does not use this API
-    "RUSTSEC-2026-0190",
     # RUSTSEC-2023-0071: RSA Marvin Attack
     #   no safe upgrade available; rsa crate used only for key parsing, not decryption
     "RUSTSEC-2023-0071",
+    # RUSTSEC-2023-0089: atomic-polyfill is unmaintained
+    #   No safe upgrade available (crate archived, advisory states so). Pulled in
+    #   transitively by postcard 1.1.3 -> gm-tls; only used for no_std atomic emulation.
+    "RUSTSEC-2023-0089",
+    # RUSTSEC-2025-0134: rustls-pemfile is unmaintained
+    #   No safe upgrade available. Pulled in transitively by redis 0.26.1 ->
+    #   deadpool-redis -> gm-tls. Upstream (redis) must migrate to rustls-pki-types;
+    #   this repo does not call rustls-pemfile directly.
+    "RUSTSEC-2025-0134",
 ]
 
 [licenses]
