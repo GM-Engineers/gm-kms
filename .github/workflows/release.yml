@@ -29,7 +29,7 @@ jobs:
           - { os: windows-latest, target: x86_64-pc-windows-msvc,      bin: kms.exe,  artifact: kms-windows-x86_64.exe }
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
