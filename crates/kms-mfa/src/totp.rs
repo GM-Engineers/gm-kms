@@ -119,7 +119,12 @@ impl TotpGenerator {
         let counter = timestamp / self.config.time_step;
         let code = self.compute_hotp(counter)?;
 
-        let expires_at = ((counter + 1) * self.config.time_step) - 1;
+        // 过期时间取当前时间步窗口的独占末尾（下一窗口起点）。
+        // 此前为 `(counter + 1) * step - 1`，会把过期时刻压到窗口最后一秒；
+        // 当代码恰好在窗口最后一秒生成时（timestamp % step == step-1），
+        // 会出现 expires_at == generated_at 甚至已过期，导致
+        // `expires_at > generated_at` 与 `is_valid()` 在边界秒偶发失败。
+        let expires_at = (counter + 1) * self.config.time_step;
 
         Ok(TotpCode {
             code,
@@ -435,6 +440,38 @@ mod tests {
         let code = generator.generate().unwrap();
         assert!(code.expires_at > code.generated_at);
         assert!(code.remaining_seconds() > 0);
+    }
+
+    /// 回归测试：当代码恰好在 30 秒时间窗的最后一秒生成时
+    /// （timestamp % time_step == time_step - 1），expires_at 不得等于或早于
+    /// generated_at。此前 expires_at 取 (counter+1)*step-1 会在该边界产生
+    /// expires_at == generated_at，触发 test_totp_code_expiration 的
+    /// `expires_at > generated_at` 断言偶发失败。该不变量只依赖生成时刻，
+    /// 与墙钟无关，因此用固定时间戳确定性地验证（不调用依赖 SystemTime::now 的
+    /// is_valid / remaining_seconds）。
+    #[test]
+    fn test_totp_expiry_boundary_invariant() {
+        let secret = b"test_secret_key_32bytes_long!!";
+        let generator = TotpGenerator::with_secret(secret).unwrap();
+
+        // 1700000009 % 30 == 29，即窗口最后一秒
+        let boundary_ts = 1700000009u64;
+        assert_eq!(boundary_ts % 30, 29);
+
+        let code = generator.generate_at_timestamp(boundary_ts).unwrap();
+        // 修复后 expires_at 必须严格大于 generated_at
+        assert!(
+            code.expires_at > code.generated_at,
+            "边界秒生成时 expires_at 必须大于 generated_at (got expires_at={}, generated_at={})",
+            code.expires_at,
+            code.generated_at
+        );
+        // 并且应精确落在时间窗的独占末尾（下一窗口起点）
+        assert_eq!(code.expires_at % generator.config.time_step, 0);
+        assert_eq!(
+            code.expires_at - code.generated_at,
+            generator.config.time_step - (boundary_ts % generator.config.time_step)
+        );
     }
 
     /// Test TOTP validation at a specific timestamp (deterministic)
