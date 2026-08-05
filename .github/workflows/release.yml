@@ -62,20 +62,24 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          cargo build -p kms --release --target ${{ matrix.target }} --verbose 2>&1 | tee /tmp/cargo-build.log
+          mkdir -p build-logs
+          cargo build -p kms --release --target ${{ matrix.target }} --verbose 2>&1 | tee "build-logs/cargo-build-${{ matrix.target }}.log"
           rc=$?
           if [ $rc -ne 0 ]; then
             echo "## Build failure log for ${{ matrix.target }}" >> "$GITHUB_STEP_SUMMARY"
             echo '```' >> "$GITHUB_STEP_SUMMARY"
-            tail -n 200 /tmp/cargo-build.log >> "$GITHUB_STEP_SUMMARY" || true
+            tail -n 200 "build-logs/cargo-build-${{ matrix.target }}.log" >> "$GITHUB_STEP_SUMMARY" || true
             echo '```' >> "$GITHUB_STEP_SUMMARY"
-            # Also emit the last 40 lines as GitHub annotations so they are visible without admin logs.
-            echo "::error::Build failed for ${{ matrix.target }}. Last 40 lines of cargo output:"
-            tail -n 40 /tmp/cargo-build.log | while IFS= read -r line; do
-              echo "::error::$line"
-            done
             exit $rc
           fi
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ matrix.target }}
+          path: build-logs/cargo-build-${{ matrix.target }}.log
+          if-no-files-found: ignore
 
       - name: List release directory
         shell: bash
