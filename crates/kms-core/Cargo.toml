@@ -25,16 +25,16 @@ hex = { workspace = true }
 reqwest = { workspace = true }
 tokio = { workspace = true, features = ["rt"] }
 url = "2"
-
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
-
-# GM 国密算法
+# GM 国密算法 (平台无关，必须对所有 target 可用，不能放在 cfg(unix) 下，
+# 否则 Windows 上 gm_sm9_rs / subtle / gm-crypto / getrandom 不会被链接，导致 kms-core 编译失败)
 gm-crypto = { workspace = true }
 # sm3 removed (A-02) — all SM3 usage goes through gm-crypto::sm3
 getrandom = "0.2"
 subtle = "2.6"
 gm-sm9-rs = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 tokio = { workspace = true }
