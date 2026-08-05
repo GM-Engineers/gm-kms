@@ -131,7 +131,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
 # Database
-sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "uuid", "chrono", "json", "tls-native-tls"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "uuid", "chrono", "json", "tls-rustls"] }
 
 # Redis for caching (includes cluster support)
 redis = { version = "0.26", features = ["tokio-comp", "connection-manager", "cluster", "tls-rustls", "tokio-rustls-comp", "rustls-native-certs", "rustls-pemfile"] }
@@ -168,7 +168,7 @@ clap = { version = "4.5", features = ["derive", "env"] }
 regex = "1.10"
 
 # HTTP client for webhooks
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
 url = "2"
 
 # For SM2 certificate generation (dev/test only)
@@ -190,7 +190,7 @@ lto = true
 codegen-units = 1
 
 [dev-dependencies]
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
 serde_json = "1.0"
 base64 = "0.22"
 tempfile = "3"
