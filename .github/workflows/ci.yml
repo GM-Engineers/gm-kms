@@ -91,7 +91,7 @@ jobs:
           make sbom
 
       - name: Upload SBOM artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: sbom
           path: |
@@ -239,7 +239,7 @@ jobs:
             zap.sh -cmd -autorun /zap/wrk/zap-run-config.yaml
 
       - name: Upload ZAP reports
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: zap-scan-reports
