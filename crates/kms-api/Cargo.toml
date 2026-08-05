@@ -69,7 +69,7 @@ rsa = { version = "0.9", features = ["sha2"] }
 
 # OpenAPI / Swagger
 utoipa = { workspace = true, features = ["uuid"] }
-utoipa-swagger-ui = { workspace = true, features = ["axum"] }
+utoipa-swagger-ui = { workspace = true, features = ["axum", "vendored"] }
 
 # Input validation
 regex = { workspace = true }
