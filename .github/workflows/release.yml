@@ -59,7 +59,18 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Build (cargo)
-        run: cargo build -p kms --release --target ${{ matrix.target }} --verbose
+        shell: bash
+        run: |
+          set -o pipefail
+          if cargo build -p kms --release --target ${{ matrix.target }} --verbose 2>&1 | tee /tmp/cargo-build.log; then
+            exit 0
+          fi
+          rc=$?
+          echo "## Build failure log for ${{ matrix.target }}" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          tail -n 200 /tmp/cargo-build.log >> "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          exit $rc
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
