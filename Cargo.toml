@@ -168,7 +168,7 @@ clap = { version = "4.5", features = ["derive", "env"] }
 regex = "1.10"
 
 # HTTP client for webhooks
-reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 url = "2"
 
 # For SM2 certificate generation (dev/test only)
@@ -190,7 +190,7 @@ lto = true
 codegen-units = 1
 
 [dev-dependencies]
-reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde_json = "1.0"
 base64 = "0.22"
 tempfile = "3"
