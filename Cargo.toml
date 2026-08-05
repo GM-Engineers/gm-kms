@@ -155,7 +155,7 @@ utoipa = "5"
 utoipa-swagger-ui = "9"
 
 # Configuration
-config = "0.14"
+config = "0.15"
 toml = "0.8"
 
 # Kafka for audit streaming (Phase 2)
