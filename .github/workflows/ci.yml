@@ -108,7 +108,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Build Docker image
         uses: docker/build-push-action@v5
@@ -154,7 +154,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Build Docker image
         uses: docker/build-push-action@v5
@@ -183,7 +183,7 @@ jobs:
       # 每个 job 是独立的全新 runner，因此这里必须自行构建 gm-kms:latest，
       # 与 container-security job 的处理方式一致。
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Build Docker image
         uses: docker/build-push-action@v5
