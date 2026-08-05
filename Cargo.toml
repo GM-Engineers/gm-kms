@@ -206,3 +206,9 @@ gm-sm9-rs = { version = "0.1.0" }
 # 待 gm-ca 正式发版(0.1.1)后可移除该 patch 并改回版本依赖。
 [patch.crates-io]
 gm-ca = { git = "https://github.com/GM-Engineers/gm", rev = "c014803232960158f50c99ee804a859f6da39994" }
+# gm-ca(git) 经 path 依赖引入 gm 仓库内的 gm-crypto，与 kms 直接依赖的 crates.io
+# gm-crypto 0.1.0 形成“两个不同源的同名 crate”→ examples/generate_sm2_certs.rs 把
+# crates.io 的 Sm2KeyPair 传给 gm_ca::cert::CaSigner(期望 git 源的 Sm2KeyPair) 报 E0308。
+# 把 gm-crypto 也指向同一 git 源即可统一为一个版本（kms 二进制本身不交叉 gm_crypto
+# 类型，故 Release 构建不受影响；仅 ci.yml 编译 examples 时暴露）。
+gm-crypto = { git = "https://github.com/GM-Engineers/gm", rev = "c014803232960158f50c99ee804a859f6da39994" }
