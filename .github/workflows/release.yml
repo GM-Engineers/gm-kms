@@ -44,6 +44,13 @@ jobs:
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
+      # Windows MSVC 目标：bash 步骤默认不在 PATH 中加载 VS 开发环境，
+      # 导致 ring 等含 C 构建脚本的 crate 找不到 cl.exe/link.exe 而 exit 101。
+      # 用 msvc-dev-cmd 注入 VS 工具链（cl/link + INCLUDE/LIB）。
+      - name: Set up MSVC toolchain (Windows)
+        if: ${{ matrix.os == 'windows-latest' }}
+        uses: ilammy/msvc-dev-cmd@v1
+
       # aarch64-linux 在 ubuntu 上交叉编译，需要交叉链接器。
       # 因 gm-kms 发布构建为纯 Rust（无 gmssl 等 C 依赖），无需交叉编译 C 库，
       # 直接用宿主机 protoc + aarch64 链接器即可，比 cross 容器方案更透明。
