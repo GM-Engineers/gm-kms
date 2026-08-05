@@ -29,7 +29,7 @@ url = "2"
 # 否则 Windows 上 gm_sm9_rs / subtle / gm-crypto / getrandom 不会被链接，导致 kms-core 编译失败)
 gm-crypto = { workspace = true }
 # sm3 removed (A-02) — all SM3 usage goes through gm-crypto::sm3
-getrandom = "0.2"
+getrandom = "0.4"
 subtle = "2.6"
 gm-sm9-rs = { workspace = true }
 
