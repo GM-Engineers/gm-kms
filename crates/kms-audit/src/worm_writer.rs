@@ -164,8 +164,6 @@ impl WormWriter {
     /// Open file with append-only semantics and set restrictive permissions
     /// atomically via the file descriptor (eliminating the TOCTOU window).
     fn open_append_only(path: &Path) -> AuditResult<File> {
-        use std::os::unix::io::AsRawFd;
-
         let file = OpenOptions::new().create(true).append(true).open(path)?;
 
         // Set permissions via the file descriptor BEFORE any writes —
@@ -173,6 +171,7 @@ impl WormWriter {
         // open() and a separate fs::set_permissions() call.
         #[cfg(unix)]
         {
+            use std::os::unix::io::AsRawFd;
             let fd = file.as_raw_fd();
             // 0o640: owner rw, group r, other none
             // Safety: fchmod is thread-safe and operates on the already-opened fd.
