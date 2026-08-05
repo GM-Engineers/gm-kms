@@ -69,6 +69,11 @@ jobs:
             echo '```' >> "$GITHUB_STEP_SUMMARY"
             tail -n 200 /tmp/cargo-build.log >> "$GITHUB_STEP_SUMMARY" || true
             echo '```' >> "$GITHUB_STEP_SUMMARY"
+            # Also emit the last 40 lines as GitHub annotations so they are visible without admin logs.
+            echo "::error::Build failed for ${{ matrix.target }}. Last 40 lines of cargo output:"
+            tail -n 40 /tmp/cargo-build.log | while IFS= read -r line; do
+              echo "::error::$line"
+            done
             exit $rc
           fi
 
