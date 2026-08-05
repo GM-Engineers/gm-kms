@@ -72,12 +72,14 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          # Windows: Git Bash 在启动时把 C:\Program Files\Git\usr\bin 加到 PATH 前面，
-          # 其自带的 link.exe(GNU coreutils) 会遮蔽 MSVC 的 link.exe，导致链接失败
-          # (error: linking with `link.exe` failed / "/usr/bin/link: extra operand")。
-          # 移除该目录，让 ilammy/msvc-dev-cmd 注入的 MSVC 链接器生效。
+          # Windows: Git Bash 在启动时把 /usr/bin(Git 自带的 GNU coreutils) 加到 PATH 前面，
+          # 其 link.exe 会遮蔽 MSVC 的 link.exe，导致
+          # 'error: linking with `link.exe` failed / /usr/bin/link: extra operand'。
+          # ilammy/msvc-dev-cmd 已把 MSVC 的 bin 目录(Hostx64/x64)写入 PATH，只是排在
+          # /usr/bin 之后；此处把它提到 PATH 最前，使 MSVC 链接器优先被找到。
           if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-            export PATH="$(echo "$PATH" | tr ':' '\n' | grep -viE 'git/usr/bin' | tr '\n' ':')"
+            VS_BIN="$(echo "$PATH" | tr ':' '\n' | grep -iE 'Hostx64/x64' | head -1)"
+            if [ -n "$VS_BIN" ]; then export PATH="$VS_BIN:$PATH"; fi
           fi
           mkdir -p build-logs
           cargo build -p kms --release --target ${{ matrix.target }} --verbose 2>&1 | tee "build-logs/cargo-build-${{ matrix.target }}.log"
