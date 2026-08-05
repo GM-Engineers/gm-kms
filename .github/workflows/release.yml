@@ -100,23 +100,6 @@ jobs:
           path: build-logs/cargo-build-${{ matrix.target }}.log
           if-no-files-found: ignore
 
-      # DIAGNOSTIC: 匿名 API 读不到 CI 日志，临时把构建错误写到公开 Issue 以便排查 Windows 失败。修复后删除本步。
-      - name: Surface build error to diagnostic issue
-        if: failure()
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            let log = '';
-            try { log = fs.readFileSync('build-logs/cargo-build-${{ matrix.target }}.log','utf8'); } catch (e) { log = '(no log file)'; }
-            const body = '## Build failed on `${{ matrix.target }}`\n\n```\n' + log.slice(-8000) + '\n```';
-            await github.rest.issues.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              title: `DIAGNOSTIC build failure: ${{ matrix.target }}`,
-              body
-            });
-
       - name: List release directory
         shell: bash
         run: |
@@ -125,11 +108,17 @@ jobs:
           echo "Listing target/release/"
           ls -la "target/release/" 2>/dev/null || true
 
+      - name: Rename binary with platform suffix
+        shell: bash
+        run: |
+          # 4 个 Unix/macOS 目标产物都叫 `kms`，按平台重命名以避免 GitHub Release 资源名冲突（否则只保留一个 kms）。
+          cp "target/${{ matrix.target }}/release/${{ matrix.bin }}" "target/${{ matrix.target }}/release/${{ matrix.artifact }}"
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: target/${{ matrix.target }}/release/${{ matrix.bin }}
+          path: target/${{ matrix.target }}/release/${{ matrix.artifact }}
           if-no-files-found: error
 
   release:
