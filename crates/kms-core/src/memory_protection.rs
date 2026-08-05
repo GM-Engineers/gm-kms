@@ -136,13 +136,11 @@ pub fn munlock(data: &[u8]) -> Result<()> {
 /// Wrapper type that automatically locks memory on creation and unlocks on drop
 ///
 /// Uses RAII pattern - memory is locked for the lifetime of this object.
-#[cfg(unix)]
 pub struct LockedMemory<'a> {
     data: &'a [u8],
     locked: bool,
 }
 
-#[cfg(unix)]
 impl<'a> LockedMemory<'a> {
     /// Create a new LockedMemory, immediately locking the data
     pub fn new(data: &'a [u8]) -> Result<Self> {
@@ -151,7 +149,6 @@ impl<'a> LockedMemory<'a> {
     }
 }
 
-#[cfg(unix)]
 impl Drop for LockedMemory<'_> {
     fn drop(&mut self) {
         if self.locked {
