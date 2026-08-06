@@ -1,5 +1,7 @@
 # gm-kms
 
+[![GitHub Release](https://img.shields.io/github/v/release/GM-Engineers/gm-kms?include_prereleases)](https://github.com/GM-Engineers/gm-kms/releases)
+
 国密密钥管理系统 (Key Management System)，支持 GM/T 标准算法（SM2/SM3/SM4/SM9）。
 
 ## 功能特性
@@ -35,6 +37,53 @@
   ```
 - **PostgreSQL 16+** 和 **Redis 7+**（用于生产部署）
 - 如无需 GmSSL，可使用纯 Rust 后端：`--features pure-rust`
+
+## 安装
+
+本项目的 `kms` 二进制**不发布到 crates.io**，因此无法通过 `cargo install` 安装。推荐使用以下三种方式之一获取可执行文件：
+
+### 方式一：下载预编译二进制（推荐，无需 Rust 工具链）
+
+从 [GitHub Releases](https://github.com/GM-Engineers/gm-kms/releases) 下载对应平台的二进制，开箱即用：
+
+| 平台 | 文件 |
+|------|------|
+| Linux x86_64 | `kms-linux-x86_64` |
+| Linux ARM64 (aarch64) | `kms-linux-aarch64` |
+| macOS Intel (x86_64) | `kms-macos-x86_64` |
+| macOS Apple Silicon (aarch64) | `kms-macos-aarch64` |
+| Windows x86_64 | `kms-windows-x86_64.exe` |
+
+Linux / macOS 下载后赋予执行权限即可运行：
+
+```bash
+chmod +x kms-linux-x86_64
+./kms-linux-x86_64 --help
+```
+
+每个 Release 附带 `SHA256SUMS.txt`，可校验完整性：
+
+```bash
+sha256sum -c SHA256SUMS.txt
+```
+
+> 当前最新版本：`v0.1.0`
+
+### 方式二：Docker 镜像
+
+```bash
+docker build -t gm-kms .
+docker run -d --name kms --network host gm-kms --server
+```
+
+### 方式三：从源码编译
+
+需要 Rust 1.85+ 与 GmSSL（或 `--features pure-rust`），详见[前提条件](#前提条件)与[快速开始](#快速开始)：
+
+```bash
+cargo build --release
+# 产物位于 target/release/kms
+```
 
 ## 快速开始
 
