@@ -173,7 +173,7 @@ url = "2"
 
 # For SM2 certificate generation (dev/test only)
 gm-ca = { version = "0.1.0" }
-elliptic-curve = "0.13"
+elliptic-curve = "0.14"
 asn1 = "0.17"
 tempfile = "3"
 pem = "3"
