@@ -334,6 +334,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
+name = "base64"
+version = "0.23.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
+
+[[package]]
 name = "base64ct"
 version = "1.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1252,7 +1258,7 @@ dependencies = [
  "hex",
  "metrics 0.24.3",
  "metrics-exporter-prometheus",
- "pem",
+ "pem 3.0.6",
  "prost",
  "prost-types",
  "rand 0.10.1",
@@ -1285,7 +1291,7 @@ dependencies = [
  "ghash",
  "gm-der 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "hex",
- "pem",
+ "pem 3.0.6",
  "pkcs8",
  "rand 0.10.1",
  "rand_core 0.6.4",
@@ -1314,7 +1320,7 @@ dependencies = [
  "ghash",
  "gm-der 0.1.0 (git+https://github.com/GM-Engineers/gm?rev=c014803232960158f50c99ee804a859f6da39994)",
  "hex",
- "pem",
+ "pem 3.0.6",
  "pkcs8",
  "rand 0.10.1",
  "rand_core 0.6.4",
@@ -1942,7 +1948,7 @@ dependencies = [
  "kms-hsm",
  "kms-keystore",
  "kms-policy",
- "pem",
+ "pem 4.0.0",
  "rand 0.10.1",
  "redis",
  "reqwest",
@@ -2660,6 +2666,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d30c53c26bc5b31a98cd02d20f25a7c8567146caf63ed593a9d87b2775291be"
 dependencies = [
  "base64 0.22.1",
+ "serde_core",
+]
+
+[[package]]
+name = "pem"
+version = "4.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d354a98a3d1251555de99e8fdd8afda05573c31b82f59063a7b0a29b5527f120"
+dependencies = [
+ "base64 0.23.1",
  "serde_core",
 ]
 
