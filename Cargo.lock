@@ -746,12 +746,12 @@ dependencies = [
 
 [[package]]
 name = "curve25519-dalek"
-version = "4.1.3"
+version = "5.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "97fb8b7c4503de7d6ae7b42ab72a5a59857b4c937ec27a3d4539dba95b5ab2be"
+checksum = "b5eed333089e2e1c1ac8c6c0398e5e2497b4c9926ca6d0365ed1e099afa5bc23"
 dependencies = [
  "cfg-if",
- "cpufeatures 0.2.17",
+ "cpufeatures 0.3.0",
  "curve25519-dalek-derive",
  "fiat-crypto",
  "rustc_version",
@@ -1011,9 +1011,9 @@ dependencies = [
 
 [[package]]
 name = "fiat-crypto"
-version = "0.2.9"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "28dea519a9695b9977216879a3ebfddf92f1c08c05d984f8996aecd6ecdc811d"
+checksum = "64cd1e32ddd350061ae6edb1b082d7c54915b5c672c389143b9a63403a109f24"
 
 [[package]]
 name = "find-msvc-tools"
@@ -1246,7 +1246,7 @@ version = "0.1.1"
 source = "git+https://github.com/GM-Engineers/gm?rev=c014803232960158f50c99ee804a859f6da39994#c014803232960158f50c99ee804a859f6da39994"
 dependencies = [
  "chrono",
- "gm-crypto 0.1.0 (git+https://github.com/GM-Engineers/gm?rev=c014803232960158f50c99ee804a859f6da39994)",
+ "gm-crypto",
  "gm-der 0.1.0 (git+https://github.com/GM-Engineers/gm?rev=c014803232960158f50c99ee804a859f6da39994)",
  "gm-tls 0.1.0 (git+https://github.com/GM-Engineers/gm?rev=c014803232960158f50c99ee804a859f6da39994)",
  "hex",
@@ -1269,36 +1269,6 @@ dependencies = [
  "tonic-prost-build",
  "tracing",
  "tracing-subscriber",
- "x509-parser",
- "zeroize",
-]
-
-[[package]]
-name = "gm-crypto"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f0bdeeb0c5e60730b476b11a86050be4b97f3e3f507297fe0a3851d433cef3d0"
-dependencies = [
- "base64 0.22.1",
- "ctr",
- "elliptic-curve",
- "ghash",
- "gm-der 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "hex",
- "pem",
- "pkcs8",
- "rand 0.10.1",
- "rand_core 0.6.4",
- "serde",
- "signature",
- "sm2",
- "sm3",
- "sm4",
- "subtle",
- "thiserror 2.0.18",
- "time",
- "typenum",
- "universal-hash",
  "x509-parser",
  "zeroize",
 ]
@@ -1356,7 +1326,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "35d8f6d5331db08de281f73b37fe6e33618cffe61320cecec01061eb96398b42"
 dependencies = [
  "digest",
- "gm-crypto 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "gm-crypto",
  "gm-der 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "hex",
  "once_cell",
@@ -1378,7 +1348,7 @@ dependencies = [
  "deadpool-redis",
  "elliptic-curve",
  "futures",
- "gm-crypto 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "gm-crypto",
  "gm-der 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "hex",
  "http",
@@ -1414,7 +1384,7 @@ dependencies = [
  "deadpool-redis",
  "elliptic-curve",
  "futures",
- "gm-crypto 0.1.0 (git+https://github.com/GM-Engineers/gm?rev=c014803232960158f50c99ee804a859f6da39994)",
+ "gm-crypto",
  "gm-der 0.1.0 (git+https://github.com/GM-Engineers/gm?rev=c014803232960158f50c99ee804a859f6da39994)",
  "hex",
  "http",
@@ -1932,7 +1902,7 @@ dependencies = [
  "clap",
  "elliptic-curve",
  "gm-ca",
- "gm-crypto 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "gm-crypto",
  "gm-sm9-rs",
  "gm-tls 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "hex",
@@ -1976,7 +1946,7 @@ dependencies = [
  "bitflags",
  "chrono",
  "config",
- "gm-crypto 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "gm-crypto",
  "gm-sm9-rs",
  "gm-tls 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "hex",
@@ -2082,7 +2052,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "getrandom 0.2.17",
- "gm-crypto 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "gm-crypto",
  "gm-sm9-rs",
  "hex",
  "libc",
@@ -2110,7 +2080,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
- "gm-crypto 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "gm-crypto",
  "hex",
  "kms-core",
  "kms-keystore",
@@ -2131,7 +2101,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
- "gm-crypto 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "gm-crypto",
  "gm-sm9-rs",
  "hex",
  "kms-core",
@@ -5412,13 +5382,12 @@ checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
 
 [[package]]
 name = "x25519-dalek"
-version = "2.0.1"
+version = "3.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c7e468321c81fb07fa7f4c636c3972b9100f0346e5b6a9f2bd0603a52f7ed277"
+checksum = "e7e8131a03190127fb2263afc72b322ecadae46b6ff8c6f399ff5d02f5559af6"
 dependencies = [
  "curve25519-dalek",
- "rand_core 0.6.4",
- "serde",
+ "rand_core 0.10.1",
  "zeroize",
 ]
 
