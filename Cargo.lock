@@ -334,6 +334,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
+name = "base64"
+version = "0.23.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
+
+[[package]]
 name = "base64ct"
 version = "1.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1246,7 +1252,7 @@ version = "0.1.1"
 source = "git+https://github.com/GM-Engineers/gm?rev=c014803232960158f50c99ee804a859f6da39994#c014803232960158f50c99ee804a859f6da39994"
 dependencies = [
  "chrono",
- "gm-crypto 0.1.0 (git+https://github.com/GM-Engineers/gm?rev=c014803232960158f50c99ee804a859f6da39994)",
+ "gm-crypto",
  "gm-der 0.1.0 (git+https://github.com/GM-Engineers/gm?rev=c014803232960158f50c99ee804a859f6da39994)",
  "gm-tls 0.1.0 (git+https://github.com/GM-Engineers/gm?rev=c014803232960158f50c99ee804a859f6da39994)",
  "hex",
@@ -1269,36 +1275,6 @@ dependencies = [
  "tonic-prost-build",
  "tracing",
  "tracing-subscriber",
- "x509-parser",
- "zeroize",
-]
-
-[[package]]
-name = "gm-crypto"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f0bdeeb0c5e60730b476b11a86050be4b97f3e3f507297fe0a3851d433cef3d0"
-dependencies = [
- "base64 0.22.1",
- "ctr",
- "elliptic-curve",
- "ghash",
- "gm-der 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "hex",
- "pem",
- "pkcs8",
- "rand 0.10.1",
- "rand_core 0.6.4",
- "serde",
- "signature",
- "sm2",
- "sm3",
- "sm4",
- "subtle",
- "thiserror 2.0.18",
- "time",
- "typenum",
- "universal-hash",
  "x509-parser",
  "zeroize",
 ]
@@ -1356,7 +1332,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "35d8f6d5331db08de281f73b37fe6e33618cffe61320cecec01061eb96398b42"
 dependencies = [
  "digest",
- "gm-crypto 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "gm-crypto",
  "gm-der 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "hex",
  "once_cell",
@@ -1378,7 +1354,7 @@ dependencies = [
  "deadpool-redis",
  "elliptic-curve",
  "futures",
- "gm-crypto 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "gm-crypto",
  "gm-der 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "hex",
  "http",
@@ -1414,7 +1390,7 @@ dependencies = [
  "deadpool-redis",
  "elliptic-curve",
  "futures",
- "gm-crypto 0.1.0 (git+https://github.com/GM-Engineers/gm?rev=c014803232960158f50c99ee804a859f6da39994)",
+ "gm-crypto",
  "gm-der 0.1.0 (git+https://github.com/GM-Engineers/gm?rev=c014803232960158f50c99ee804a859f6da39994)",
  "hex",
  "http",
@@ -1927,12 +1903,12 @@ dependencies = [
  "async-trait",
  "axum",
  "axum-server",
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "clap",
  "elliptic-curve",
  "gm-ca",
- "gm-crypto 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "gm-crypto",
  "gm-sm9-rs",
  "gm-tls 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "hex",
@@ -1972,11 +1948,11 @@ dependencies = [
  "async-trait",
  "axum",
  "base32",
- "base64 0.22.1",
+ "base64 0.23.1",
  "bitflags",
  "chrono",
  "config",
- "gm-crypto 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "gm-crypto",
  "gm-sm9-rs",
  "gm-tls 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "hex",
@@ -2061,7 +2037,7 @@ name = "kms-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "clap",
  "clap_complete",
@@ -2079,10 +2055,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "getrandom 0.2.17",
- "gm-crypto 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "gm-crypto",
  "gm-sm9-rs",
  "hex",
  "libc",
@@ -2110,7 +2086,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
- "gm-crypto 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "gm-crypto",
  "hex",
  "kms-core",
  "kms-keystore",
@@ -2131,7 +2107,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
- "gm-crypto 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "gm-crypto",
  "gm-sm9-rs",
  "hex",
  "kms-core",
