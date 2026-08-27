@@ -7,24 +7,216 @@ updates:
       day: "monday"
       time: "09:00"
       timezone: "Asia/Shanghai"
-    open-pull-requests-limit: 10
+    # Reduce concurrent PRs so reviewers can keep up
+    open-pull-requests-limit: 5
     labels:
       - "dependencies"
       - "automated"
     commit-message:
       prefix: "deps"
       include: "scope"
+    # Cooldown: wait N days after a new version is released before opening a PR.
+    # This avoids premature updates and gives upstream time to ship fixes.
+    cooldown:
+      default-days: 3
+      semver-patch-days: 1
+      semver-minor-days: 4
+      semver-major-days: 14
+    # Only open PRs for new versions; never rebase onto stale PRs silently.
+    rebase-strategy: "disabled"
+    # Group transitive updates so we don't get a cascade of single-crate PRs.
     groups:
+      rustcrypto-block-modes:
+        patterns:
+          - "cipher"
+          - "ctr"
+          - "cbc"
+          - "cfb-mode"
+          - "ofb"
+          - "ghash"
+          - "universal-hash"
+        update-types:
+          - "minor"
+          - "patch"
+      rustcrypto-formats:
+        patterns:
+          - "der"
+          - "pem"
+          - "pkcs1"
+          - "pkcs5"
+          - "pkcs7"
+          - "pkcs8"
+          - "pkcs10"
+          - "x509-parser"
+          - "asn1"
+          - "const-oid"
+          - "spki"
+        update-types:
+          - "minor"
+          - "patch"
+      rustcrypto-elliptic-curves:
+        patterns:
+          - "elliptic-curve"
+          - "ecdsa"
+          - "k256"
+          - "p256"
+          - "p384"
+          - "x25519-dalek"
+          - "curve25519-dalek"
+          - "ed25519"
+          - "sec1"
+          - "sm2"
+          - "signature"
+        update-types:
+          - "minor"
+          - "patch"
+      rustcrypto-hash:
+        patterns:
+          - "digest"
+          - "sha1"
+          - "sha2"
+          - "sha3"
+          - "sm3"
+          - "blake2"
+          - "blake3"
+          - "hmac"
+          - "crypto-common"
+          - "inout"
+        update-types:
+          - "minor"
+          - "patch"
       prod-dependencies:
         dependency-type: "production"
+        exclude-patterns:
+          - "cipher"
+          - "ctr"
+          - "cbc"
+          - "cfb-mode"
+          - "ofb"
+          - "ghash"
+          - "universal-hash"
+          - "der"
+          - "pem"
+          - "pkcs1"
+          - "pkcs5"
+          - "pkcs7"
+          - "pkcs8"
+          - "pkcs10"
+          - "x509-parser"
+          - "asn1"
+          - "const-oid"
+          - "spki"
+          - "elliptic-curve"
+          - "ecdsa"
+          - "k256"
+          - "p256"
+          - "p384"
+          - "x25519-dalek"
+          - "curve25519-dalek"
+          - "ed25519"
+          - "sec1"
+          - "sm2"
+          - "signature"
+          - "digest"
+          - "sha1"
+          - "sha2"
+          - "sha3"
+          - "sm3"
+          - "blake2"
+          - "blake3"
+          - "hmac"
+          - "crypto-common"
+          - "inout"
         update-types:
           - "minor"
           - "patch"
       dev-dependencies:
         dependency-type: "development"
+        exclude-patterns:
+          - "cipher"
+          - "ctr"
+          - "cbc"
+          - "cfb-mode"
+          - "ofb"
+          - "ghash"
+          - "universal-hash"
+          - "der"
+          - "pem"
+          - "pkcs1"
+          - "pkcs5"
+          - "pkcs7"
+          - "pkcs8"
+          - "pkcs10"
+          - "x509-parser"
+          - "asn1"
+          - "const-oid"
+          - "spki"
+          - "elliptic-curve"
+          - "ecdsa"
+          - "k256"
+          - "p256"
+          - "p384"
+          - "x25519-dalek"
+          - "curve25519-dalek"
+          - "ed25519"
+          - "sec1"
+          - "sm2"
+          - "signature"
+          - "digest"
+          - "sha1"
+          - "sha2"
+          - "sha3"
+          - "sm3"
+          - "blake2"
+          - "blake3"
+          - "hmac"
+          - "crypto-common"
+          - "inout"
         update-types:
           - "minor"
           - "patch"
+    # Temporarily ignore versions known to require SemVer-major-style code
+    # adaptation. Re-evaluate when upstream stabilises.
+    ignore:
+      - dependency-name: "redis"
+        # 0.26 → 1.x is a major break; redis-rs API was rewritten.
+        versions:
+          - ">=1.0.0, <2.0.0"
+      - dependency-name: "tokio"
+        # Avoid surprise MSRV bumps; bump manually.
+        versions:
+          - ">=2.0.0, <3.0.0"
+      - dependency-name: "x25519-dalek"
+        # v3 breaks curve25519-dalek API; need explicit migration.
+        versions:
+          - ">=3.0.0, <4.0.0"
+      - dependency-name: "curve25519-dalek"
+        versions:
+          - ">=5.0.0, <6.0.0"
+      - dependency-name: "totp-rs"
+        # v6 changed MFA builder API.
+        versions:
+          - ">=6.0.0, <7.0.0"
+      - dependency-name: "sqlx"
+        # 0.8 → 0.9 changes executor + query API.
+        versions:
+          - ">=0.9.0, <0.10.0"
+      - dependency-name: "toml"
+        # TOML 1.x parser API rework.
+        versions:
+          - ">=1.0.0, <2.0.0"
+      - dependency-name: "config"
+        # 0.15 changed layering between `Config` builder and `File`/`Environment`.
+        versions:
+          - ">=0.15.0, <0.16.0"
+      - dependency-name: "rdkafka"
+        # 0.39 changed consumer group semantics.
+        versions:
+          - ">=0.37.0, <0.40.0"
+      - dependency-name: "getrandom"
+        # 0.3 dropped some old backends; 0.4 split API.
+        versions:
+          - ">=0.3.0, <0.5.0"
 
   - package-ecosystem: "github-actions"
     directory: "/"
@@ -33,9 +225,13 @@ updates:
       day: "monday"
       time: "09:00"
       timezone: "Asia/Shanghai"
+    open-pull-requests-limit: 3
     labels:
       - "dependencies"
       - "ci"
     commit-message:
       prefix: "ci"
       include: "scope"
+    cooldown:
+      default-days: 3
+    rebase-strategy: "disabled"
