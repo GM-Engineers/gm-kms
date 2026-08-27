@@ -1890,7 +1890,7 @@ dependencies = [
 
 [[package]]
 name = "kms"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "asn1",
@@ -1936,7 +1936,7 @@ dependencies = [
 
 [[package]]
 name = "kms-api"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1989,7 +1989,7 @@ dependencies = [
 
 [[package]]
 name = "kms-approval"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2003,7 +2003,7 @@ dependencies = [
 
 [[package]]
 name = "kms-audit"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2028,7 +2028,7 @@ dependencies = [
 
 [[package]]
 name = "kms-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2045,7 +2045,7 @@ dependencies = [
 
 [[package]]
 name = "kms-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2076,7 +2076,7 @@ dependencies = [
 
 [[package]]
 name = "kms-hsm"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2096,7 +2096,7 @@ dependencies = [
 
 [[package]]
 name = "kms-keystore"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2126,7 +2126,7 @@ dependencies = [
 
 [[package]]
 name = "kms-mfa"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base32",
  "chrono",
@@ -2145,7 +2145,7 @@ dependencies = [
 
 [[package]]
 name = "kms-policy"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",

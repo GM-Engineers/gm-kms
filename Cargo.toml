@@ -85,7 +85,7 @@ x509-parser = "0.16"
 axum-server = { version = "0.8.0", default-features = false, features = ["tls-rustls-no-provider"] }
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 authors = ["Eric Zhang"]
 license = "MIT OR Apache-2.0"

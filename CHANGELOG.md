@@ -2,7 +2,39 @@
 
 All notable changes to gm-kms will be documented in this file.
 
-## [0.1.0] — Unreleased
+## [0.2.0] — Unreleased
+
+### ⚠️ Breaking Changes
+
+- **`kms-api::quota`**: `Result<_, ()>` → `Result<_, QuotaError>`. `TenantQuotaTracker::increment_key_count` / `decrement_key_count` / `get_usage` now return `Result<T, QuotaError>` instead of `Result<T, ()>`. Callers using `Match Err(())` (or `.unwrap_err()`) need to update to the new error type.
+  - New type: `pub enum QuotaError { Exceeded(QuotaExceeded), Storage(String) }` with `Display` + `Error` impls.
+  - This was triggered by `clippy::result_unit_err`; the `()` error carried no information and was unreachable to handle.
+- **`kms-api::ratelimit`**: `TenantRateLimiter::get_usage` returns `Result<u64, RateLimitBackendError>` (new tuple struct) instead of `Result<u64, ()>`. Same reasoning as above.
+  - The pre-existing `pub struct RateLimitError` (the HTTP-response body) is unchanged; the new type is named `RateLimitBackendError` to avoid collision.
+
+### Security
+
+- **h2 0.4.13 → 0.4.16** (RUSTSEC-2026-0258): fixes unbounded empty DATA frames DoS. Propagated via `tonic` → `tonic-prost`; `tonic` 0.14.5 accepts `h2 0.4.*`, no API break.
+
+### Changed
+
+- **`kms-api::metrics`**: `*count % 100 == 0` → `count.is_multiple_of(100)` (clippy::manual_is_multiple_of).
+- **`kms-core::shamir`**: `original_len % block_size == 0` → `original_len.is_multiple_of(block_size)` (split PKCS#7 padding); `shares.len() % num_blocks != 0` → `!shares.len().is_multiple_of(num_blocks)` (reconstruction alignment check).
+- **`src/cmd/config.rs`**: 11 nested `if let Ok(...) { if let Ok(...) { ... } }` collapsed to let-chains (`if let Ok(...) && let Ok(...) { ... }`) per clippy::collapsible_if. Env vars affected: `REST_PORT`, `GRPC_PORT`, `TLS_CERT_PATH`, `REST_TLS_CERT_PATH`, `TSA_TIMEOUT`, `TSA_INTERVAL`, `RATE_LIMIT_RPS`, `POSTGRES_PORT`, `BACKUP_RETENTION_COUNT`, `BACKUP_RETENTION_DAYS`, `BACKUP_KDF_ITERATIONS`.
+
+### CI / Dev Tooling
+
+- **`.github/dependabot.yml`**: tightened per SemVer discipline.
+  - `open-pull-requests-limit`: 10 → 5 (cargo) / 3 (github-actions).
+  - Added `cooldown`: patch 1 d / minor 4 d / major 14 d — wait for upstream fixes before opening PRs.
+  - `rebase-strategy: disabled` — no silent force-push on already-opened PRs.
+  - 4 new RustCrypto ecosystem groups (`rustcrypto-block-modes`, `rustcrypto-formats`, `rustcrypto-elliptic-curves`, `rustcrypto-hash`) to merge transitive upgrades into 1 PR per ecosystem instead of single-crate PRs.
+  - 9 ignored dependencies (require explicit SemVer-major-style adaptation):
+    `redis >= 1.x`, `tokio >= 2.x`, `x25519-dalek >= 3.x`, `curve25519-dalek >= 5.x`,
+    `totp-rs >= 6.x`, `sqlx >= 0.9`, `toml >= 1.x`, `config >= 0.15`, `rdkafka >= 0.37`, `getrandom >= 0.3`.
+  - Motivation: patch upgrades that pull transitive `cipher 0.4 → 0.5` (BlockEncrypt → BlockCipherEncrypt rename) are *real* breaking changes, not "low A-tier lockfile-only".
+
+## [0.1.0] — 2026-08-27
 
 ### Added
 
