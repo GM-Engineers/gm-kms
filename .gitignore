@@ -71,3 +71,7 @@ docs/compliance/
 
 # mcp
 .mcp.json
+
+# Internal discussion notes — local-only scratchpad (not part of public repo)
+discuss/
+/discuss/
