@@ -174,7 +174,7 @@ url = "2"
 # For SM2 certificate generation (dev/test only)
 gm-ca = { version = "0.1.0" }
 elliptic-curve = "0.13"
-asn1 = "0.17"
+asn1 = "0.24"
 tempfile = "3"
 pem = "3"
 x509-parser = "0.16"
