@@ -1056,31 +1056,33 @@ pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()
 
         match rest_tls_config {
             Some(ref tls) if tls.enabled && tls.backend == "gm" => {
-                // REST with GM/TLS (国密 TLS)
-                tracing::info!("REST API listening on gm-tls://{}", rest_addr);
+                // REST with TLS 1.3 + SM cipher suites (via gm-tls::TlsAcceptor).
+                // Note: This is RFC 8446 TLS 1.3 with SM cipher suites (0x0303),
+                // NOT TLCP (GB/T 38636-2020, 0x0101). For TLCP, use the separate `gm-tlcp` crate.
+                tracing::info!("REST API listening on tls13-sm://{}", rest_addr);
 
                 let ca_path = tls.ca_path.as_deref().unwrap_or("");
                 if ca_path.is_empty() {
-                    anyhow::bail!("GM/TLS requires ca_path to be set in [rest_tls] config");
+                    anyhow::bail!("TLS 1.3 + SM (gm-tls) requires ca_path to be set in [rest_tls] config");
                 }
 
                 let gm_config =
                     gm_tls::TlsConfig::load(tls.cert_path.as_str(), tls.key_path.as_str(), ca_path)
                         .map(|cfg| cfg.with_require_client_auth(tls.require_client_auth))
-                        .map_err(|e| anyhow::anyhow!("Failed to load GM/TLS config: {e}"))
-                        .expect("GM/TLS config load failed");
+                        .map_err(|e| anyhow::anyhow!("Failed to load TLS 1.3 + SM config: {e}"))
+                        .expect("TLS 1.3 + SM config load failed");
 
                 let gm_listener =
                     crate::cmd::gm_listener::GmTlsListener::bind(rest_addr, gm_config)
                         .await
-                        .expect("Failed to bind GM/TLS REST listener");
+                        .expect("Failed to bind TLS 1.3 + SM REST listener");
 
                 axum::serve(gm_listener, app)
                     .with_graceful_shutdown(async {
                         rest_shutdown_rx.await.ok();
                     })
                     .await
-                    .expect("GM/TLS REST server error");
+                    .expect("TLS 1.3 + SM REST server error");
                 Ok(())
             }
             Some(ref tls) if tls.enabled => {

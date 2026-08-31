@@ -296,7 +296,11 @@ pub struct RestTlsConfig {
     #[serde(default = "default_rest_tls_enabled")]
     pub enabled: bool,
 
-    /// TLS backend: "rustls" (standard, default) or "gm" (国密 GM/TLS)
+    /// TLS backend:
+    /// - `"rustls"` (standard, default): uses `axum_server::tls_rustls` with standard TLS 1.3 (RFC 8446).
+    /// - `"gm"`: uses `gm-tls::TlsAcceptor`, which implements **TLS 1.3 (RFC 8446) with SM cipher suites**
+    ///   (SM2/SM3/SM4, protocol version byte `0x0303`). This is **NOT TLCP** (GB/T 38636-2020,
+    ///   protocol version byte `0x0101`). For TLCP support, use the separate `gm-tlcp` crate.
     #[serde(default = "default_rest_tls_backend")]
     pub backend: String,
 
