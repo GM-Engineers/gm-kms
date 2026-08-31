@@ -8,7 +8,7 @@ publish.workspace = true
 
 [dependencies]
 parking_lot = { workspace = true }
-sha2 = "0.10"
+sha2 = "0.11"
 kms-core = { path = "../kms-core" }
 kms-keystore = { path = "../kms-keystore" }
 kms-policy = { path = "../kms-policy" }
