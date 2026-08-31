@@ -1,13 +1,13 @@
-//! GM/TLS Listener for axum REST API
+//! TLS 1.3 + SM Listener for axum REST API
 //!
 //! Implements axum 0.8's `Listener` trait by wrapping a tokio `TcpListener`
-//! and performing GM/TLS handshake on each accepted connection via `gm_tls::TlsAcceptor`.
+//! and performing TLS 1.3 + SM handshake on each accepted connection via `gm_tls::TlsAcceptor`.
 //!
-//! This enables the REST API to use TLS 1.3 with SM algorithms (SM2/SM3/SM4)
-//! for transport-layer encryption.
+//! This enables the REST API to use TLS 1.3 (RFC 8446, version byte 0x0303) with SM cipher suites
+//! (SM2/SM3/SM4) for transport-layer encryption.
 //!
-//! Note: TLCP (GB/T 38636-2020) is available as a separate `gm-tlcp` crate.
-//! It is currently NOT wired into gm-kms; this listener uses gm-tls TLS 1.3.
+//! Note: TLCP (GB/T 38636-2020, version byte 0x0101) is available as a separate `gm-tlcp` crate.
+//! It is currently NOT wired into gm-kms; this listener uses gm-tls TLS 1.3 + SM.
 
 use anyhow::{Context, Result};
 use axum::serve::Listener;
@@ -15,7 +15,7 @@ use std::io;
 use std::net::SocketAddr;
 use tokio::net::TcpStream;
 
-/// A GM/TLS listener that wraps a TCP listener and performs SM2/SM4-GCM handshake.
+/// A TLS 1.3 + SM listener that wraps a TCP listener and performs SM2/SM4-GCM handshake.
 ///
 /// # Usage
 ///
@@ -30,15 +30,15 @@ pub struct GmTlsListener {
 }
 
 impl GmTlsListener {
-    /// Bind to an address and create a GM/TLS listener.
+    /// Bind to an address and create a TLS 1.3 + SM listener.
     ///
     /// # Arguments
     /// * `addr` - Socket address to bind to
-    /// * `config` - GM/TLS configuration (cert, key, CA cert)
+    /// * `config` - TLS 1.3 + SM configuration (cert, key, CA cert)
     pub async fn bind(addr: SocketAddr, config: gm_tls::TlsConfig) -> Result<Self> {
         let listener = tokio::net::TcpListener::bind(addr)
             .await
-            .context("Failed to bind GM/TLS listener")?;
+            .context("Failed to bind TLS 1.3 + SM listener")?;
         let acceptor = gm_tls::TlsAcceptor::new(config)?;
         Ok(Self { listener, acceptor })
     }
@@ -57,17 +57,17 @@ impl Listener for GmTlsListener {
                     if is_connection_error(&e) {
                         continue;
                     }
-                    tracing::error!("GM/TLS listener accept error: {e}");
+                    tracing::error!("TLS 1.3 + SM listener accept error: {e}");
                     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                     continue;
                 }
             };
 
-            // Perform GM/TLS handshake
+            // Perform TLS 1.3 + SM handshake
             match self.acceptor.accept(tcp_stream).await {
                 Ok(gm_stream) => return (gm_stream, peer_addr),
                 Err(e) => {
-                    tracing::warn!("GM/TLS handshake failed for {peer_addr}: {e}");
+                    tracing::warn!("TLS 1.3 + SM handshake failed for {peer_addr}: {e}");
                     // Retry — next loop iteration will accept a new connection
                 }
             }
