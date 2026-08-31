@@ -34,12 +34,16 @@ All notable changes to gm-kms will be documented in this file.
     `totp-rs >= 6.x`, `sqlx >= 0.9`, `toml >= 1.x`, `config >= 0.15`, `rdkafka >= 0.37`, `getrandom >= 0.3`.
   - Motivation: patch upgrades that pull transitive `cipher 0.4 → 0.5` (BlockEncrypt → BlockCipherEncrypt rename) are *real* breaking changes, not "low A-tier lockfile-only".
 
+### Fixed
+
+- **文档修正**：明确 TLCP (GB/T 38636-2020) 当前为参考实现，位于独立 `gm-tlcp` crate 中维护。gm-kms REST/gRPC 入口当前走 TLS 1.3 + SM ciphers（通过 `gm-tls` 实现）。同步更新 README.md / CONTRIBUTING.md / kms.toml.example / `src/cmd/gm_listener.rs` 中“gm-kms 部署 TLCP”的不实描述。“gm” backend 配置实际为 TLS 1.3 + SM ciphers，未接入 TLCP 协议。
+
 ## [0.1.0] — 2026-08-27
 
 ### Added
 
 - **SM2/SM3/SM4/SM9** cryptographic algorithms via the `gm` workspace
-- **TLCP** (Transport Layer Cryptographic Protocol) with dual-certificate ECDHE handshake and SM4-CBC suite
+- **[planned, 未实际部署]** TLCP (Transport Layer Cryptographic Protocol) with dual-certificate ECDHE handshake and SM4-CBC suite — 参考实现见 `gm-tlcp` crate（独立维护中）。
 - **gRPC + REST dual API** with full feature parity (envelope encrypt/decrypt/rewrap, import/export, hash, DH derive, audit query)
 - **PBAC** (Policy-Based Access Control) engine integrated across all handlers
 - **SM9 key rotation** via `Sm9RotationAdapter` bridging `gm-sm9-rs` to gm-kms

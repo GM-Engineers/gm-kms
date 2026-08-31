@@ -62,7 +62,7 @@ enabled = true
 # require_client_cert = true
 
 # REST API TLS configuration (optional HTTPS)
-# Supported backends: "rustls" (standard TLS), "gm" (国密 TLS GB/T 38636-2020 TLCP)
+# Supported backends: "rustls" (standard TLS), "gm" (TLS 1.3 + SM 算法)
 # Uncomment and configure to enable HTTPS for REST API
 # [rest_tls]
 # enabled = true

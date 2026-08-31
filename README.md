@@ -14,7 +14,7 @@
 | **访问控制** | PBAC 策略引擎、MFA (TOTP)、审批工作流 |
 | **审计日志** | WORM 存储、HashChain 防篡改、3年保留 |
 | **后端存储** | PostgreSQL、Redis、软件 Keystore |
-| **传输安全** | REST API (axum、国密 TLS TLCP/GB/T 38636)、gRPC (tonic)、gRPC TLCP |
+| **传输安全** | REST API (axum、TLS 1.3 + SM 算法)、gRPC (tonic) |
 
 ## 技术栈
 
@@ -23,7 +23,7 @@
 - **Web**: axum 0.8, tonic 0.14
 - **数据库**: PostgreSQL 16+, Redis 7+
 - **加密**: ring, gm-crypto (SM2/SM3/SM4/SM9)
-- **外部依赖**: gm-tls (TLCP 传输加密), gm-sm9-rs (SM9 双后端), gm-ca (CA 证书)
+- **外部依赖**: gm-tls (TLS 1.3 + SM 传输加密), gm-sm9-rs (SM9 双后端), gm-ca (CA 证书)
 
 ## 前提条件
 
@@ -196,7 +196,7 @@ gm-kms/
 | GM/T 0004-2012 (SM3) | ✅ |
 | GM/T 0003-2012 (SM2) | ✅ |
 | GM/T 0044-2016 (SM9) | ✅ (GmSSL + 纯 Rust 双后端) |
-| GB/T 38636-2020 (TLCP) | ✅ (gm-tls, REST + gRPC) |
+| GB/T 38636-2020 (TLCP) | ⚠️ 参考实现：`gm-tlcp` crate（独立维护中）。gm-kms 当前 REST/gRPC 走 TLS 1.3 + SM ciphers（gm-tls）。 |
 | 等保 2.0 三级 | ✅ (部分) |
 
 > **SM9 后端**: 默认使用 GmSSL 3.1.1 实现 GM/T 0044-2016 标准曲线参数和 SM3 哈希。同时提供纯 Rust 后端（`pure-rust` feature），双后端通过交叉验证确保正确性。

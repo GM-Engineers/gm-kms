@@ -3,8 +3,11 @@
 //! Implements axum 0.8's `Listener` trait by wrapping a tokio `TcpListener`
 //! and performing GM/TLS handshake on each accepted connection via `gm_tls::TlsAcceptor`.
 //!
-//! This enables the REST API to use 国密 TLS (GB/T 38636-2020 TLCP) for
-//! transport-layer encryption, satisfying 等保 2.0 三级 requirements.
+//! This enables the REST API to use TLS 1.3 with SM algorithms (SM2/SM3/SM4)
+//! for transport-layer encryption.
+//!
+//! Note: TLCP (GB/T 38636-2020) is available as a separate `gm-tlcp` crate.
+//! It is currently NOT wired into gm-kms; this listener uses gm-tls TLS 1.3.
 
 use anyhow::{Context, Result};
 use axum::serve::Listener;

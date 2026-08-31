@@ -2,7 +2,7 @@
 
 Thank you for your interest in contributing to **gm-kms** — a key management
 service (KMS) built on the [`gm`](https://github.com/GM-Engineers/gm) workspace
-(SM2 / SM3 / SM4 / SM9 cryptography, TLS 1.3 with TLCP).
+(SM2 / SM3 / SM4 / SM9 cryptography, TLS 1.3 with SM algorithms).
 
 This document is the bilingual (中文 / English) contribution guide.
 
