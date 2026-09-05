@@ -1,7 +1,7 @@
 # Deployment Guide / 部署指南
 
-> Document version: 1.2.0 | 文档版本: 1.2.0
-> Last updated: 2026-06-23
+> Document version: 1.3.0 | 文档版本: 1.3.0
+> Last updated: 2026-09-05
 
 ---
 
@@ -214,7 +214,7 @@ Response:
 ```json
 {
   "status": "ok",
-  "version": "0.1.0",
+  "version": "0.2.1",
   "components": {
     "keystore": "healthy",
     "audit": "healthy"
@@ -581,7 +581,7 @@ curl http://localhost:8080/v1/health
 ```json
 {
   "status": "ok",
-  "version": "0.1.0",
+  "version": "0.2.1",
   "components": {
     "keystore": "healthy",
     "audit": "healthy"

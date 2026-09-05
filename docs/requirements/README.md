@@ -1,7 +1,7 @@
 # Requirements / 功能需求文档
 
-> 版本 Version: 1.0
-> 更新 Updated: 2026-06-29
+> 版本 Version: 1.1
+> 更新 Updated: 2026-09-05
 
 ---
 
