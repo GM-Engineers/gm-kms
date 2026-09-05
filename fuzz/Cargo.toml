@@ -14,7 +14,9 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 
 # Cryptography dependencies for fuzz targets
-gm-crypto = { version = "0.1.0" }
+# gm-crypto 必须与 [patch.crates-io] 中的 git rev 一致 (37e1b21)；否则 fuzz
+# 目标与 kms 二进制会链接到不同源的 gm-crypto，导致跨 crate 类型不一致。
+gm-crypto = { version = "0.2" }
 ring = "0.17"
 hex = "0.4"
 

@@ -1063,7 +1063,9 @@ pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()
 
                 let ca_path = tls.ca_path.as_deref().unwrap_or("");
                 if ca_path.is_empty() {
-                    anyhow::bail!("TLS 1.3 + SM (gm-tls) requires ca_path to be set in [rest_tls] config");
+                    anyhow::bail!(
+                        "TLS 1.3 + SM (gm-tls) requires ca_path to be set in [rest_tls] config"
+                    );
                 }
 
                 let gm_config =

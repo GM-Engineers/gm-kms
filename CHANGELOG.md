@@ -2,7 +2,20 @@
 
 All notable changes to gm-kms will be documented in this file.
 
-## [0.2.0] — Unreleased
+## [0.2.1] — Unreleased
+
+### Dependencies — upstream `gm` workspace 0.3.0
+
+- **`gm-tls` 0.1.0 → 0.2.0** (BREAKING upstream): `pub mod tlcp` removed from `gm-tls`. TLCP (GB/T 38636-2020) is now a separate `gm-tlcp` crate. gm-kms does **not** depend on `gm-tlcp` and only uses `TlsConfig` / `TlsAcceptor` / `GmTlsStream` / `grpc::GmTlsIncoming` / `TlsError` from `gm-tls`, all preserved unchanged. No source code changes required.
+- **`gm-crypto` 0.1.0 → 0.2.0** (additive): 3 new APIs (`Sm4Cipher::encrypt_cbc_raw` / `decrypt_cbc_raw`, `x509::extract_sm2_pubkey_from_der`) used only by the new `gm-tlcp` crate. No breaking changes to the `Sm2KeyPair` / `Sm2Signer` / `Sm2Verifier` / `Sm2Encryptor` / `Sm2Decryptor` / `Sm3Hasher` / `Sm3Hmac` / `Sm4Cipher` APIs that gm-kms consumes.
+- **`[patch.crates-io]`**: bumped from `rev = c0148032` to `rev = 37e1b21` (tag `gm-tls-v0.2.0`). Added `gm-sm9-rs` to the patch list to ensure all three crates (gm-ca, gm-crypto, gm-sm9-rs) resolve to the same git source, eliminating the dual-source type mismatch (E0308 on `Sm2KeyPair`) that previously surfaced in `cargo check --workspace --all-targets`. All direct `gm-crypto = "0.1.0"` deps bumped to `"0.2"` for the same reason.
+
+### Fixed
+
+- **`src/cmd/server.rs`**: pre-existing rustfmt drift in the `gm-tls` REST error message (`anyhow::bail!("TLS 1.3 + SM (gm-tls) ...")`) that had `cargo fmt --all -- --check` failing on CI since commit 8c06d24.
+- **`CONTRIBUTING.md`**: clarified the dependency story — replaced the stale claim that gm-kms uses "versioned crates.io dependencies" with an accurate description of the crates.io + `[patch.crates-io]` hybrid strategy.
+
+## [0.2.0] — 2026-08-27
 
 ### ⚠️ Breaking Changes
 

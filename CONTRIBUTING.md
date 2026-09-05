@@ -14,8 +14,13 @@ By participating, you agree to uphold it.
 ## Getting started / 环境准备
 
 - **Rust toolchain 1.85+** (Edition 2024). Install via [rustup](https://rustup.rs).
-- `gm-kms` depends on `gm` via **versioned crates.io dependencies** — no local
-  `../gm` path is required. Build:
+- `gm-kms` consumes `gm` workspace crates (`gm-tls`, `gm-crypto`, `gm-sm9-rs`, `gm-ca`)
+  via **crates.io** plus a `[patch.crates-io]` block in the root `Cargo.toml`
+  pinning three of them (`gm-ca`, `gm-crypto`, `gm-sm9-rs`) to a coordinated git
+  release of the `gm` repo. This unifies the `gm-crypto` source across all
+  transitive consumers — see the comment above `[patch.crates-io]` in
+  `Cargo.toml` for the full rationale and sync policy. No local `../gm` checkout
+  is required. Build:
 
   ```bash
   cargo build --workspace
