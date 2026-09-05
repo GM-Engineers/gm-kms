@@ -171,7 +171,6 @@ gm-kms/
 │   ├── kms-approval/          # 审批工作流
 ├── operators/                 # Kubernetes Operator
 ├── docs/                      # 文档
-│   ├── compliance/            # 合规性检查清单、整改计划
 │   ├── guides/                # 部署指南
 │   ├── requirements/          # 功能需求文档
 │   └── wiki/                  # 术语和技术词条
@@ -185,7 +184,6 @@ gm-kms/
 ## 文档
 
 - [部署指南](docs/guides/deployment-guide.md)
-- [合规性检查清单](docs/compliance/checklist.md)
 - [需求文档索引](docs/requirements/README.md)
 - [术语百科](docs/wiki/gmt-index.md)
 - [GM/T 标准索引](docs/wiki/gmt-standards.md)

@@ -171,7 +171,6 @@ gm-kms/
 │   ├── kms-approval/          # approval workflow
 ├── operators/                 # Kubernetes Operator
 ├── docs/                      # documentation
-│   ├── compliance/            # compliance checklists, remediation plans
 │   ├── guides/                # deployment guides
 │   ├── requirements/          # functional-requirements docs
 │   └── wiki/                  # terminology and technical entries
@@ -185,7 +184,6 @@ gm-kms/
 ## Documentation
 
 - [Deployment guide](docs/guides/deployment-guide.md)
-- [Compliance checklist](docs/compliance/checklist.md)
 - [Requirements index](docs/requirements/README.md)
 - [Terminology wiki](docs/wiki/gmt-index.md)
 - [GM/T standard index](docs/wiki/gmt-standards.md)

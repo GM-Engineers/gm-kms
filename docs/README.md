@@ -18,16 +18,6 @@
 | F5-audit.md | 审计日志 |
 | N1-security.md | 安全控制与租户隔离 |
 
-### [合规性文档](compliance/)
-合规性检查与标准对照。
-
-| 文档 | 说明 |
-|------|------|
-| checklist.md | GM/T 标准合规性检查清单 |
-| regulations-index.md | 商用密码法规标准索引 |
-| sm9-curve-design.md | SM9 国密曲线切换设计 |
-| self-assessment.md | 自评估报告 |
-
 ### [部署指南](guides/)
 生产环境部署与运维指南。
 
@@ -71,7 +61,7 @@
 #### 合规标准
 | 词条 | 说明 | 标准号 |
 |------|------|--------|
-| 等保.md | 信息安全等级保护 2.0 | GB/T 22239-2019 |
+| djcp.md | 信息安全等级保护 2.0 | GB/T 22239-2019 |
 | gmt-standards.md | 密码行业标准 GM/T | GM/T 系列 |
 | fips-140.md | 密码模块安全标准 | NIST FIPS 140-2/140-3 |
 | pci-dss.md | 支付卡行业数据安全标准 | PCI-DSS v4.0 |
@@ -108,9 +98,7 @@
 ## 快速链接
 
 - [项目 README](../README.md) - 项目概述与快速开始
-- [合规性检查清单](compliance/checklist.md) - 对照监管要求逐项检查
 - [部署指南](guides/deployment-guide.md) - 生产环境部署步骤
-- [SM9 曲线设计](compliance/sm9-curve-design.md) - GM/T 0044-2016 参数迁移计划
 
 ---
 

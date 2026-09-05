@@ -54,6 +54,4 @@ Requirement numbering:
 
 ## 关联文档 / Related Documents
 
-- [合规性检查清单](../compliance/checklist.md) — 对照 GM/T 标准逐项检查
 - [部署指南](../guides/deployment-guide.md) — 生产环境部署
-- [安全评估报告](../compliance/audit/self-assessment.md) — 安全漏洞追踪
