@@ -2,6 +2,8 @@
 
 [![GitHub Release](https://img.shields.io/github/v/release/GM-Engineers/gm-kms?include_prereleases)](https://github.com/GM-Engineers/gm-kms/releases)
 
+**[English Version](./README.en.md)**
+
 国密密钥管理系统 (Key Management System)，支持 GM/T 标准算法（SM2/SM3/SM4/SM9）。
 
 ## 功能特性
@@ -67,7 +69,7 @@ chmod +x kms-linux-x86_64
 sha256sum -c SHA256SUMS.txt
 ```
 
-> 当前最新版本：`v0.1.0`
+> 当前最新版本：`v0.2.1`（推荐升级）
 
 ### 方式二：Docker 镜像
 
@@ -217,7 +219,7 @@ gm-kms/
 | kms-cli | 8 | ✅ |
 | kms-api | 261 | ✅ |
 | integration/KAT | 81 | ✅ |
-| **总计** | **958 + 6 benchmark** | **全部通过** |
+| **总计** | **959 + 6 benchmark** | **全部通过** |
 
 > 注: 6 个 benchmark 测试默认忽略，可通过 `cargo test -- --ignored` 运行
 
@@ -225,9 +227,9 @@ gm-kms/
 
 本项目依赖以下外部/社区实现（署名与许可详情见 [NOTICE](./NOTICE)）：
 
-- **SM2 / SM3 / SM4**（`gm-crypto`）：对社区 Rust crate `sm2` / `sm3` / `sm4` 的轻量封装，并非从零自研。
-- **SM9**（`gm-sm9-rs`）：[GmSSL](https://github.com/guanzhi/GmSSL)（Apache-2.0）的 Rust 移植。
-- **gm-tls / gm-ca / gm-crypto**：来自 [gm workspace](https://github.com/GM-Engineers/gm)。
+- **SM2 / SM3 / SM4**（`gm-crypto`）：在社区 Rust crate `sm2` / `sm3` / `sm4` 之上构建，补齐 SM2 ZA / SM3 HMAC / SM4 GCM-CBC 等业务实现，详细范围见 [gm workspace 仓库](https://github.com/GM-Engineers/gm)。
+- **SM9**（`gm-sm9-rs`）：[GmSSL](https://github.com/guanzhi/GmSSL)（Apache-2.0）的 Rust 移植，提供纯 Rust 与 GmSSL FFI 双后端。
+- **gm-tls / gm-ca / gm-crypto / gm-sm9-rs**：均来自 [gm workspace](https://github.com/GM-Engineers/gm)，以 crates.io 依赖 + 根 `Cargo.toml` 的 `[patch.crates-io]` 锁定到同一 git rev。
 
 ## 许可证
 

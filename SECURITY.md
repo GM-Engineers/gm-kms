@@ -65,6 +65,7 @@ prefer to remain anonymous). We do not currently offer a bug bounty program.
 
 | Version | Supported          |
 | ------- | ------------------ |
+| 0.2.x   | :white_check_mark: |
 | 0.1.x   | :white_check_mark: |
 
 Only the latest release receives security patches.
