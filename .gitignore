@@ -1,6 +1,12 @@
 /target/
 **/target/
 
+# Ad-hoc Rust experiment outputs (per repo convention)
+/rust_out
+/rust_test
+*_test_exe
+Cargo.toml.tmp
+
 # Application — always commit Cargo.lock for reproducible builds (not .gitignored)
 # Cargo.lock removed from ignore list
 *.toml.patch
@@ -11,6 +17,10 @@
 .vscode/
 *.swp
 *.swo
+*.bak
+*.tmp
+*.orig
+*.rej
 
 # Environment (templates committed via .env.example)
 .env
