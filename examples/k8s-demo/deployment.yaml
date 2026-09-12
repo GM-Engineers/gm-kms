@@ -1,0 +1,96 @@
+# Minimal demo Deployment for gm-kms (single replica, no HA)
+#
+# See ./README.md for what this manifest does and does not provide.
+# DO NOT use as a starting point for production deployments.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kms-demo
+---
+# KMS Deployment (single replica — demo only)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kms
+  namespace: kms-demo
+  labels:
+    app: kms
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kms
+  template:
+    metadata:
+      labels:
+        app: kms
+    spec:
+      containers:
+        - name: kms
+          image: gm-kms:demo
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: http
+            - containerPort: 9090
+              name: grpc
+          env:
+            - name: RUST_LOG
+              value: "info"
+            - name: DATABASE_URL
+              value: "postgres://kms:kms123@postgres:5432/kms"
+            - name: REDIS_URL
+              value: "redis://redis:6379"
+            # For REST over TLCP, also set:
+            # - name: REST_TLS_BACKEND
+            #   value: "tlcp"
+            # - name: REST_TLS_TLCP_SIGN_CERT_PATH
+            #   value: "/certs/server-sign.crt"
+            # - name: REST_TLS_TLCP_ENC_CERT_PATH
+            #   value: "/certs/server-enc.crt"
+            # - name: REST_TLS_TLCP_SIGN_KEY_PATH
+            #   value: "/certs/server-sign.key.pem"
+            # - name: REST_TLS_TLCP_ENC_KEY_PATH
+            #   value: "/certs/server-enc.key.pem"
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              cpu: 2000m
+              memory: 2Gi
+          livenessProbe:
+            httpGet:
+              path: /v1/health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /v1/health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+---
+# KMS Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: kms-service
+  namespace: kms-demo
+  labels:
+    app: kms
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8080
+      targetPort: 8080
+      protocol: TCP
+      name: http
+    - port: 9090
+      targetPort: 9090
+      protocol: TCP
+      name: grpc
+  selector:
+    app: kms

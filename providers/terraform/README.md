@@ -1,5 +1,12 @@
 # KMS Terraform Provider
 
+> **EXPERIMENTAL — REFERENCE ONLY**
+>
+> These Terraform configurations demonstrate how to call gm-kms's REST API
+> from Terraform using the built-in `http` data source. They are **not**
+> a maintained Terraform provider, just an example. They may be out of
+> sync with the current REST API surface. **Use at your own risk.**
+
 Terraform configurations for integrating gm-kms with your Terraform infrastructure-as-code.
 
 ## Approach

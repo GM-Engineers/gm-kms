@@ -4,7 +4,39 @@
 
 **[中文版](./README.md)**
 
-National-cryptography (国密 / GM/T) Key Management Service supporting the SM2 / SM3 / SM4 / SM9 algorithm family.
+> **Positioning**: gm-kms is a **Rust reference implementation of a national-cryptography (国密) KMS**, aimed at learning, internal demos, ecosystem integration, and small-scale auxiliary scenarios.
+> It is **NOT** a production-ready KMS, **does NOT replace** commercial cloud KMS (Aliyun / Huawei Cloud / Tencent Cloud / AWS KMS), and has **NOT passed** third-party cryptographic evaluation (密评) or MLPS certification (等保).
+> See "What this project is / is not" below.
+
+## What this project is
+
+- **A Rust national-crypto KMS reference implementation**: complete coverage of SM2 / SM3 / SM4 / SM9 algorithms, envelope encryption, key rotation, PBAC, MFA, WORM audit, approval workflow — the core patterns of any KMS
+- **A learning resource**: reading the code teaches you how to implement a KMS in Rust. Start at [LEARN.md](./LEARN.md)
+- **A wire-up demo for the gm workspace ecosystem**: `gm-crypto` + `gm-tls` + `gm-sm9-rs` + `gm-tlcp` + `gm-ca` integrated end-to-end
+- **A runnable binary for small internal / demo scenarios**: REST + gRPC dual API
+
+## What this project is NOT
+
+| Not claimed capability | Why |
+|---|---|
+| A production-ready KMS | No SLA, no commercial support, still v0.x; production features (key lifecycle guarantees, HA, DR) not covered |
+| A commercial KMS replacement | Aliyun KMS / Huawei Cloud KMS / Tencent Cloud KMS / AWS KMS provide managed HA, compliance certifications, key lineage, managed HSM integration |
+| A certified compliance deliverable | Self-assessment ≠ third-party certification; TLCP cert chain verification not integrated; SM9 master key in memory by default |
+| Direct use in finance / government production systems | Same as above; mandatory cryptographic evaluation needs separate assessment |
+| A multi-tenant SaaS backend | No commercial support capacity |
+
+## Suitable / Not-suitable scenarios
+
+| Scenario | Suitable? | Notes |
+|---|---|---|
+| Learning Rust KMS implementation | Yes | Start from [LEARN.md](./LEARN.md) |
+| National-crypto PoC / internal demo | Yes | Note TLCP cert chain verification is missing |
+| gm workspace ecosystem integration demo | Yes | Full wire-up available |
+| Small-scale internal tooling KMS backend | Yes | Evaluate your own security boundary |
+| Kubernetes internal deployment | Partial | See [examples/k8s-demo/](./examples/k8s-demo/README.md) (demo, not production) |
+| Aliyun / Huawei / Tencent Cloud KMS replacement | No | See table above |
+| Cryptographic evaluation deliverable | No | See table above |
+| Finance / government production KMS | No | See table above |
 
 ## Features
 
@@ -16,7 +48,8 @@ National-cryptography (国密 / GM/T) Key Management Service supporting the SM2 
 | **Access control** | PBAC policy engine, MFA (TOTP), approval workflow |
 | **Audit log** | WORM storage, hash-chain tamper-evidence, 3-year retention |
 | **Backends** | PostgreSQL, Redis, in-memory software keystore |
-| **Transport** | REST API (axum, TLS 1.3 + SM ciphers), gRPC (tonic) |
+| **REST API** | TLS 1.3 + SM (gm-tls) or **TLCP (gm-tlcp)** selectable backend |
+| **gRPC API** | TLS 1.3 + SM (TLCP not yet supported, see known limitations) |
 
 ## Tech stack
 
@@ -24,136 +57,42 @@ National-cryptography (国密 / GM/T) Key Management Service supporting the SM2 
 - **Async runtime**: tokio
 - **Web**: axum 0.8, tonic 0.14
 - **Database**: PostgreSQL 16+, Redis 7+
-- **Crypto**: ring, gm-crypto (SM2/SM3/SM4/SM9)
-- **External deps**: gm-tls (TLS 1.3 + SM transport), gm-sm9-rs (SM9 dual-backend), gm-ca (CA certs)
+- **Cryptography**: ring, gm-crypto (SM2/SM3/SM4/SM9)
+- **External deps**: gm-tls (TLS 1.3 + SM), gm-sm9-rs (SM9 dual-backend), gm-ca (CA certs), gm-tlcp (TLCP, GB/T 38636-2020)
 
-## Prerequisites
-
-- **Rust 1.85+** (Edition 2024)
-- **GmSSL 3.1.1** system library (needed for the SM9 dual-backend)
-  ```bash
-  git clone --depth 1 --branch v3.1.1 https://github.com/guanzhi/GmSSL.git
-  cd GmSSL && mkdir build && cd build
-  cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local -DBUILD_SHARED_LIBS=ON
-  make -j$(nproc) && sudo make install && sudo ldconfig
-  ```
-- **PostgreSQL 16+** and **Redis 7+** (for production deployment)
-- If GmSSL is not available, you can use the pure-Rust backend: `--features pure-rust`
-
-## Installation
-
-The `kms` binary of this project is **not published to crates.io** and cannot be installed via `cargo install`. Use one of the following three ways to obtain the executable:
-
-### Option 1: Download prebuilt binaries (recommended, no Rust toolchain needed)
-
-Download the platform binary from [GitHub Releases](https://github.com/GM-Engineers/gm-kms/releases), ready to run:
-
-| Platform | File |
-|----------|------|
-| Linux x86_64 | `kms-linux-x86_64` |
-| Linux ARM64 (aarch64) | `kms-linux-aarch64` |
-| macOS Intel (x86_64) | `kms-macos-x86_64` |
-| macOS Apple Silicon (aarch64) | `kms-macos-aarch64` |
-| Windows x86_64 | `kms-windows-x86_64.exe` |
-
-On Linux / macOS, make it executable after download:
+## Quick start (learning / demo)
 
 ```bash
-chmod +x kms-linux-x86_64
-./kms-linux-x86_64 --help
-```
-
-Each release ships with `SHA256SUMS.txt` for integrity verification:
-
-```bash
-sha256sum -c SHA256SUMS.txt
-```
-
-> Latest version: `v0.2.1` (recommended upgrade)
-
-### Option 2: Docker image
-
-```bash
-docker build -t gm-kms .
-docker run -d --name kms --network host gm-kms --server
-```
-
-### Option 3: Build from source
-
-Requires Rust 1.85+ and GmSSL (or `--features pure-rust`). See [Prerequisites](#prerequisites) and [Quick start](#quick-start):
-
-```bash
-cargo build --release
-# Artifact is at target/release/kms
-```
-
-## Quick start
-
-### 1. Start the dependency services
-
-```bash
+# 1. Start dependency services
 docker compose up -d
 # Starts PostgreSQL and Redis (does NOT start kms itself)
-```
 
-### 2. Set environment variables
-
-```bash
-# Copy the env-var template
+# 2. Set environment variables
 cp -n .env.example .env || true
-# Test keys are baked in; replace for production deployment
 export DATABASE_URL="postgres://kms:kms123@localhost:5432/kms"
 export KMS_KEK="<your-kek-hex-64>"
-```
 
-### 3. Build and test
-
-```bash
-# Build
+# 3. Build and test
 cargo build --release
+cargo test --workspace           # 877+ tests
 
-# Run all tests
-cargo test --workspace
-
-# Run a specific crate's tests
-cargo test -p kms-core
-cargo test -p kms-api
-
-# Full CI check (format → clippy → build → test)
-make check
-```
-
-### 4. Start the service
-
-```bash
-# Option A: run directly
+# 4. Start the service (default TLS 1.3 + SM)
 cargo run --release -p kms -- --server
 
-# Option B: Docker container (with GmSSL)
-docker build -t gm-kms .
-docker run -d --name kms --network host \
-  -e DATABASE_URL="postgres://kms:kms123@localhost:5432/kms" \
-  -e KMS_KEK="<your-kek-hex-64>" \
-  gm-kms --server
+# 4b. Start REST over TLCP (requires dual certificates prepared first)
+REST_TLS_BACKEND=tlcp \
+REST_TLS_TLCP_SIGN_CERT_PATH=./certs/server-sign.crt \
+REST_TLS_TLCP_ENC_CERT_PATH=./certs/server-enc.crt \
+REST_TLS_TLCP_SIGN_KEY_PATH=./certs/server-sign.key.pem \
+REST_TLS_TLCP_ENC_KEY_PATH=./certs/server-enc.key.pem \
+cargo run --release -p kms -- --server
 ```
 
-### 5. Developer helper commands
-
-```bash
-# One-shot CI check (fmt + clippy + build + test)
-make check
-
-# Generate SBOM (CycloneDX JSON + XML)
-make sbom
-
-# Security scanning (requires local Docker)
-make zap-baseline       # OWASP ZAP passive scan
-make zap-api-scan       # ZAP active scan
-
-# Compliance reports
-make report-crypto      # Cryptography configuration report
-make report-compliance  # DJCP Level-3 self-assessment report
-```
+Tutorials:
+- [docs/guides/deployment-guide.md](./docs/guides/deployment-guide.md) — general deployment
+- [docs/guides/tlcp-deployment.md](./docs/guides/tlcp-deployment.md) — TLCP mode deployment
+- [LEARN.md](./LEARN.md) — code walk-through (recommended starting point)
+- [examples/](./examples/) — runnable examples
 
 ## Project layout
 
@@ -166,68 +105,73 @@ gm-kms/
 │   ├── kms-policy/            # PBAC policy engine
 │   ├── kms-audit/             # audit log
 │   ├── kms-cli/               # command-line tool
-│   ├── kms-hsm/               # TPM 2.0 HSM emulation
+│   ├── kms-hsm/               # TPM 2.0 HSM emulation (stub)
 │   ├── kms-mfa/               # MFA / TOTP
 │   ├── kms-approval/          # approval workflow
-├── operators/                 # Kubernetes Operator
+├── src/                       # binary entry points
+│   ├── main.rs
+│   └── cmd/
+│       ├── server.rs          # REST + gRPC server
+│       ├── config.rs          # configuration loader
+│       ├── gm_listener.rs     # TLS 1.3 + SM axum listener
+│       └── tlcp_listener.rs   # TLCP axum listener (added in this project)
+├── examples/                  # runnable examples (incl. k8s-demo)
 ├── docs/                      # documentation
 │   ├── guides/                # deployment guides
 │   ├── requirements/          # functional-requirements docs
 │   └── wiki/                  # terminology and technical entries
-├── examples/                  # example code
-└── providers/terraform/       # Terraform provider
-├── Makefile                   # developer helper commands
-├── docker-compose.yml         # PostgreSQL + Redis dependency services
-├── Dockerfile                 # production container image (with GmSSL)
+├── operators/                 # K8s Operator (Go, experimental)
+├── providers/terraform/       # Terraform provider (experimental)
+└── fuzz/                      # fuzz targets
 ```
 
-## Documentation
+## Compliance self-assessment
 
-- [Deployment guide](docs/guides/deployment-guide.md)
-- [Requirements index](docs/requirements/README.md)
-- [Terminology wiki](docs/wiki/gmt-index.md)
-- [GM/T standard index](docs/wiki/gmt-standards.md)
+| Standard | Self-assessment |
+|---|---|
+| GM/T 0002-2012 (SM4) | Implemented (kms-core) |
+| GM/T 0004-2012 (SM3) | Implemented (gm-crypto) |
+| GM/T 0003-2012 (SM2) | Implemented (gm-crypto) |
+| GM/T 0044-2016 (SM9) | Implemented (dual-backend cross-validated) |
+| GB/T 38636-2020 (TLCP) | REST implemented; gRPC uses TLS 1.3+SM; cert chain verification NOT integrated (known limitation) |
+| MLPS 2.0 Level 3 (等保 2.0 三级) | Partial capabilities; **NOT certified by third-party cryptographic evaluation** |
 
-## Standards compliance
+> **Note**: The table above is the maintainer team's self-assessment based on the code. **It does NOT equal** passing national cryptographic authority evaluation (密评) or MLPS certification. Any compliance delivery requires third-party assessment.
 
-| Standard | Status |
-|----------|--------|
-| GM/T 0002-2012 (SM4) | ✅ |
-| GM/T 0004-2012 (SM3) | ✅ |
-| GM/T 0003-2012 (SM2) | ✅ |
-| GM/T 0044-2016 (SM9) | ✅ (GmSSL + pure-Rust dual-backend) |
-| GB/T 38636-2020 (TLCP) | ⚠️ Reference impl: `gm-tlcp` crate (maintained separately). The gm-kms REST/gRPC entry currently runs TLS 1.3 + SM ciphers (via gm-tls). |
-| Multi-Level Protection Scheme 2.0 Level 3 (等保 2.0 三级) | ✅ (partial) |
+## Known limitations (inherent to this project)
 
-> **SM9 backend**: defaults to GmSSL 3.1.1 for the GM/T 0044-2016 standard curve parameters and SM3 hash. A pure-Rust backend is also provided (`pure-rust` feature); the dual backend is cross-validated for correctness.
+| Limitation | Impact | Mitigation |
+|---|---|---|
+| gRPC over TLCP not implemented | gRPC uses TLS 1.3 + SM, not TLCP protocol | TLCP REST available; gRPC planned for future version |
+| TLCP cert chain verification not integrated | TLCP handshake does not verify peer CA chain | Only trust peer bytes; waiting for upstream gm-tlcp `TlcpCertPair` to wire `cert_verify` |
+| SM9 master key in memory by default | Process crash or memory dump could leak | Production should use HSM/TPM (kms-hsm currently a stub) |
+| No bug bounty | No incentive for vulnerability disclosure | GitHub Security Advisory reporting still available |
+| No commercial support / SLA | No upstream response-time commitment | See "Suitable / Not-suitable scenarios" above |
 
-> **SM9**: the `gm-sm9-rs` crate lives in the [gm workspace](https://github.com/GM-Engineers/gm) (alongside `gm-crypto`, `gm-tls`, `gm-ca`)
-
-## Test counts
+## Test counts (verified, as of v0.3.0)
 
 | Crate | Test count | Status |
 |-------|-----------|--------|
-| kms-core | 278 | ✅ |
-| kms-policy | 28 | ✅ |
-| kms-audit | 95 | ✅ |
-| kms-hsm | 52 | ✅ |
-| kms-mfa | 45 | ✅ |
-| kms-approval | 16 | ✅ |
-| kms-keystore | 87 + 6 benchmark | ✅ |
-| kms-cli | 8 | ✅ |
-| kms-api | 261 | ✅ |
-| integration / KAT | 81 | ✅ |
-| **Total** | **959 + 6 benchmark** | **all passing** |
-
-> Note: the 6 benchmark tests are ignored by default; run them with `cargo test -- --ignored`
+| kms-core | 278 | passed |
+| kms-api | 256 (+ 5 ignored) | passed |
+| kms-policy | 28 | passed |
+| kms-audit | 95 | passed |
+| kms-hsm | 52 | passed |
+| kms-mfa | 46 | passed |
+| kms-approval | 16 | passed |
+| kms-keystore | 74 (+ 13 ignored) | passed |
+| kms-cli | 8 | passed |
+| kms binary (incl. tlcp_listener + config TLCP tests) | 37 | passed |
+| **Total** | **972 passed** (plus 21 ignored) | |
 
 ## Third-party components
 
 This project depends on the following external / community implementations (full attribution and licensing in [NOTICE](./NOTICE)):
 
-- **SM2 / SM3 / SM4** (`gm-crypto`): built on top of the community Rust crates `sm2` / `sm3` / `sm4`, with additional business-layer implementations for SM2 ZA, SM3 HMAC, SM4 GCM-CBC and similar. See the [gm workspace repo](https://github.com/GM-Engineers/gm) for the exact scope.
-- **SM9** (`gm-sm9-rs`): Rust port of [GmSSL](https://github.com/guanzhi/GmSSL) (Apache-2.0); provides pure-Rust and GmSSL FFI dual backends.
-- **gm-tls / gm-ca / gm-crypto / gm-sm9-rs**: all from the [gm workspace](https://github.com/GM-Engineers/gm); pinned to a single git revision via crates.io dependencies plus the `[patch.crates-io]` block in the root `Cargo.toml`.
+- **SM2 / SM3 / SM4** (`gm-crypto`): built on top of community Rust crates `sm2` / `sm3` / `sm4`, with additional business-layer implementations for SM2 ZA, SM3 HMAC, SM4 GCM-CBC and similar
+- **SM9** (`gm-sm9-rs`): Rust port of [GmSSL](https://github.com/guanzhi/GmSSL) (Apache-2.0); provides pure-Rust and GmSSL FFI dual backends
+- **TLCP** (`gm-tlcp`): pure-Rust implementation of GB/T 38636-2020
+- **gm-tls / gm-ca / gm-crypto / gm-sm9-rs / gm-tlcp**: all from the [gm workspace](https://github.com/GM-Engineers/gm), pinned to a single git revision via crates.io dependencies plus the `[patch.crates-io]` block in the root `Cargo.toml`
 
 ## License
 

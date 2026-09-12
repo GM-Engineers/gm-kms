@@ -4,7 +4,39 @@
 
 **[English Version](./README.en.md)**
 
-国密密钥管理系统 (Key Management System)，支持 GM/T 标准算法（SM2/SM3/SM4/SM9）。
+> **项目定位**：gm-kms 是一个 **Rust 实现的国密 KMS 参考实现**，面向学习、内部演示、生态集成和小规模辅助场景。
+> 它**不是**生产可用的 KMS，**不替代**商业云 KMS（阿里云 / 华为云 / 腾讯云 / AWS KMS），**未通过**密评或等保认证。
+> 详见下方"本项目是什么 / 不是什么"。
+
+## 本项目是什么
+
+- **Rust 国密 KMS 参考实现**：完整覆盖 SM2 / SM3 / SM4 / SM9 算法、信封加密、密钥轮换、PBAC、MFA、WORM 审计、审批工作流等 KMS 核心模式
+- **学习材料**：阅读代码即可理解"一个 KMS 在 Rust 里如何实现"，见 [LEARN.md](./LEARN.md)
+- **gm workspace 生态集成示范**：`gm-crypto` + `gm-tls` + `gm-sm9-rs` + `gm-tlcp` + `gm-ca` 端到端可用样例
+- **小规模内部 / 演示场景**：可启动的服务二进制，REST + gRPC 双 API
+
+## 本项目不是什么
+
+| 不声称的能力 | 原因 |
+|---|---|
+| 生产可用的 KMS | 无 SLA、无商业支持、版本 v0.x；密钥生命周期 / 高可用 / 容灾等生产特性未覆盖 |
+| 商业 KMS 替代品 | 阿里云 KMS / 华为云 KMS / 腾讯云 KMS / AWS KMS 提供托管 HA、合规认证、审计血缘、托管 HSM 集成 |
+| 通过密评的合规交付物 | 自评估 ≠ 第三方认证；TLCP 证书链验证未集成；SM9 主密钥默认在内存 |
+| 金融 / 政务生产系统直接使用 | 同上；密评等强制认证场景需自行评估 |
+| 多租户 SaaS 后端 | 商业支持能力不足 |
+
+## 适用 / 不适用场景
+
+| 场景 | 适用？ | 备注 |
+|---|---|---|
+| 学习 Rust KMS 实现 | 是 | 推荐从 [LEARN.md](./LEARN.md) 开始 |
+| 国密合规 PoC / 内部演示 | 是 | 注意 TLCP 证书链验证缺失 |
+| gm workspace 生态集成演示 | 是 | 完整 wire-up |
+| 小规模内部工具链 KMS 后端 | 是 | 需自行评估安全边界 |
+| Kubernetes 内部部署 | 部分 | 见 [examples/k8s-demo/](./examples/k8s-demo/README.md)（demo，非生产） |
+| 替代阿里云 / 华为云 / 腾讯云 KMS | 否 | 见上表 |
+| 密评交付物 | 否 | 见上表 |
+| 金融 / 政务生产 KMS | 否 | 见上表 |
 
 ## 功能特性
 
@@ -16,144 +48,51 @@
 | **访问控制** | PBAC 策略引擎、MFA (TOTP)、审批工作流 |
 | **审计日志** | WORM 存储、HashChain 防篡改、3年保留 |
 | **后端存储** | PostgreSQL、Redis、软件 Keystore |
-| **传输安全** | REST API (axum、TLS 1.3 + SM 算法)、gRPC (tonic) |
+| **REST API** | TLS 1.3 + SM (gm-tls) 或 **TLCP (gm-tlcp)** 双 backend 可选 |
+| **gRPC API** | TLS 1.3 + SM（暂不支持 TLCP，见已知限制） |
 
 ## 技术栈
 
-- **语言**: Rust 1.85+ (Edition 2024)
-- **异步**: tokio
-- **Web**: axum 0.8, tonic 0.14
-- **数据库**: PostgreSQL 16+, Redis 7+
-- **加密**: ring, gm-crypto (SM2/SM3/SM4/SM9)
-- **外部依赖**: gm-tls (TLS 1.3 + SM 传输加密), gm-sm9-rs (SM9 双后端), gm-ca (CA 证书)
+- **语言**：Rust 1.85+ (Edition 2024)
+- **异步**：tokio
+- **Web**：axum 0.8, tonic 0.14
+- **数据库**：PostgreSQL 16+, Redis 7+
+- **加密**：ring, gm-crypto (SM2/SM3/SM4/SM9)
+- **外部依赖**：gm-tls (TLS 1.3 + SM), gm-sm9-rs (SM9 双后端), gm-ca (CA 证书), gm-tlcp (TLCP, GB/T 38636-2020)
 
-## 前提条件
-
-- **Rust 1.85+**（Edition 2024）
-- **GmSSL 3.1.1** 系统库（SM9 双后端所需）
-  ```bash
-  git clone --depth 1 --branch v3.1.1 https://github.com/guanzhi/GmSSL.git
-  cd GmSSL && mkdir build && cd build
-  cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local -DBUILD_SHARED_LIBS=ON
-  make -j$(nproc) && sudo make install && sudo ldconfig
-  ```
-- **PostgreSQL 16+** 和 **Redis 7+**（用于生产部署）
-- 如无需 GmSSL，可使用纯 Rust 后端：`--features pure-rust`
-
-## 安装
-
-本项目的 `kms` 二进制**不发布到 crates.io**，因此无法通过 `cargo install` 安装。推荐使用以下三种方式之一获取可执行文件：
-
-### 方式一：下载预编译二进制（推荐，无需 Rust 工具链）
-
-从 [GitHub Releases](https://github.com/GM-Engineers/gm-kms/releases) 下载对应平台的二进制，开箱即用：
-
-| 平台 | 文件 |
-|------|------|
-| Linux x86_64 | `kms-linux-x86_64` |
-| Linux ARM64 (aarch64) | `kms-linux-aarch64` |
-| macOS Intel (x86_64) | `kms-macos-x86_64` |
-| macOS Apple Silicon (aarch64) | `kms-macos-aarch64` |
-| Windows x86_64 | `kms-windows-x86_64.exe` |
-
-Linux / macOS 下载后赋予执行权限即可运行：
+## 快速开始（学习 / 演示用）
 
 ```bash
-chmod +x kms-linux-x86_64
-./kms-linux-x86_64 --help
-```
-
-每个 Release 附带 `SHA256SUMS.txt`，可校验完整性：
-
-```bash
-sha256sum -c SHA256SUMS.txt
-```
-
-> 当前最新版本：`v0.2.1`（推荐升级）
-
-### 方式二：Docker 镜像
-
-```bash
-docker build -t gm-kms .
-docker run -d --name kms --network host gm-kms --server
-```
-
-### 方式三：从源码编译
-
-需要 Rust 1.85+ 与 GmSSL（或 `--features pure-rust`），详见[前提条件](#前提条件)与[快速开始](#快速开始)：
-
-```bash
-cargo build --release
-# 产物位于 target/release/kms
-```
-
-## 快速开始
-
-### 1. 启动依赖服务
-
-```bash
+# 1. 启动依赖服务
 docker compose up -d
 # 启动 PostgreSQL 和 Redis（不含 kms 服务本身）
-```
 
-### 2. 设置环境变量
-
-```bash
-# 复制环境变量模板
+# 2. 设置环境变量
 cp -n .env.example .env || true
-# 已内置测试密钥，生产部署需替换
 export DATABASE_URL="postgres://kms:kms123@localhost:5432/kms"
 export KMS_KEK="<your-kek-hex-64>"
-```
 
-### 3. 构建与测试
-
-```bash
-# 构建
+# 3. 构建与测试
 cargo build --release
+cargo test --workspace           # 877+ tests
 
-# 运行所有测试
-cargo test --workspace
-
-# 运行特定 crate 测试
-cargo test -p kms-core
-cargo test -p kms-api
-
-# 完整 CI 检查 (format → clippy → build → test)
-make check
-```
-
-### 4. 启动服务
-
-```bash
-# 方式一：直接运行
+# 4. 启动服务（默认 TLS 1.3 + SM）
 cargo run --release -p kms -- --server
 
-# 方式二：Docker 容器（含 GmSSL）
-docker build -t gm-kms .
-docker run -d --name kms --network host \
-  -e DATABASE_URL="postgres://kms:kms123@localhost:5432/kms" \
-  -e KMS_KEK="<your-kek-hex-64>" \
-  gm-kms --server
+# 4b. 启动 REST over TLCP（需先准备双证书）
+REST_TLS_BACKEND=tlcp \
+REST_TLS_TLCP_SIGN_CERT_PATH=./certs/server-sign.crt \
+REST_TLS_TLCP_ENC_CERT_PATH=./certs/server-enc.crt \
+REST_TLS_TLCP_SIGN_KEY_PATH=./certs/server-sign.key.pem \
+REST_TLS_TLCP_ENC_KEY_PATH=./certs/server-enc.key.pem \
+cargo run --release -p kms -- --server
 ```
 
-### 5. 开发辅助命令
-
-```bash
-# 一键 CI 检查（fmt + clippy + build + test）
-make check
-
-# 生成 SBOM（CycloneDX JSON + XML）
-make sbom
-
-# 安全扫描（需本地 Docker）
-make zap-baseline       # OWASP ZAP 被动扫描
-make zap-api-scan       # ZAP 主动扫描
-
-# 合规报告
-make report-crypto      # 加密配置报告
-make report-compliance  # DJCP 三级自评估报告
-```
+完整教程：
+- [docs/guides/deployment-guide.md](./docs/guides/deployment-guide.md) — 通用部署
+- [docs/guides/tlcp-deployment.md](./docs/guides/tlcp-deployment.md) — TLCP 模式部署
+- [LEARN.md](./LEARN.md) — 代码导读（推荐入门）
+- [examples/](./examples/) — 可运行示例
 
 ## 项目结构
 
@@ -166,68 +105,74 @@ gm-kms/
 │   ├── kms-policy/            # PBAC 策略引擎
 │   ├── kms-audit/             # 审计日志
 │   ├── kms-cli/               # 命令行工具
-│   ├── kms-hsm/               # TPM 2.0 HSM 模拟
+│   ├── kms-hsm/               # TPM 2.0 HSM 模拟（stub）
 │   ├── kms-mfa/               # MFA/TOTP
 │   ├── kms-approval/          # 审批工作流
-├── operators/                 # Kubernetes Operator
+├── src/                       # 二进制入口
+│   ├── main.rs
+│   └── cmd/
+│       ├── server.rs          # REST + gRPC server
+│       ├── config.rs          # 配置加载
+│       ├── gm_listener.rs     # TLS 1.3 + SM axum listener
+│       └── tlcp_listener.rs   # TLCP axum listener（本项目接入）
+├── examples/                  # 可运行示例（含 k8s-demo）
 ├── docs/                      # 文档
 │   ├── guides/                # 部署指南
 │   ├── requirements/          # 功能需求文档
 │   └── wiki/                  # 术语和技术词条
-├── examples/                  # 示例代码
-└── providers/terraform/       # Terraform provider
-├── Makefile                   # 开发辅助命令
-├── docker-compose.yml         # PostgreSQL + Redis 依赖服务
-├── Dockerfile                 # 生产容器镜像（含 GmSSL）
+├── operators/                 # K8s Operator（Go, experimental）
+├── providers/terraform/       # Terraform provider（experimental）
+└── fuzz/                      # Fuzz 测试目标
 ```
 
-## 文档
+## 合规自评估
 
-- [部署指南](docs/guides/deployment-guide.md)
-- [需求文档索引](docs/requirements/README.md)
-- [术语百科](docs/wiki/gmt-index.md)
-- [GM/T 标准索引](docs/wiki/gmt-standards.md)
+| 标准 | 自评估 |
+|---|---|
+| GM/T 0002-2012 (SM4) | 已实现 (kms-core) |
+| GM/T 0004-2012 (SM3) | 已实现 (gm-crypto) |
+| GM/T 0003-2012 (SM2) | 已实现 (gm-crypto) |
+| GM/T 0044-2016 (SM9) | 已实现（双后端交叉验证） |
+| GB/T 38636-2020 (TLCP) | REST 已实现；gRPC 走 TLS 1.3+SM；证书链验证未集成（已知限制） |
+| 等保 2.0 三级 | 部分能力；**未通过第三方密评认证** |
 
-## 合规性
+> **说明**：上表是作者团队基于代码的自评估，**不等于**通过国家密码管理局密评或等保认证。
+> 任何合规交付均需第三方评估。
 
-| 标准 | 状态 |
-|------|------|
-| GM/T 0002-2012 (SM4) | ✅ |
-| GM/T 0004-2012 (SM3) | ✅ |
-| GM/T 0003-2012 (SM2) | ✅ |
-| GM/T 0044-2016 (SM9) | ✅ (GmSSL + 纯 Rust 双后端) |
-| GB/T 38636-2020 (TLCP) | ⚠️ 参考实现：`gm-tlcp` crate（独立维护中）。gm-kms 当前 REST/gRPC 走 TLS 1.3 + SM ciphers（gm-tls）。 |
-| 等保 2.0 三级 | ✅ (部分) |
+## 已知限制（本项目固有）
 
-> **SM9 后端**: 默认使用 GmSSL 3.1.1 实现 GM/T 0044-2016 标准曲线参数和 SM3 哈希。同时提供纯 Rust 后端（`pure-rust` feature），双后端通过交叉验证确保正确性。
+| 限制 | 影响 | 缓解 |
+|---|---|---|
+| gRPC over TLCP 未实现 | gRPC 走 TLS 1.3 + SM，非 TLCP 协议 | TLCP REST 已可用；未来版本补 gRPC |
+| TLCP 证书链验证未集成 | TLCP 握手不验证对端 CA 链 | 仅信任对端字节；等 gm-tlcp 上游 `TlcpCertPair` 接 `cert_verify` |
+| SM9 主密钥默认存内存 | 进程崩溃或内存转储可泄漏 | 生产部署应使用 HSM/TPM（kms-hsm 当前是 stub） |
+| 无 bug bounty | 漏洞披露无激励 | 仍可通过 GitHub Security Advisory 报告 |
+| 无商业支持 / SLA | 上游不承诺响应时间 | 适用场景见上表 |
 
-> **SM9**: `gm-sm9-rs` crate 位于 [gm workspace](https://github.com/GM-Engineers/gm)（`gm-crypto`、`gm-tls`、`gm-ca` 同属该 workspace）
-
-## 测试统计
+## 测试统计（实测，截至 v0.3.0）
 
 | Crate | 测试数 | 状态 |
 |-------|--------|------|
-| kms-core | 278 | ✅ |
-| kms-policy | 28 | ✅ |
-| kms-audit | 95 | ✅ |
-| kms-hsm | 52 | ✅ |
-| kms-mfa | 45 | ✅ |
-| kms-approval | 16 | ✅ |
-| kms-keystore | 87 + 6 benchmark | ✅ |
-| kms-cli | 8 | ✅ |
-| kms-api | 261 | ✅ |
-| integration/KAT | 81 | ✅ |
-| **总计** | **959 + 6 benchmark** | **全部通过** |
-
-> 注: 6 个 benchmark 测试默认忽略，可通过 `cargo test -- --ignored` 运行
+| kms-core | 278 | passed |
+| kms-api | 256 (+ 5 ignored) | passed |
+| kms-policy | 28 | passed |
+| kms-audit | 95 | passed |
+| kms-hsm | 52 | passed |
+| kms-mfa | 46 | passed |
+| kms-approval | 16 | passed |
+| kms-keystore | 74 (+ 13 ignored) | passed |
+| kms-cli | 8 | passed |
+| kms binary（含 tlcp_listener + config TLCP 测试） | 37 | passed |
+| **合计** | **972 passed**（另 21 ignored） | |
 
 ## 第三方组件
 
 本项目依赖以下外部/社区实现（署名与许可详情见 [NOTICE](./NOTICE)）：
 
-- **SM2 / SM3 / SM4**（`gm-crypto`）：在社区 Rust crate `sm2` / `sm3` / `sm4` 之上构建，补齐 SM2 ZA / SM3 HMAC / SM4 GCM-CBC 等业务实现，详细范围见 [gm workspace 仓库](https://github.com/GM-Engineers/gm)。
-- **SM9**（`gm-sm9-rs`）：[GmSSL](https://github.com/guanzhi/GmSSL)（Apache-2.0）的 Rust 移植，提供纯 Rust 与 GmSSL FFI 双后端。
-- **gm-tls / gm-ca / gm-crypto / gm-sm9-rs**：均来自 [gm workspace](https://github.com/GM-Engineers/gm)，以 crates.io 依赖 + 根 `Cargo.toml` 的 `[patch.crates-io]` 锁定到同一 git rev。
+- **SM2 / SM3 / SM4**（`gm-crypto`）：在社区 Rust crate `sm2` / `sm3` / `sm4` 之上构建，补齐 SM2 ZA / SM3 HMAC / SM4 GCM-CBC 等业务实现
+- **SM9**（`gm-sm9-rs`）：[GmSSL](https://github.com/guanzhi/GmSSL)（Apache-2.0）的 Rust 移植，提供纯 Rust 与 GmSSL FFI 双后端
+- **TLCP**（`gm-tlcp`）：GB/T 38636-2020 的纯 Rust 实现
+- **gm-tls / gm-ca / gm-crypto / gm-sm9-rs / gm-tlcp**：均来自 [gm workspace](https://github.com/GM-Engineers/gm)，以 crates.io 依赖 + 根 `Cargo.toml` 的 `[patch.crates-io]` 锁定到同一 git rev
 
 ## 许可证
 

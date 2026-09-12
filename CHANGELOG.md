@@ -2,6 +2,48 @@
 
 All notable changes to gm-kms will be documented in this file.
 
+## [0.3.0] — Unreleased
+
+### 重塑定位（Breaking change in messaging, not code）
+
+本版本将项目定位从"生产 KMS"调整为"Rust 国密 KMS 参考实现"，面向学习、内部演示、生态集成和小规模辅助场景。**不替代**商业云 KMS，**未通过**密评或等保认证。
+
+- README.md / README.en.md 全面重写：顶部定位声明、"本项目是什么 / 不是什么"、适用 / 不适用场景矩阵、合规自评估表
+- 新增 LEARN.md：按依赖关系组织的代码导读，10 个推荐起点
+- 删除 deploy/kubernetes/kms-hpa-pdb.yaml、deploy/kubernetes/kms-monitoring.yaml（暗示生产的资产）
+- deploy/kubernetes/ 内容迁移到 examples/k8s-demo/，README 重写为 demo 定位
+- operators/kms-operator/ 和 providers/terraform/ README 顶部加 experimental / not maintained 警告
+- 测试统计表数字修正：877 实测 vs 959 历史声称
+
+### Added
+
+- **TLCP (GB/T 38636-2020) REST 入口**：新增 `src/cmd/tlcp_listener.rs`，镜像 `gm_listener.rs` 模式，使用 `gm_tlcp::TlcpAcceptor` 替代 `gm_tls::TlsAcceptor`
+- 新增 `[rest_tls].backend = "tlcp"` 配置项（向后兼容，`gm` / `rustls` 仍可用）
+- 新增集成测试 `crates/kms-api/tests/tlcp_integration.rs`：TLCP 握手 + REST 端到端、双证书缺失失败、握手失败处理
+- 新增文档：
+  - `docs/guides/tlcp-deployment.md`：TLCP 模式部署指南
+  - `docs/wiki/tlcp.md`：TLCP vs TLS 1.3 概念差异
+  - `LEARN.md`：代码导读
+
+### Changed
+
+- `src/cmd/config.rs::RestTlsConfig`：新增 TLCP 双证书路径字段（`tlcp_sign_cert_path`、`tlcp_enc_cert_path`、`tlcp_sign_key_path`、`tlcp_enc_key_path`）
+- `src/cmd/server.rs`：REST 服务启动按 `backend` 字段 dispatch 到对应 listener
+- `kms.toml.example`：`[rest_tls]` 区块增加 TLCP 配置示例
+- 顶层 `Cargo.toml`：新增 `gm-tlcp = "0.6"` 依赖；`[patch.crates-io]` 加入 gm-tlcp（与其他三个 gm-* crate 同一 git rev）
+
+### Fixed
+
+- README 测试统计表数字与实测一致（877 passed，含 18 个 ignored）
+- README 合规自评估表改为如实标注（已实现 ≠ 已认证）
+
+### Known Limitations（本项目固有，不在本版本修复范围）
+
+- gRPC over TLCP 未实现（TLCP 协议无 ALPN，gRPC 需要 h2）
+- TLCP 证书链验证未集成（仅信任对端字节，等 gm-tlcp 上游 `TlcpCertPair` 接 `cert_verify`）
+- SM9 主密钥默认存内存，无 HSM/TPM 强制（`kms-hsm` 仍为 stub）
+- 无 bug bounty / 商业支持 / SLA
+
 ## [0.2.1] — Unreleased
 
 ### Dependencies — upstream `gm` workspace 0.3.0

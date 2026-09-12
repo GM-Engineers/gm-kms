@@ -300,7 +300,11 @@ pub struct RestTlsConfig {
     /// - `"rustls"` (standard, default): uses `axum_server::tls_rustls` with standard TLS 1.3 (RFC 8446).
     /// - `"gm"`: uses `gm-tls::TlsAcceptor`, which implements **TLS 1.3 (RFC 8446) with SM cipher suites**
     ///   (SM2/SM3/SM4, protocol version byte `0x0303`). This is **NOT TLCP** (GB/T 38636-2020,
-    ///   protocol version byte `0x0101`). For TLCP support, use the separate `gm-tlcp` crate.
+    ///   protocol version byte `0x0101`).
+    /// - `"tlcp"`: uses `gm-tlcp::TlcpAcceptor`, which implements **TLCP (GB/T 38636-2020)** with
+    ///   SM2/SM3/SM4 and dual-cert ECDHE handshake (protocol version byte `0x0101`).
+    ///   Requires dual certificates (sign + enc) configured via `tlcp_sign_cert_path` /
+    ///   `tlcp_enc_cert_path` / `tlcp_sign_key_path` / `tlcp_enc_key_path`.
     #[serde(default = "default_rest_tls_backend")]
     pub backend: String,
 
@@ -317,6 +321,27 @@ pub struct RestTlsConfig {
     /// Require client certificate (mTLS). Default false for REST.
     #[serde(default)]
     pub require_client_auth: bool,
+
+    // --- TLCP-only fields (used when backend == "tlcp") -------------------------------
+    /// TLCP server **signing** certificate path (DER-encoded X.509).
+    /// Required when `backend = "tlcp"`; ignored otherwise.
+    #[serde(default)]
+    pub tlcp_sign_cert_path: Option<String>,
+
+    /// TLCP server **encryption** certificate path (DER-encoded X.509).
+    /// Required when `backend = "tlcp"`; ignored otherwise.
+    #[serde(default)]
+    pub tlcp_enc_cert_path: Option<String>,
+
+    /// TLCP server **signing** private key path (PEM-encoded SM2).
+    /// Required when `backend = "tlcp"`; ignored otherwise.
+    #[serde(default)]
+    pub tlcp_sign_key_path: Option<String>,
+
+    /// TLCP server **encryption** private key path (PEM-encoded SM2).
+    /// Required when `backend = "tlcp"`; ignored otherwise.
+    #[serde(default)]
+    pub tlcp_enc_key_path: Option<String>,
 }
 
 fn default_rest_tls_enabled() -> bool {
@@ -336,7 +361,49 @@ impl Default for RestTlsConfig {
             key_path: String::new(),
             ca_path: None,
             require_client_auth: false,
+            tlcp_sign_cert_path: None,
+            tlcp_enc_cert_path: None,
+            tlcp_sign_key_path: None,
+            tlcp_enc_key_path: None,
         }
+    }
+}
+
+impl RestTlsConfig {
+    /// Validate that the four TLCP paths are present and non-empty when
+    /// `backend == "tlcp"`. Returns the `anyhow::Result` consumed by the
+    /// server bootstrap path; non-TLCP backends pass through with `Ok(())`.
+    pub fn validate_tlcp_paths(&self) -> anyhow::Result<()> {
+        if self.backend != "tlcp" {
+            return Ok(());
+        }
+        for (name, val) in &[
+            ("tlcp_sign_cert_path", &self.tlcp_sign_cert_path),
+            ("tlcp_enc_cert_path", &self.tlcp_enc_cert_path),
+            ("tlcp_sign_key_path", &self.tlcp_sign_key_path),
+            ("tlcp_enc_key_path", &self.tlcp_enc_key_path),
+        ] {
+            if val.as_deref().unwrap_or("").is_empty() {
+                anyhow::bail!(
+                    "REST_TLS_BACKEND=tlcp requires `[rest_tls].{}` (or env var `REST_TLS_{}`) to be set",
+                    name,
+                    name.to_uppercase()
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Build a `TlcpAcceptor` from the configured dual-cert paths.
+    /// Caller is responsible for first calling [`Self::validate_tlcp_paths`].
+    pub fn to_tlcp_acceptor(&self) -> anyhow::Result<gm_tlcp::TlcpAcceptor> {
+        use std::path::Path;
+        crate::cmd::tlcp_listener::TlcpListener::load_acceptor(
+            Path::new(self.tlcp_sign_cert_path.as_deref().unwrap_or("")),
+            Path::new(self.tlcp_enc_cert_path.as_deref().unwrap_or("")),
+            Path::new(self.tlcp_sign_key_path.as_deref().unwrap_or("")),
+            Path::new(self.tlcp_enc_key_path.as_deref().unwrap_or("")),
+        )
     }
 }
 
@@ -521,6 +588,10 @@ impl Config {
                 require_client_auth: std::env::var("REST_TLS_REQUIRE_CLIENT_AUTH")
                     .map(|v| v == "true")
                     .unwrap_or(false),
+                tlcp_sign_cert_path: std::env::var("REST_TLS_TLCP_SIGN_CERT_PATH").ok(),
+                tlcp_enc_cert_path: std::env::var("REST_TLS_TLCP_ENC_CERT_PATH").ok(),
+                tlcp_sign_key_path: std::env::var("REST_TLS_TLCP_SIGN_KEY_PATH").ok(),
+                tlcp_enc_key_path: std::env::var("REST_TLS_TLCP_ENC_KEY_PATH").ok(),
             });
         }
         // Patch existing rest_tls with env overrides if already loaded from file
@@ -533,6 +604,19 @@ impl Config {
             }
             if let Ok(require) = std::env::var("REST_TLS_REQUIRE_CLIENT_AUTH") {
                 tls.require_client_auth = require == "true";
+            }
+            // TLCP path overrides
+            if let Ok(v) = std::env::var("REST_TLS_TLCP_SIGN_CERT_PATH") {
+                tls.tlcp_sign_cert_path = Some(v);
+            }
+            if let Ok(v) = std::env::var("REST_TLS_TLCP_ENC_CERT_PATH") {
+                tls.tlcp_enc_cert_path = Some(v);
+            }
+            if let Ok(v) = std::env::var("REST_TLS_TLCP_SIGN_KEY_PATH") {
+                tls.tlcp_sign_key_path = Some(v);
+            }
+            if let Ok(v) = std::env::var("REST_TLS_TLCP_ENC_KEY_PATH") {
+                tls.tlcp_enc_key_path = Some(v);
             }
         }
 
@@ -1170,5 +1254,158 @@ key_path = "/etc/kms/rest.key"
         assert_eq!(tls.backend, "rustls");
         assert!(!tls.cert_path.is_empty());
         assert!(!tls.key_path.is_empty());
+    }
+
+    // ------------------------------------------------------------------------
+    // TLCP backend tests
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn test_rest_tls_default_tlcp_paths_are_none() {
+        let config = RestTlsConfig::default();
+        assert!(
+            config.tlcp_sign_cert_path.is_none(),
+            "tlcp_sign_cert_path default must be None"
+        );
+        assert!(
+            config.tlcp_enc_cert_path.is_none(),
+            "tlcp_enc_cert_path default must be None"
+        );
+        assert!(
+            config.tlcp_sign_key_path.is_none(),
+            "tlcp_sign_key_path default must be None"
+        );
+        assert!(
+            config.tlcp_enc_key_path.is_none(),
+            "tlcp_enc_key_path default must be None"
+        );
+    }
+
+    #[test]
+    fn test_rest_tls_tlcp_backend_parse() {
+        let toml_str = r#"
+[rest_tls]
+enabled = true
+backend = "tlcp"
+cert_path = "/etc/kms/unused.crt"
+key_path = "/etc/kms/unused.key"
+tlcp_sign_cert_path = "/etc/kms/tlcp-sign.crt"
+tlcp_enc_cert_path  = "/etc/kms/tlcp-enc.crt"
+tlcp_sign_key_path  = "/etc/kms/tlcp-sign.key.pem"
+tlcp_enc_key_path   = "/etc/kms/tlcp-enc.key.pem"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        let tls = config.rest_tls.unwrap();
+        assert_eq!(tls.backend, "tlcp");
+        assert_eq!(
+            tls.tlcp_sign_cert_path.as_deref(),
+            Some("/etc/kms/tlcp-sign.crt")
+        );
+        assert_eq!(
+            tls.tlcp_enc_cert_path.as_deref(),
+            Some("/etc/kms/tlcp-enc.crt")
+        );
+        assert_eq!(
+            tls.tlcp_sign_key_path.as_deref(),
+            Some("/etc/kms/tlcp-sign.key.pem")
+        );
+        assert_eq!(
+            tls.tlcp_enc_key_path.as_deref(),
+            Some("/etc/kms/tlcp-enc.key.pem")
+        );
+    }
+
+    #[test]
+    fn test_validate_tlcp_paths_passes_for_non_tlcp_backend() {
+        // Non-TLCP backends must pass through without checking the TLCP paths.
+        for backend in &["rustls", "gm"] {
+            let tls = RestTlsConfig {
+                backend: backend.to_string(),
+                enabled: true,
+                ..RestTlsConfig::default()
+            };
+            tls.validate_tlcp_paths()
+                .unwrap_or_else(|e| panic!("backend={backend} should pass: {e}"));
+        }
+    }
+
+    #[test]
+    fn test_validate_tlcp_paths_fails_when_sign_cert_missing() {
+        let mut tls = RestTlsConfig {
+            backend: "tlcp".to_string(),
+            enabled: true,
+            ..RestTlsConfig::default()
+        };
+        tls.tlcp_enc_cert_path = Some("/x".into());
+        tls.tlcp_sign_key_path = Some("/x".into());
+        tls.tlcp_enc_key_path = Some("/x".into());
+        let err = tls
+            .validate_tlcp_paths()
+            .expect_err("must fail when tlcp_sign_cert_path is None");
+        assert!(
+            err.to_string().contains("tlcp_sign_cert_path"),
+            "error should mention the missing field, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_tlcp_paths_fails_when_enc_cert_empty_string() {
+        let mut tls = RestTlsConfig {
+            backend: "tlcp".to_string(),
+            enabled: true,
+            tlcp_sign_cert_path: Some("/x".into()),
+            ..RestTlsConfig::default()
+        };
+        // tlcp_enc_cert_path is Some("") — empty string is treated as missing.
+        tls.tlcp_enc_cert_path = Some(String::new());
+        tls.tlcp_sign_key_path = Some("/x".into());
+        tls.tlcp_enc_key_path = Some("/x".into());
+        let err = tls
+            .validate_tlcp_paths()
+            .expect_err("must fail when tlcp_enc_cert_path is empty");
+        assert!(
+            err.to_string().contains("tlcp_enc_cert_path"),
+            "error should mention the missing field, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_tlcp_paths_passes_with_all_fields_set() {
+        let mut tls = RestTlsConfig {
+            backend: "tlcp".to_string(),
+            enabled: true,
+            ..RestTlsConfig::default()
+        };
+        tls.tlcp_sign_cert_path = Some("/x/sign.crt".into());
+        tls.tlcp_enc_cert_path = Some("/x/enc.crt".into());
+        tls.tlcp_sign_key_path = Some("/x/sign.pem".into());
+        tls.tlcp_enc_key_path = Some("/x/enc.pem".into());
+        tls.validate_tlcp_paths()
+            .expect("must pass when all four TLCP paths are set");
+    }
+
+    #[test]
+    fn test_to_tlcp_acceptor_fails_for_missing_files() {
+        // The four fields pass validate_tlcp_paths(), but to_tlcp_acceptor()
+        // should still fail because the cert files don't exist on disk.
+        let mut tls = RestTlsConfig {
+            backend: "tlcp".to_string(),
+            enabled: true,
+            ..RestTlsConfig::default()
+        };
+        tls.tlcp_sign_cert_path = Some("/nonexistent/sign.crt".into());
+        tls.tlcp_enc_cert_path = Some("/nonexistent/enc.crt".into());
+        tls.tlcp_sign_key_path = Some("/nonexistent/sign.pem".into());
+        tls.tlcp_enc_key_path = Some("/nonexistent/enc.pem".into());
+
+        let res = tls.to_tlcp_acceptor();
+        let err_str = match res {
+            Ok(_) => panic!("must fail when cert files are missing"),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            err_str.contains("signing cert") || err_str.contains("sign.crt"),
+            "error should reference the missing signing cert, got: {err_str}"
+        );
     }
 }

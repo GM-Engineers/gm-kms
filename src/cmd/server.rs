@@ -1050,15 +1050,18 @@ pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()
 
         let app = create_routes(rest_state, api_key_config.clone()).layer(cors);
 
-        let listener = tokio::net::TcpListener::bind(rest_addr)
-            .await
-            .expect("Failed to bind REST port");
-
+        // IMPORTANT: the plain TCP listener is created INSIDE the no-TLS arm only.
+        // The TLS-enabled arms (gm / tlcp / rustls) bind their own listeners on the
+        // same address via `GmTlsListener::bind` / `TlcpListener::bind` /
+        // `axum_server::bind_rustls`. Creating a plain TCP listener here
+        // unconditionally would EADDRINUSE the TLS listeners since the kernel
+        // disallows two sockets on the same (host, port). (Pre-existing bug
+        // fixed in 0.3.0.)
         match rest_tls_config {
             Some(ref tls) if tls.enabled && tls.backend == "gm" => {
                 // REST with TLS 1.3 + SM cipher suites (via gm-tls::TlsAcceptor).
                 // Note: This is RFC 8446 TLS 1.3 with SM cipher suites (0x0303),
-                // NOT TLCP (GB/T 38636-2020, 0x0101). For TLCP, use the separate `gm-tlcp` crate.
+                // NOT TLCP (GB/T 38636-2020, 0x0101). For TLCP, use backend = "tlcp".
                 tracing::info!("REST API listening on tls13-sm://{}", rest_addr);
 
                 let ca_path = tls.ca_path.as_deref().unwrap_or("");
@@ -1085,6 +1088,41 @@ pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()
                     })
                     .await
                     .expect("TLS 1.3 + SM REST server error");
+                Ok(())
+            }
+            Some(ref tls) if tls.enabled && tls.backend == "tlcp" => {
+                // REST with TLCP (GB/T 38636-2020) via gm-tlcp::TlcpAcceptor.
+                // Dual-cert ECDHE handshake; gRPC stays on TLS 1.3 + SM
+                // (TLCP has no ALPN, gRPC needs h2).
+                if let Err(e) = tls.validate_tlcp_paths() {
+                    tracing::error!("TLCP startup aborted: {e}");
+                    return Err(e);
+                }
+                let acceptor = match tls.to_tlcp_acceptor() {
+                    Ok(a) => a,
+                    Err(e) => {
+                        tracing::error!(
+                            "TLCP startup aborted: failed to load dual-certs from {}/{}: {e}",
+                            tls.tlcp_sign_cert_path.as_deref().unwrap_or("?"),
+                            tls.tlcp_enc_cert_path.as_deref().unwrap_or("?")
+                        );
+                        return Err(anyhow::anyhow!("Failed to load TLCP dual-certs: {e}"));
+                    }
+                };
+
+                tracing::info!("REST API listening on tlcp://{}", rest_addr);
+
+                let tlcp_listener =
+                    crate::cmd::tlcp_listener::TlcpListener::bind(rest_addr, acceptor)
+                        .await
+                        .expect("Failed to bind TLCP REST listener");
+
+                axum::serve(tlcp_listener, app)
+                    .with_graceful_shutdown(async {
+                        rest_shutdown_rx.await.ok();
+                    })
+                    .await
+                    .expect("TLCP REST server error");
                 Ok(())
             }
             Some(ref tls) if tls.enabled => {
@@ -1114,7 +1152,11 @@ pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()
                 Ok(())
             }
             _ => {
-                // REST without TLS
+                // REST without TLS — bind the plain TCP listener HERE (only
+                // place it's needed; TLS arms bind their own listeners).
+                let listener = tokio::net::TcpListener::bind(rest_addr)
+                    .await
+                    .expect("Failed to bind REST port");
                 tracing::info!("REST API listening on http://{}", rest_addr);
 
                 axum::serve(listener, app)
