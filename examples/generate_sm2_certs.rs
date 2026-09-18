@@ -243,8 +243,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // 4. Sign both certs with our test CA.
     // Use the default end-entity profile (digitalSignature + serverAuth +
-    // clientAuth + SAN + SKI + AKI + BasicConstraints CA:FALSE), which
-    // matches gm-ca 0.1.x's `sign_csr` behavior.
+    // clientAuth + SAN + SKI + AKI + BasicConstraints CA:FALSE).
     let (_server_serial, server_cert_pem) = ca_signer
         .sign_csr_with_profile(server_csr_pem.as_bytes(), 365, &CertProfile::default())
         .map_err(|e| anyhow::anyhow!("server cert sign: {e}"))?;
