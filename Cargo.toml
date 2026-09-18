@@ -80,7 +80,7 @@ utoipa = { workspace = true }
 utoipa-swagger-ui = { workspace = true }
 
 # SM2 certificate generation (dev/test only)
-gm-ca = { version = "0.1.0" }
+gm-ca = { version = "0.2" }
 gm-crypto = { version = "0.3" }
 elliptic-curve = "0.13"
 asn1 = "0.17"
@@ -177,7 +177,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 url = "2"
 
 # For SM2 certificate generation (dev/test only)
-gm-ca = { version = "0.1.0" }
+gm-ca = { version = "0.2" }
 elliptic-curve = "0.13"
 asn1 = "0.17"
 tempfile = "3"
@@ -205,9 +205,9 @@ chrono = { workspace = true }
 gm-crypto = { version = "0.3" }
 gm-sm9-rs = { version = "0.1.0" }
 
-# gm-ca 0.1.x + gm-tls 0.2.1 + gm-crypto 0.3.x + gm-sm9-rs 0.1.x + gm-tlcp 0.6.x 是
-# gm 仓库的协调版本（发布于 tag gm-tlcp-v0.6.4 = a7fdf20）。gm-kms 通过
-# patch.crates-io 将以上五个 crate 锁定到同一 git rev，以确保所有使用者从同一源加载
+# gm-ca 0.2.2 + gm-tls 0.2.2 + gm-crypto 0.3.3 + gm-sm9-rs 0.1.1 + gm-tlcp 0.6.6 是
+# gm 仓库的协调版本（发布于 c77f0d7 — 2026-09-18 cert-verification audit 修复后）。
+# gm-kms 通过 patch.crates-io 将以上五个 crate 锁定到同一 git rev，以确保所有使用者从同一源加载
 # 同一版本的 gm-crypto，避免 cargo 解出“同一 crate 两个不同源”（crates.io 0.x 与 git
 # 0.y）导致 examples/generate_sm2_certs.rs 中 Sm2KeyPair 传给 gm_ca::cert::CaSigner
 # 的 E0308 类型不匹配。
@@ -217,14 +217,15 @@ gm-sm9-rs = { version = "0.1.0" }
 #
 # gm-tls 必须也加入 patch：crates.io gm-tls 0.2.0 强依赖 gm-crypto 0.2.0，会绕过
 # 上面的 patch、引入 crates.io 版 gm-crypto，与 git 版（0.3.x）形成双源。
-# gm-tls 0.2.1 依赖 gm-crypto 0.3，与其他 crate 协调。
+# gm-tls 0.2.2 依赖 gm-crypto 0.3，与其他 crate 协调。
 #
-# 同步点选 a7fdf20（gm-tlcp-v0.6.4 tag 提交）而非 bf31dbb（main HEAD）的原因：
-# a7fdf20 是已发布的协调版本，五个 crate 都在同一 tag 下发布；HEAD 仅多出文档/示例
-# 微调，与生产构建无关。后续如 gm 仓库再次发布，可仅修改下面五条 git rev 同步。
+# 同步点选 c77f0d7 的原因：该提交包含 2026-09-18 audit 修复 (NEW-1 KU BIT STRING
+# wrapper, NEW-2 verify role_for_idx, NEW-3 SM2 OID 字节修正为 GM/T 38636-2020
+# canonical DER, NEW-4 gm-tlcp 测试注释刷新)；所有依赖 crate 的上游使用者必须在
+# 同一 SHA 下加载同一组安全修复。后续如 gm 仓库再次发布，可仅修改下面五条 git rev 同步。
 [patch.crates-io]
-gm-ca     = { git = "https://github.com/GM-Engineers/gm", rev = "a7fdf20ada33ba59393bc3c6aa8b81198cbf621b" }
-gm-crypto = { git = "https://github.com/GM-Engineers/gm", rev = "a7fdf20ada33ba59393bc3c6aa8b81198cbf621b" }
-gm-sm9-rs = { git = "https://github.com/GM-Engineers/gm", rev = "a7fdf20ada33ba59393bc3c6aa8b81198cbf621b" }
-gm-tlcp   = { git = "https://github.com/GM-Engineers/gm", rev = "a7fdf20ada33ba59393bc3c6aa8b81198cbf621b" }
-gm-tls    = { git = "https://github.com/GM-Engineers/gm", rev = "a7fdf20ada33ba59393bc3c6aa8b81198cbf621b" }
+gm-ca     = { git = "https://github.com/GM-Engineers/gm", rev = "c77f0d71eeb75b3500f8a80d20a3dfe3c221ebac" }
+gm-crypto = { git = "https://github.com/GM-Engineers/gm", rev = "c77f0d71eeb75b3500f8a80d20a3dfe3c221ebac" }
+gm-sm9-rs = { git = "https://github.com/GM-Engineers/gm", rev = "c77f0d71eeb75b3500f8a80d20a3dfe3c221ebac" }
+gm-tlcp   = { git = "https://github.com/GM-Engineers/gm", rev = "c77f0d71eeb75b3500f8a80d20a3dfe3c221ebac" }
+gm-tls    = { git = "https://github.com/GM-Engineers/gm", rev = "c77f0d71eeb75b3500f8a80d20a3dfe3c221ebac" }
