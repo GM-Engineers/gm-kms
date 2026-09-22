@@ -40,6 +40,12 @@ All notable changes to gm-kms will be documented in this file.
   旧实现 `if len >= 12 { [4..16] }` 对 len ∈ [12, 16) 的密文会 panic；外部导入 / 跨实现密文可触发进程崩溃（DoS）。改用穷举 `match` 接受 12（RFC 5116 §5.2 固定 N_MIN = N_MAX = 12 octets）与 16（自产 counter）两种格式，其他长度返回 `DecryptionFailed`。
   新增 4 个回归测试覆盖 12-byte 外密文解密、16-byte 截断为 12-byte 解密、长度 8 与 15 负测试。
   （对应 P0-1）
+- **`crates/kms-api/src/service/crypto_service.rs`**：P0-2 修复跨租户访问走完密码路径并泄露密钥枚举 oracle。
+  旧实现在 `keystore.sign` / `decrypt` / `encrypt` / `verify` 走完后才校验 `tenant_id`，造成：远程 HSM/TPM 签名额度被未授权请求消耗；响应时间可区分「不存在」与「被其他租户拥有」；错误码 `KeyNotFound` (404) 与 `Forbidden` (403) 可区分。
+  改用 `fetch_owned_key_meta` 前置校验：密钥元数据 + 租户一致，未通过则统一返回 `KeyNotFound`。移除原后置 `get_key_metadata` 调用，改用前置获取的 `meta` 给批量指标复用。
+  `crates/kms-api/src/service/key_service.rs` 一致性：`rotate_key` / `delete_key` / `get_key` / `export_key` 的跨租户返回从 `Forbidden` 改为 `KeyNotFound`，与「不存在」不可区分。
+  新增 11 个测试：CryptoService 5 个跨租户 + 1 个非存在 + 1 个响应等价字节比较 + 1 个 keystore 不被调用；KeyService 3 个跨租户 + 1 个非存在。
+  （对应 P0-2）
 
 ### Known Limitations（本项目固有，不在本版本修复范围）
 
