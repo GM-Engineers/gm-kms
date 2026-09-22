@@ -74,7 +74,7 @@ export KMS_KEK="<your-kek-hex-64>"
 
 # 3. Build and test
 cargo build --release
-cargo test --workspace           # 877+ tests
+cargo test --workspace           # 998+ tests
 
 # 4. Start the service (default TLS 1.3 + SM)
 cargo run --release -p kms -- --server
@@ -152,17 +152,18 @@ gm-kms/
 
 | Crate | Test count | Status |
 |-------|-----------|--------|
-| kms-core | 278 | passed |
-| kms-api | 256 (+ 5 ignored) | passed |
+| kms-core | 282 | passed |
+| kms-api | 267 (+ 5 ignored) | passed |
 | kms-policy | 28 | passed |
 | kms-audit | 95 | passed |
 | kms-hsm | 52 | passed |
 | kms-mfa | 46 | passed |
 | kms-approval | 16 | passed |
-| kms-keystore | 74 (+ 13 ignored) | passed |
+| kms-keystore | 86 (+ 13 ignored) | passed |
 | kms-cli | 8 | passed |
 | kms binary (incl. tlcp_listener + config TLCP tests) | 37 | passed |
-| **Total** | **972 passed** (plus 21 ignored) | |
+| integration_tests / kat_vectors | 81 | passed |
+| **Total** | **998 passed** (plus 25 ignored) | |
 
 ## Third-party components
 

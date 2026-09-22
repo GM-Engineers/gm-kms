@@ -46,6 +46,11 @@ All notable changes to gm-kms will be documented in this file.
   `crates/kms-api/src/service/key_service.rs` 一致性：`rotate_key` / `delete_key` / `get_key` / `export_key` 的跨租户返回从 `Forbidden` 改为 `KeyNotFound`，与「不存在」不可区分。
   新增 11 个测试：CryptoService 5 个跨租户 + 1 个非存在 + 1 个响应等价字节比较 + 1 个 keystore 不被调用；KeyService 3 个跨租户 + 1 个非存在。
   （对应 P0-2）
+- **`crates/kms-keystore/src/software/mod.rs` + `crates/kms-keystore/src/postgres.rs`**：P0-3 修复 keystore trait 层 `_tenant_id` 参数被忽略的纵深防御漏洞。
+  旧实现所有 sensitive 方法（`encrypt` / `decrypt` / `sign` / `verify` / `rotate_key` / `delete_key` / `export_key_material` / `get_key_material` / `get_key_material_version`）的 `_tenant_id` 参数均被下划线开头直接忽略——若新增调用方（REST/gRPC handler、CLI、运维脚本、内部 task）绕过 PR-1.2 上层校验直接调用 keystore，将导致跨租户越权访问。
+  新增私有 `verify_tenant(key_id, tenant_id) -> Result<()>` helper：调 `get_key_metadata` 取元数据并比对 `tenant_id`，不匹配返回 `Error::KeyNotFound(key_id)`（与 PR-1.2 上层一致：missing 与 wrong-tenant 不可区分）。每个 sensitive 方法首行调用 `verify_tenant`；参数 `_tenant_id` → `tenant_id`（已实际使用，不再是 placeholder）。`generate_key` / `import_key_material` / `destroy_key*` 不需要校验（前者创建者即租户；后者 trait 当前无 tenant 参数）。
+  新增 12 个测试：9 个跨租户返回 `KeyNotFound`（sign / decrypt / encrypt / verify / export_key_material / get_key_material / get_key_material_version / rotate_key / delete_key）+ 3 个正向不破坏（Ed25519 / SM2 sign/verify、AES encrypt/decrypt）。
+  （对应 P0-3）
 
 ### Known Limitations（本项目固有，不在本版本修复范围）
 

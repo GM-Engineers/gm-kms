@@ -89,6 +89,22 @@ impl SoftwareKeystore {
         }
     }
 
+    /// Verify that the key identified by `key_id` exists and is owned
+    /// by `tenant_id`. Returns `Error::KeyNotFound` for both "missing
+    /// key" and "wrong tenant" — the keystore cannot distinguish them
+    /// any more than the API can (PR-1.2 conflation for keystore-layer
+    /// defence in depth).
+    async fn verify_tenant(&self, key_id: &Uuid, tenant_id: &str) -> Result<()> {
+        let keys = self.keys.read();
+        let entry = keys
+            .get(key_id)
+            .ok_or_else(|| Error::KeyNotFound(key_id.to_string()))?;
+        if entry.meta.tenant_id != tenant_id {
+            return Err(Error::KeyNotFound(key_id.to_string()));
+        }
+        Ok(())
+    }
+
     fn generate_aes_key(&self) -> Vec<u8> {
         let mut key = vec![0u8; 32]; // AES-256
         rand::rng().fill_bytes(&mut key);
@@ -768,7 +784,9 @@ impl super::KeystoreBackend for SoftwareKeystore {
         Ok(meta)
     }
 
-    async fn export_key_material(&self, key_id: &Uuid, _tenant_id: &str) -> Result<Vec<u8>> {
+    async fn export_key_material(&self, key_id: &Uuid, tenant_id: &str) -> Result<Vec<u8>> {
+        self.verify_tenant(key_id, tenant_id).await?;
+
         let keys = self.keys.read();
         let entry = keys
             .get(key_id)
@@ -783,15 +801,17 @@ impl super::KeystoreBackend for SoftwareKeystore {
         Ok(entry.material.as_slice().to_vec())
     }
 
-    async fn get_key_material(&self, key_id: &Uuid, _tenant_id: &str) -> Result<Vec<u8>> {
+    async fn get_key_material(&self, key_id: &Uuid, tenant_id: &str) -> Result<Vec<u8>> {
+        self.verify_tenant(key_id, tenant_id).await?;
+
         let keys = self.keys.read();
         let entry = keys
             .get(key_id)
             .ok_or_else(|| Error::KeyNotFound(key_id.to_string()))?;
 
-        // Log material access for audit (this is a security-sensitive operation)
-        // Note: We don't have access to the audit logger here directly.
-        // In a full implementation, this would be handled via event emission.
+        // Material access logged server-side via the audit pipeline that
+        // wraps the keystore backend. The keystore layer does not have
+        // a direct audit handle; logging is handled at the service layer.
 
         Ok(entry.material.as_slice().to_vec())
     }
@@ -800,12 +820,13 @@ impl super::KeystoreBackend for SoftwareKeystore {
         &self,
         key_id: &Uuid,
         version: u32,
-        _tenant_id: &str,
+        tenant_id: &str,
     ) -> Result<Vec<u8>> {
+        self.verify_tenant(key_id, tenant_id).await?;
         let keys = self.keys.read();
         let entry = keys
             .get(key_id)
-            .ok_or_else(|| Error::KeyNotFound(key_id.to_string()))?;
+            .ok_or_else(|| Error::KeyVersionNotFound(key_id.to_string()))?;
 
         // If version matches current, return current material
         if version == 0 || version == entry.meta.version {
@@ -835,8 +856,10 @@ impl super::KeystoreBackend for SoftwareKeystore {
         key_id: &Uuid,
         plaintext: &[u8],
         _aad: Option<&[u8]>,
-        _tenant_id: &str,
+        tenant_id: &str,
     ) -> Result<Ciphertext> {
+        self.verify_tenant(key_id, tenant_id).await?;
+
         let keys = self.keys.read();
         let entry = keys
             .get(key_id)
@@ -951,8 +974,10 @@ impl super::KeystoreBackend for SoftwareKeystore {
         key_id: &Uuid,
         ciphertext: &Ciphertext,
         _aad: Option<&[u8]>,
-        _tenant_id: &str,
+        tenant_id: &str,
     ) -> Result<Vec<u8>> {
+        self.verify_tenant(key_id, tenant_id).await?;
+
         let keys = self.keys.read();
         let entry = keys
             .get(key_id)
@@ -1073,7 +1098,9 @@ impl super::KeystoreBackend for SoftwareKeystore {
         }
     }
 
-    async fn sign(&self, key_id: &Uuid, data: &[u8], _tenant_id: &str) -> Result<Signature> {
+    async fn sign(&self, key_id: &Uuid, data: &[u8], tenant_id: &str) -> Result<Signature> {
+        self.verify_tenant(key_id, tenant_id).await?;
+
         let keys = self.keys.read();
         let entry = keys
             .get(key_id)
@@ -1127,8 +1154,10 @@ impl super::KeystoreBackend for SoftwareKeystore {
         key_id: &Uuid,
         data: &[u8],
         sig: &Signature,
-        _tenant_id: &str,
+        tenant_id: &str,
     ) -> Result<bool> {
+        self.verify_tenant(key_id, tenant_id).await?;
+
         let keys = self.keys.read();
         let entry = keys
             .get(key_id)
@@ -1161,7 +1190,9 @@ impl super::KeystoreBackend for SoftwareKeystore {
         }
     }
 
-    async fn rotate_key(&self, key_id: &Uuid, _tenant_id: &str) -> Result<KeyMeta> {
+    async fn rotate_key(&self, key_id: &Uuid, tenant_id: &str) -> Result<KeyMeta> {
+        self.verify_tenant(key_id, tenant_id).await?;
+
         let mut keys = self.keys.write();
 
         let entry = keys
@@ -1213,7 +1244,9 @@ impl super::KeystoreBackend for SoftwareKeystore {
         Ok(entry.meta.clone())
     }
 
-    async fn delete_key(&self, key_id: &Uuid, _tenant_id: &str) -> Result<()> {
+    async fn delete_key(&self, key_id: &Uuid, tenant_id: &str) -> Result<()> {
+        self.verify_tenant(key_id, tenant_id).await?;
+
         let mut keys = self.keys.write();
 
         let entry = keys

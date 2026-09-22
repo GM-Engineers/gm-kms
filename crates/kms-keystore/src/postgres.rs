@@ -59,6 +59,22 @@ impl PostgresKeystore {
         Ok(store)
     }
 
+    /// Verify that the key identified by `key_id` exists and is owned
+    /// by `tenant_id`. Returns `Error::KeyNotFound` for both "missing
+    /// key" and "wrong tenant" — keystore cannot distinguish them
+    /// (consistent with PR-1.2 conflation).
+    async fn verify_tenant(&self, key_id: &Uuid, tenant_id: &str) -> Result<()> {
+        let entry = {
+            let keys = self.keys.read().await;
+            keys.get(key_id).cloned()
+        }
+        .ok_or_else(|| Error::KeyNotFound(key_id.to_string()))?;
+        if entry.meta.tenant_id != tenant_id {
+            return Err(Error::KeyNotFound(key_id.to_string()));
+        }
+        Ok(())
+    }
+
     /// Load KEK from environment variable or generate a warning
     ///
     /// In production, KEK should be managed by an HSM or Vault.
@@ -579,8 +595,10 @@ impl super::KeystoreBackend for PostgresKeystore {
         key_id: &Uuid,
         plaintext: &[u8],
         _aad: Option<&[u8]>,
-        _tenant_id: &str,
+        tenant_id: &str,
     ) -> Result<Ciphertext> {
+        self.verify_tenant(key_id, tenant_id).await?;
+
         // Get key material from memory
         let entry = {
             let keys = self.keys.read().await;
@@ -610,8 +628,9 @@ impl super::KeystoreBackend for PostgresKeystore {
         key_id: &Uuid,
         ciphertext: &Ciphertext,
         _aad: Option<&[u8]>,
-        _tenant_id: &str,
+        tenant_id: &str,
     ) -> Result<Vec<u8>> {
+        self.verify_tenant(key_id, tenant_id).await?;
         let entry = {
             let keys = self.keys.read().await;
             keys.get(key_id).cloned()
@@ -627,7 +646,8 @@ impl super::KeystoreBackend for PostgresKeystore {
         Self::crypto_decrypt(&entry.material, &entry.meta.spec, ciphertext, _aad).await
     }
 
-    async fn sign(&self, key_id: &Uuid, data: &[u8], _tenant_id: &str) -> Result<Signature> {
+    async fn sign(&self, key_id: &Uuid, data: &[u8], tenant_id: &str) -> Result<Signature> {
+        self.verify_tenant(key_id, tenant_id).await?;
         let entry = {
             let keys = self.keys.read().await;
             keys.get(key_id).cloned()
@@ -655,8 +675,10 @@ impl super::KeystoreBackend for PostgresKeystore {
         key_id: &Uuid,
         data: &[u8],
         sig: &Signature,
-        _tenant_id: &str,
+        tenant_id: &str,
     ) -> Result<bool> {
+        self.verify_tenant(key_id, tenant_id).await?;
+
         let entry = {
             let keys = self.keys.read().await;
             keys.get(key_id).cloned()
@@ -666,7 +688,9 @@ impl super::KeystoreBackend for PostgresKeystore {
         Self::crypto_verify(&entry.material, &entry.meta.spec, key_id, data, sig).await
     }
 
-    async fn rotate_key(&self, key_id: &Uuid, _tenant_id: &str) -> Result<KeyMeta> {
+    async fn rotate_key(&self, key_id: &Uuid, tenant_id: &str) -> Result<KeyMeta> {
+        self.verify_tenant(key_id, tenant_id).await?;
+
         let (old_meta, new_meta, old_material) = {
             let mut keys = self.keys.write().await;
             let entry = keys
@@ -741,7 +765,8 @@ impl super::KeystoreBackend for PostgresKeystore {
         Ok(new_meta)
     }
 
-    async fn delete_key(&self, key_id: &Uuid, _tenant_id: &str) -> Result<()> {
+    async fn delete_key(&self, key_id: &Uuid, tenant_id: &str) -> Result<()> {
+        self.verify_tenant(key_id, tenant_id).await?;
         {
             let mut keys = self.keys.write().await;
             let entry = keys
@@ -892,7 +917,8 @@ impl super::KeystoreBackend for PostgresKeystore {
         Ok(meta)
     }
 
-    async fn export_key_material(&self, key_id: &Uuid, _tenant_id: &str) -> Result<Vec<u8>> {
+    async fn export_key_material(&self, key_id: &Uuid, tenant_id: &str) -> Result<Vec<u8>> {
+        self.verify_tenant(key_id, tenant_id).await?;
         // Get key material from memory
         let entry = {
             let keys = self.keys.read().await;
@@ -909,7 +935,8 @@ impl super::KeystoreBackend for PostgresKeystore {
         Ok(entry.material.to_vec())
     }
 
-    async fn get_key_material(&self, key_id: &Uuid, _tenant_id: &str) -> Result<Vec<u8>> {
+    async fn get_key_material(&self, key_id: &Uuid, tenant_id: &str) -> Result<Vec<u8>> {
+        self.verify_tenant(key_id, tenant_id).await?;
         // Get key material from memory
         let entry = {
             let keys = self.keys.read().await;

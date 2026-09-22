@@ -1680,3 +1680,195 @@ async fn test_many_rotate_encrypt_cycles() {
     let final_meta = store.get_key_metadata(&key_id).await.unwrap();
     assert_eq!(final_meta.version, n_cycles as u32);
 }
+
+// ========================================================================
+// PR-1.3 Tenant Isolation Tests (keystore-layer defence in depth)
+// ========================================================================
+
+/// Helper: create an `Aes256Gcm` key under `tenant` and return its id.
+async fn make_aes_key(store: &SoftwareKeystore, name: &str, tenant: &str) -> Uuid {
+    store
+        .generate_key(&KeySpec::Aes256Gcm, name, tenant)
+        .await
+        .unwrap()
+        .id
+}
+
+/// Helper: create an `Ed25519` key under `tenant` and return its id.
+async fn make_ed25519_key(store: &SoftwareKeystore, name: &str, tenant: &str) -> Uuid {
+    store
+        .generate_key(&KeySpec::Ed25519, name, tenant)
+        .await
+        .unwrap()
+        .id
+}
+
+/// Helper: create an `Sm2` key under `tenant` and return its id.
+async fn make_sm2_key(store: &SoftwareKeystore, name: &str, tenant: &str) -> Uuid {
+    store
+        .generate_key(&KeySpec::Sm2, name, tenant)
+        .await
+        .unwrap()
+        .id
+}
+
+/// All keystore-layer sensitive operations must reject cross-tenant
+/// requests by returning `Error::KeyNotFound` (consistent with PR-1.2
+/// conflation between "missing" and "wrong tenant").
+#[tokio::test]
+async fn test_pr13_sign_cross_tenant_returns_keynotfound() {
+    let store = SoftwareKeystore::new();
+    let key_id = make_ed25519_key(&store, "p13-sign", "tenant-a").await;
+
+    let result = store.sign(&key_id, b"msg", "tenant-b").await;
+    assert!(
+        matches!(result, Err(kms_core::Error::KeyNotFound(_))),
+        "cross-tenant keystore.sign must return KeyNotFound, got {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_pr13_decrypt_cross_tenant_returns_keynotfound() {
+    let store = SoftwareKeystore::new();
+    let key_id = make_aes_key(&store, "p13-dec", "tenant-a").await;
+    let ct = store
+        .encrypt(&key_id, b"secret", None, "tenant-a")
+        .await
+        .unwrap();
+
+    let result = store.decrypt(&key_id, &ct, None, "tenant-b").await;
+    assert!(
+        matches!(result, Err(kms_core::Error::KeyNotFound(_))),
+        "cross-tenant keystore.decrypt must return KeyNotFound, got {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_pr13_encrypt_cross_tenant_returns_keynotfound() {
+    let store = SoftwareKeystore::new();
+    let key_id = make_aes_key(&store, "p13-enc", "tenant-a").await;
+
+    let result = store.encrypt(&key_id, b"data", None, "tenant-b").await;
+    assert!(
+        matches!(result, Err(kms_core::Error::KeyNotFound(_))),
+        "cross-tenant keystore.encrypt must return KeyNotFound, got {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_pr13_verify_cross_tenant_returns_keynotfound() {
+    let store = SoftwareKeystore::new();
+    let key_id = make_ed25519_key(&store, "p13-verify", "tenant-a").await;
+    let sig = store.sign(&key_id, b"msg", "tenant-a").await.unwrap();
+
+    let result = store.verify(&key_id, b"msg", &sig, "tenant-b").await;
+    assert!(
+        matches!(result, Err(kms_core::Error::KeyNotFound(_))),
+        "cross-tenant keystore.verify must return KeyNotFound, got {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_pr13_export_key_material_cross_tenant_returns_keynotfound() {
+    let store = SoftwareKeystore::new();
+    let key_id = make_aes_key(&store, "p13-exp", "tenant-a").await;
+
+    let result = store.export_key_material(&key_id, "tenant-b").await;
+    assert!(
+        matches!(result, Err(kms_core::Error::KeyNotFound(_))),
+        "cross-tenant export_key_material must return KeyNotFound, got {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_pr13_get_key_material_cross_tenant_returns_keynotfound() {
+    let store = SoftwareKeystore::new();
+    let key_id = make_aes_key(&store, "p13-getmat", "tenant-a").await;
+
+    let result = store.get_key_material(&key_id, "tenant-b").await;
+    assert!(
+        matches!(result, Err(kms_core::Error::KeyNotFound(_))),
+        "cross-tenant get_key_material must return KeyNotFound, got {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_pr13_get_key_material_version_cross_tenant_returns_keynotfound() {
+    let store = SoftwareKeystore::new();
+    let key_id = make_aes_key(&store, "p13-getver", "tenant-a").await;
+
+    let result = store.get_key_material_version(&key_id, 1, "tenant-b").await;
+    assert!(
+        matches!(result, Err(kms_core::Error::KeyNotFound(_))),
+        "cross-tenant get_key_material_version must return KeyNotFound, got {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_pr13_rotate_key_cross_tenant_returns_keynotfound() {
+    let store = SoftwareKeystore::new();
+    let key_id = make_aes_key(&store, "p13-rot", "tenant-a").await;
+
+    let result = store.rotate_key(&key_id, "tenant-b").await;
+    assert!(
+        matches!(result, Err(kms_core::Error::KeyNotFound(_))),
+        "cross-tenant rotate_key must return KeyNotFound, got {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_pr13_delete_key_cross_tenant_returns_keynotfound() {
+    let store = SoftwareKeystore::new();
+    let key_id = make_aes_key(&store, "p13-del", "tenant-a").await;
+
+    let result = store.delete_key(&key_id, "tenant-b").await;
+    assert!(
+        matches!(result, Err(kms_core::Error::KeyNotFound(_))),
+        "cross-tenant delete_key must return KeyNotFound, got {result:?}"
+    );
+}
+
+/// Forward path: the correct tenant still succeeds for every sensitive
+/// operation after PR-1.3 hardening.
+#[tokio::test]
+async fn test_pr13_sign_correct_tenant_succeeds() {
+    let store = SoftwareKeystore::new();
+    let key_id = make_ed25519_key(&store, "p13-ok", "tenant-a").await;
+
+    let sig = store.sign(&key_id, b"hello", "tenant-a").await.unwrap();
+    let valid = store
+        .verify(&key_id, b"hello", &sig, "tenant-a")
+        .await
+        .unwrap();
+    assert!(valid);
+}
+
+/// Forward path: SM2 sign/verify with correct tenant still works.
+#[tokio::test]
+async fn test_pr13_sm2_sign_correct_tenant_succeeds() {
+    let store = SoftwareKeystore::new();
+    let key_id = make_sm2_key(&store, "p13-sm2-ok", "tenant-a").await;
+
+    let sig = store.sign(&key_id, b"hello", "tenant-a").await.unwrap();
+    let valid = store
+        .verify(&key_id, b"hello", &sig, "tenant-a")
+        .await
+        .unwrap();
+    assert!(valid);
+}
+
+/// Forward path: encrypt/decrypt with correct tenant still works
+/// after PR-1.3 hardening (verifies the pre-check does not regress
+/// the happy path).
+#[tokio::test]
+async fn test_pr13_encrypt_decrypt_correct_tenant_succeeds() {
+    let store = SoftwareKeystore::new();
+    let key_id = make_aes_key(&store, "p13-enc-ok", "tenant-a").await;
+
+    let ct = store
+        .encrypt(&key_id, b"plaintext", None, "tenant-a")
+        .await
+        .unwrap();
+    let pt = store.decrypt(&key_id, &ct, None, "tenant-a").await.unwrap();
+    assert_eq!(pt, b"plaintext");
+}
