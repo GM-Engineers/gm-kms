@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use kms_core::{
     BackendType, Result,
+    aad::{kek_wrap_aad, user_data_aad},
     dh::SharedSecret,
     error::Error,
     key::{Ciphertext, DestructionProof, KeyFilter, KeyMeta, KeySpec, KeyStatus, Signature},
@@ -111,7 +112,7 @@ impl PostgresKeystore {
     }
 
     /// Encrypt key material with KEK for storage
-    fn encrypt_material(&self, material: &[u8]) -> Result<Vec<u8>> {
+    fn encrypt_material(&self, key_id: &Uuid, material: &[u8]) -> Result<Vec<u8>> {
         use ring::aead::{AES_256_GCM, Aad, LessSafeKey, Nonce, UnboundKey};
 
         let unbound_key = UnboundKey::new(&AES_256_GCM, self.kek.as_ref())
@@ -125,9 +126,14 @@ impl PostgresKeystore {
             .map_err(|_| Error::EncryptionFailed("failed to generate nonce".to_string()))?;
         let nonce = Nonce::assume_unique_for_key(nonce_bytes);
 
+        // PR-1.4: bind the KEK envelope to the wrapped material's key_id
+        // so a DB-row swap between two stored keys fails tag check.
+        let aad_bytes = kek_wrap_aad(*key_id);
+        let aad = Aad::from(aad_bytes.as_slice());
+
         let mut in_out = material.to_vec();
         let tag = sealing_key
-            .seal_in_place_separate_tag(nonce, Aad::empty(), &mut in_out)
+            .seal_in_place_separate_tag(nonce, aad, &mut in_out)
             .map_err(|e| Error::EncryptionFailed(e.to_string()))?;
 
         // Format: nonce (12 bytes) || ciphertext || tag (16 bytes)
@@ -139,7 +145,7 @@ impl PostgresKeystore {
     }
 
     /// Decrypt key material with KEK after loading from storage
-    fn decrypt_material(&self, encrypted: &[u8]) -> Result<Vec<u8>> {
+    fn decrypt_material(&self, key_id: &Uuid, encrypted: &[u8]) -> Result<Vec<u8>> {
         use ring::aead::{AES_256_GCM, Aad, LessSafeKey, Nonce, UnboundKey};
 
         if encrypted.len() < 12 + 16 {
@@ -163,8 +169,12 @@ impl PostgresKeystore {
 
         in_out.extend_from_slice(tag);
 
+        // PR-1.4: AAD must match the key_id this envelope was written for.
+        let aad_bytes = kek_wrap_aad(*key_id);
+        let aad = Aad::from(aad_bytes.as_slice());
+
         let plaintext = opening_key
-            .open_in_place(nonce, Aad::empty(), &mut in_out)
+            .open_in_place(nonce, aad, &mut in_out)
             .map_err(|_| Error::InvalidCiphertext)?;
 
         Ok(plaintext.to_vec())
@@ -199,7 +209,7 @@ impl PostgresKeystore {
 
         for meta in keys {
             match self.repo.find_encrypted_material(&meta.id).await? {
-                Some(encrypted) => match self.decrypt_material(&encrypted) {
+                Some(encrypted) => match self.decrypt_material(&meta.id, &encrypted) {
                     Ok(material) => {
                         let entry = KeyEntry {
                             meta: meta.clone(),
@@ -257,6 +267,7 @@ impl PostgresKeystore {
         material: &[u8],
         spec: &KeySpec,
         key_id: &Uuid,
+        tenant_id: &str,
         version: u32,
         plaintext: &[u8],
         aad: Option<&[u8]>,
@@ -276,9 +287,14 @@ impl PostgresKeystore {
                     .map_err(|_| Error::EncryptionFailed("failed to generate nonce".to_string()))?;
                 let nonce = Nonce::assume_unique_for_key(nonce_bytes);
 
-                // Use provided AAD or empty if not provided
-                let aad_bytes = aad.unwrap_or(&[]);
-                let aad = Aad::from(aad_bytes);
+                // PR-1.4: bind AAD to (key_id, tenant_id, version). Caller
+                // may still pass an explicit AAD via `aad` for compatibility,
+                // but the keystore layer always overrides with the bound
+                // AAD so a stored record cannot be replayed against a
+                // different key_id/tenant_id/version.
+                let _ = aad; // explicit AAD parameter is accepted but unused at this layer.
+                let aad_bytes = user_data_aad(*key_id, tenant_id, version);
+                let aad = Aad::from(aad_bytes.as_slice());
 
                 let mut in_out = plaintext.to_vec();
                 let tag = sealing_key
@@ -288,7 +304,7 @@ impl PostgresKeystore {
                 Ok(Ciphertext {
                     key_id: *key_id,
                     version,
-                    format_version: 1,
+                    format_version: 2,
                     nonce: nonce_bytes.to_vec(),
                     ciphertext: in_out,
                     tag: tag.as_ref().to_vec(),
@@ -305,17 +321,21 @@ impl PostgresKeystore {
                     .fill(&mut nonce)
                     .map_err(|_| Error::EncryptionFailed("failed to generate nonce".to_string()))?;
 
-                // Use provided AAD or empty if not provided
-                let aad_bytes = aad.unwrap_or(&[]);
+                // PR-1.4: see AES branch — AAD is bound to (key_id,
+                // tenant_id, version). The explicit `aad` parameter is
+                // accepted for API compatibility but unused at this
+                // layer.
+                let _ = aad;
+                let aad_bytes = user_data_aad(*key_id, tenant_id, version);
 
                 let (ciphertext, tag) = cipher
-                    .encrypt_gcm(plaintext, &nonce, aad_bytes)
+                    .encrypt_gcm(plaintext, &nonce, &aad_bytes)
                     .map_err(|e| Error::EncryptionFailed(e.to_string()))?;
 
                 Ok(Ciphertext {
                     key_id: *key_id,
                     version,
-                    format_version: 1,
+                    format_version: 2,
                     nonce: nonce.to_vec(),
                     ciphertext,
                     tag,
@@ -358,6 +378,7 @@ impl PostgresKeystore {
         material: &[u8],
         spec: &KeySpec,
         ciphertext: &Ciphertext,
+        tenant_id: &str,
         aad: Option<&[u8]>,
     ) -> Result<Vec<u8>> {
         match spec {
@@ -376,9 +397,23 @@ impl PostgresKeystore {
                 nonce_bytes.copy_from_slice(&ciphertext.nonce);
                 let nonce = Nonce::assume_unique_for_key(nonce_bytes);
 
-                // Use provided AAD or empty if not provided
-                let aad_bytes = aad.unwrap_or(&[]);
-                let aad = Aad::from(aad_bytes);
+                // PR-1.4: branch on `format_version`. v0/v1 keep empty-AAD
+                // back-compat. v2 requires the bound AAD matching the
+                // stored ciphertext's (key_id, tenant_id, version).
+                let aad_bytes_v2: Option<Vec<u8>> = match ciphertext.format_version {
+                    0 | 1 => None,
+                    2 => Some(user_data_aad(
+                        ciphertext.key_id,
+                        tenant_id,
+                        ciphertext.version,
+                    )),
+                    _ => return Err(Error::InvalidCiphertext),
+                };
+                let _ = aad; // parameter is accepted for API compatibility but unused.
+                let aad: Aad<&[u8]> = match &aad_bytes_v2 {
+                    Some(b) => Aad::from(b.as_slice()),
+                    None => Aad::from(&[][..]),
+                };
 
                 let mut in_out = ciphertext.ciphertext.clone();
                 in_out.extend_from_slice(&ciphertext.tag);
@@ -395,14 +430,19 @@ impl PostgresKeystore {
                 let cipher =
                     Sm4Cipher::new(material).map_err(|e| Error::DecryptionFailed(e.to_string()))?;
 
-                // Use provided AAD or empty if not provided
-                let aad_bytes = aad.unwrap_or(&[]);
+                // PR-1.4: see AES branch.
+                let aad_bytes: Vec<u8> = match ciphertext.format_version {
+                    0 | 1 => Vec::new(),
+                    2 => user_data_aad(ciphertext.key_id, tenant_id, ciphertext.version),
+                    _ => return Err(Error::InvalidCiphertext),
+                };
+                let _ = aad;
 
                 let plaintext = cipher
                     .decrypt_gcm(
                         &ciphertext.ciphertext,
                         &ciphertext.nonce,
-                        aad_bytes,
+                        &aad_bytes,
                         &ciphertext.tag,
                     )
                     .map_err(|_| Error::InvalidCiphertext)?;
@@ -536,7 +576,7 @@ impl super::KeystoreBackend for PostgresKeystore {
         let material = Self::generate_key_material(spec)?;
 
         // Encrypt material with KEK for storage
-        let encrypted_material = self.encrypt_material(&material)?;
+        let encrypted_material = self.encrypt_material(&id, &material)?;
 
         let meta = KeyMeta {
             id,
@@ -616,6 +656,7 @@ impl super::KeystoreBackend for PostgresKeystore {
             &entry.material,
             &entry.meta.spec,
             key_id,
+            tenant_id,
             entry.meta.version,
             plaintext,
             _aad,
@@ -643,7 +684,14 @@ impl super::KeystoreBackend for PostgresKeystore {
             )));
         }
 
-        Self::crypto_decrypt(&entry.material, &entry.meta.spec, ciphertext, _aad).await
+        Self::crypto_decrypt(
+            &entry.material,
+            &entry.meta.spec,
+            ciphertext,
+            tenant_id,
+            _aad,
+        )
+        .await
     }
 
     async fn sign(&self, key_id: &Uuid, data: &[u8], tenant_id: &str) -> Result<Signature> {
@@ -744,7 +792,7 @@ impl super::KeystoreBackend for PostgresKeystore {
         // Store version history with KEK-encrypted DEK (AES-256-GCM).
         // Explicit drop of old_material right after encryption ensures the
         // plaintext clone does not outlive the IO operation.
-        let encrypted_dek = self.encrypt_material(&old_material)?;
+        let encrypted_dek = self.encrypt_material(&old_meta.id, &old_material)?;
         drop(old_material);
         self.repo
             .insert_version(
@@ -892,7 +940,7 @@ impl super::KeystoreBackend for PostgresKeystore {
         };
 
         // Encrypt material with KEK for storage (before moving to Zeroizing)
-        let encrypted_material = self.encrypt_material(&material)?;
+        let encrypted_material = self.encrypt_material(&id, &material)?;
 
         let entry = KeyEntry {
             meta: meta.clone(),

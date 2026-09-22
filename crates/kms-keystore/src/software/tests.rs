@@ -1872,3 +1872,297 @@ async fn test_pr13_encrypt_decrypt_correct_tenant_succeeds() {
     let pt = store.decrypt(&key_id, &ct, None, "tenant-a").await.unwrap();
     assert_eq!(pt, b"plaintext");
 }
+
+// ========================================================================
+// PR-1.4 AAD Binding Regression Tests
+//
+// These tests pin down the binding between AES-GCM tags and the
+// (key_id, tenant_id, version) triple introduced by PR-1.4. Without
+// binding, an attacker who can swap rows in the keystore's persisted
+// storage could lift a ciphertext produced for key A and present it
+// for decryption under key B (same tenant). With binding, the GCM tag
+// check fails because the AAD bytes used at seal time do not match
+// those reconstructed from key B's metadata.
+//
+// All tests below use two keys under the same tenant so the keystore
+// tenant pre-check (PR-1.3) does not interfere — AAD binding must catch
+// the swap on its own.
+// ========================================================================
+
+/// Sanity check: round-trip after PR-1.4 AAD binding.
+#[tokio::test]
+async fn test_pr14_aes_roundtrip_with_bound_aad() {
+    let store = SoftwareKeystore::new();
+    let key_id = make_aes_key(&store, "p14-rt-aes", "tenant-x").await;
+
+    let ct = store
+        .encrypt(&key_id, b"hello v2 aad", None, "tenant-x")
+        .await
+        .unwrap();
+    // New ciphertexts are tagged format_version = 2 (bound AAD).
+    assert_eq!(
+        ct.format_version, 2,
+        "PR-1.4 must mark new AES ciphertexts as format_version=2"
+    );
+
+    let pt = store.decrypt(&key_id, &ct, None, "tenant-x").await.unwrap();
+    assert_eq!(pt, b"hello v2 aad");
+}
+
+/// SM4 round-trip after PR-1.4 AAD binding.
+#[tokio::test]
+async fn test_pr14_sm4_roundtrip_with_bound_aad() {
+    let store = SoftwareKeystore::new();
+    let key_id = store
+        .generate_key(&KeySpec::Sm4, "p14-rt-sm4", "tenant-x")
+        .await
+        .unwrap()
+        .id;
+
+    let ct = store
+        .encrypt(&key_id, b"sm4 with bound aad", None, "tenant-x")
+        .await
+        .unwrap();
+    assert_eq!(
+        ct.format_version, 2,
+        "PR-1.4 must mark new SM4 ciphertexts as format_version=2"
+    );
+
+    let pt = store.decrypt(&key_id, &ct, None, "tenant-x").await.unwrap();
+    assert_eq!(pt, b"sm4 with bound aad");
+}
+
+/// Cross-key replay rejection (PR-1.4 primary defence).
+///
+/// Attacker model: tenant-X owns both key-A and key-B. Attacker copies
+/// key-A's persisted ciphertext bytes into key-B's row (only key_id is
+/// different). Tenant-X legitimately asks to decrypt key-B. Without AAD
+/// binding, the keystore would happily try to decrypt key-A's ciphertext
+/// using key-B's material — which only succeeds by sheer coincidence
+/// (≈ 2^-128). With AAD binding, the GCM tag check fails immediately
+/// because the AAD bytes (which include key_id) differ.
+#[tokio::test]
+async fn test_pr14_cross_key_replay_rejected() {
+    let store = SoftwareKeystore::new();
+    let key_a = make_aes_key(&store, "p14-key-a", "tenant-x").await;
+    let key_b = make_aes_key(&store, "p14-key-b", "tenant-x").await;
+    assert_ne!(
+        key_a, key_b,
+        "keys must differ for this test to be meaningful"
+    );
+
+    // Encrypt legitimate payload under key_a.
+    let ct_a = store
+        .encrypt(&key_a, b"secret-for-a", None, "tenant-x")
+        .await
+        .unwrap();
+    assert_eq!(ct_a.format_version, 2);
+
+    // Forge: take every byte from key_a's ciphertext except key_id,
+    // which we point at key_b. This is exactly what an attacker who can
+    // swap persisted rows would produce.
+    let forged = Ciphertext {
+        key_id: key_b,
+        version: ct_a.version,
+        format_version: 2,
+        nonce: ct_a.nonce.clone(),
+        ciphertext: ct_a.ciphertext.clone(),
+        tag: ct_a.tag.clone(),
+    };
+
+    // Decrypt under key_b (same tenant, so tenant pre-check passes).
+    // AAD binding must catch the swap.
+    let result = store.decrypt(&key_b, &forged, None, "tenant-x").await;
+    assert!(
+        matches!(result, Err(kms_core::Error::InvalidCiphertext)),
+        "cross-key replay must fail with InvalidCiphertext (AAD mismatch), got {result:?}"
+    );
+
+    // Sanity: the legitimate ciphertext still decrypts under key_a.
+    let pt = store
+        .decrypt(&key_a, &ct_a, None, "tenant-x")
+        .await
+        .unwrap();
+    assert_eq!(pt, b"secret-for-a");
+}
+
+/// SM4 cross-key replay rejection.
+#[tokio::test]
+async fn test_pr14_sm4_cross_key_replay_rejected() {
+    let store = SoftwareKeystore::new();
+    let key_a = store
+        .generate_key(&KeySpec::Sm4, "p14-sm4-a", "tenant-x")
+        .await
+        .unwrap()
+        .id;
+    let key_b = store
+        .generate_key(&KeySpec::Sm4, "p14-sm4-b", "tenant-x")
+        .await
+        .unwrap()
+        .id;
+
+    let ct_a = store
+        .encrypt(&key_a, b"sm4-secret", None, "tenant-x")
+        .await
+        .unwrap();
+    let forged = Ciphertext {
+        key_id: key_b,
+        version: ct_a.version,
+        format_version: 2,
+        nonce: ct_a.nonce.clone(),
+        ciphertext: ct_a.ciphertext.clone(),
+        tag: ct_a.tag.clone(),
+    };
+
+    let result = store.decrypt(&key_b, &forged, None, "tenant-x").await;
+    assert!(
+        matches!(result, Err(kms_core::Error::InvalidCiphertext)),
+        "SM4 cross-key replay must fail with InvalidCiphertext, got {result:?}"
+    );
+}
+
+/// Cross-version forgery rejection.
+///
+/// Attacker moves a v1 ciphertext into a row that claims `version=2`.
+/// Without AAD, the keystore would still return v2 key material but the
+/// GCM tag check would (probabilistically) reject because v1/v2
+/// materials differ. With AAD, the rejection is deterministic because
+/// the AAD version byte differs.
+#[tokio::test]
+async fn test_pr14_cross_version_forgery_rejected() {
+    let store = SoftwareKeystore::new();
+    let key_id = make_aes_key(&store, "p14-cross-ver", "tenant-x").await;
+
+    // Encrypt with v1 (default after generate_key).
+    let ct_v1 = store
+        .encrypt(&key_id, b"v1-data", None, "tenant-x")
+        .await
+        .unwrap();
+    assert_eq!(ct_v1.version, 1);
+
+    // Rotate to v2.
+    let new_meta = store.rotate_key(&key_id, "tenant-x").await.unwrap();
+    assert_eq!(new_meta.version, 2);
+
+    // Forge: claim version=2 but reuse v1 ciphertext/tag.
+    let forged = Ciphertext {
+        key_id,
+        version: 2,
+        format_version: 2,
+        nonce: ct_v1.nonce.clone(),
+        ciphertext: ct_v1.ciphertext.clone(),
+        tag: ct_v1.tag.clone(),
+    };
+
+    let result = store.decrypt(&key_id, &forged, None, "tenant-x").await;
+    assert!(
+        matches!(result, Err(kms_core::Error::InvalidCiphertext)),
+        "cross-version forgery must fail with InvalidCiphertext (AAD version mismatch), got {result:?}"
+    );
+
+    // Sanity: legitimate v1 ciphertext still decrypts.
+    let pt = store
+        .decrypt(&key_id, &ct_v1, None, "tenant-x")
+        .await
+        .unwrap();
+    assert_eq!(pt, b"v1-data");
+}
+
+/// format_version=1 (legacy empty AAD) back-compat.
+///
+/// Ciphertexts created before PR-1.4 carry empty AAD and
+/// `format_version ∈ {0, 1}`. The decrypt path must still accept these
+/// after the upgrade. We manufacture such a ciphertext by sealing the
+/// raw key material with empty AAD using ring directly (mimicking the
+/// legacy seal path).
+#[tokio::test]
+async fn test_pr14_format_version_legacy_still_decrypts() {
+    use ring::aead::{AES_256_GCM, Aad, LessSafeKey, Nonce, UnboundKey};
+
+    let store = SoftwareKeystore::new();
+    let key_id = make_aes_key(&store, "p14-legacy", "tenant-x").await;
+
+    // Pull the raw key material to seal a legacy ciphertext manually.
+    let raw_material = store.get_key_material(&key_id, "tenant-x").await.unwrap();
+    assert_eq!(raw_material.len(), 32, "AES-256 key is 32 bytes");
+
+    // Seal with EMPTY AAD using ring directly — this is exactly what
+    // the pre-PR-1.4 code did.
+    let unbound = UnboundKey::new(&AES_256_GCM, &raw_material)
+        .expect("AES-256 key from CSPRNG must be accepted by ring");
+    let less_safe = LessSafeKey::new(unbound);
+    let nonce_bytes = [0u8; 12]; // legacy: 12-byte nonce → starting_counter = 0
+    let nonce = Nonce::assume_unique_for_key(nonce_bytes);
+    let mut in_out = b"legacy payload".to_vec();
+    let tag = less_safe
+        .seal_in_place_separate_tag(nonce, Aad::empty(), &mut in_out)
+        .expect("seal with empty AAD must succeed");
+
+    let legacy_ct = Ciphertext {
+        key_id,
+        version: 1,
+        format_version: 1,
+        nonce: nonce_bytes.to_vec(),
+        ciphertext: in_out.clone(),
+        tag: tag.as_ref().to_vec(),
+    };
+
+    // The keystore must accept the legacy ciphertext: format_version=1
+    // takes the empty-AAD branch.
+    let pt = store
+        .decrypt(&key_id, &legacy_ct, None, "tenant-x")
+        .await
+        .expect("legacy format_version=1 ciphertext must decrypt");
+    assert_eq!(pt, b"legacy payload");
+
+    // format_version=0 is also legacy — must also work.
+    let mut legacy_ct_v0 = legacy_ct.clone();
+    legacy_ct_v0.format_version = 0;
+    let pt_v0 = store
+        .decrypt(&key_id, &legacy_ct_v0, None, "tenant-x")
+        .await
+        .expect("legacy format_version=0 ciphertext must decrypt");
+    assert_eq!(pt_v0, b"legacy payload");
+}
+
+/// Unknown format_version is rejected with InvalidCiphertext, not a
+/// panic. This protects against future format-version drift.
+#[tokio::test]
+async fn test_pr14_unknown_format_version_rejected() {
+    let store = SoftwareKeystore::new();
+    let key_id = make_aes_key(&store, "p14-fv-bad", "tenant-x").await;
+
+    let ct = store
+        .encrypt(&key_id, b"data", None, "tenant-x")
+        .await
+        .unwrap();
+    let mut forged = ct.clone();
+    forged.format_version = 99; // unknown
+
+    let result = store.decrypt(&key_id, &forged, None, "tenant-x").await;
+    assert!(
+        matches!(result, Err(kms_core::Error::InvalidCiphertext)),
+        "unknown format_version must return InvalidCiphertext, got {result:?}"
+    );
+}
+
+/// Tenant AAD divergence: AAD bytes for the same key under different
+/// tenants must differ. Even if the keystore tenant pre-check were ever
+/// weakened, AAD binding still prevents cross-tenant ciphertext reuse
+/// because the tenant-hash slot inside the AAD blob differs.
+#[tokio::test]
+async fn test_pr14_aad_differs_across_tenants() {
+    // Build the v2 AAD for the same key id and version under two tenants.
+    let key_id = uuid::Uuid::new_v4();
+    let aad_a = kms_core::user_data_aad(key_id, "tenant-alpha", 1);
+    let aad_b = kms_core::user_data_aad(key_id, "tenant-beta", 1);
+    assert_ne!(
+        aad_a, aad_b,
+        "PR-1.4 AAD must diverge when the tenant hash slot differs"
+    );
+    // Both still share the magic + version header — sanity check on layout.
+    assert_eq!(&aad_a[..2], &kms_core::AAD_MAGIC);
+    assert_eq!(&aad_a[2..4], &kms_core::AAD_VERSION.to_be_bytes());
+    assert_eq!(&aad_b[..2], &kms_core::AAD_MAGIC);
+    assert_eq!(&aad_b[2..4], &kms_core::AAD_VERSION.to_be_bytes());
+}

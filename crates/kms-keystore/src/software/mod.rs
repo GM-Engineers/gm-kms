@@ -12,6 +12,7 @@ use chrono::Utc;
 use gm_crypto::sm2_kex::{KexSession, Sm2KexMessage, Sm2KexResult};
 use kms_core::{
     BackendType, Result,
+    aad::user_data_aad,
     dh::SharedSecret,
     error::Error,
     key::{Ciphertext, DestructionProof, KeyMeta, KeySpec, KeyStatus, Signature},
@@ -898,15 +899,18 @@ impl super::KeystoreBackend for SoftwareKeystore {
                 let counter = Counter(starting_counter);
                 let mut sealing_key: SealingKey<Counter> = BoundKey::new(unbound_key, counter);
 
+                let aad_bytes = user_data_aad(*key_id, &entry.meta.tenant_id, entry.meta.version);
+                let aad = aead::Aad::from(aad_bytes.as_slice());
+
                 let mut in_out = plaintext.to_vec();
                 let tag = sealing_key
-                    .seal_in_place_separate_tag(aead::Aad::empty(), &mut in_out)
+                    .seal_in_place_separate_tag(aad, &mut in_out)
                     .map_err(|e| Error::EncryptionFailed(e.to_string()))?;
 
                 Ok(Ciphertext {
                     key_id: *key_id,
                     version: entry.meta.version,
-                    format_version: 1,
+                    format_version: 2,
                     nonce: starting_counter.to_be_bytes().to_vec(),
                     ciphertext: in_out,
                     tag: tag.as_ref().to_vec(),
@@ -921,14 +925,16 @@ impl super::KeystoreBackend for SoftwareKeystore {
                 let mut nonce = [0u8; 12];
                 rand::rng().fill_bytes(&mut nonce);
 
+                let aad_bytes = user_data_aad(*key_id, &entry.meta.tenant_id, entry.meta.version);
+
                 let (ciphertext, tag) = cipher
-                    .encrypt_gcm(plaintext, &nonce, &[])
+                    .encrypt_gcm(plaintext, &nonce, &aad_bytes)
                     .map_err(|e| Error::EncryptionFailed(e.to_string()))?;
 
                 Ok(Ciphertext {
                     key_id: *key_id,
                     version: entry.meta.version,
-                    format_version: 1,
+                    format_version: 2,
                     nonce: nonce.to_vec(),
                     ciphertext,
                     tag,
@@ -1040,8 +1046,27 @@ impl super::KeystoreBackend for SoftwareKeystore {
                 let mut in_out = ciphertext.ciphertext.clone();
                 in_out.extend_from_slice(&ciphertext.tag);
 
+                // PR-1.4: branch on `format_version` to keep legacy
+                // ciphertexts (AAD = empty) decryptable while binding
+                // v2 ciphertexts to (key_id, tenant_id, version). The
+                // v2 AAD is built into a local Vec<u8> so its lifetime
+                // spans the `open_in_place` call.
+                let aad_bytes_v2: Option<Vec<u8>> = match ciphertext.format_version {
+                    0 | 1 => None,
+                    2 => Some(user_data_aad(
+                        *key_id,
+                        &entry.meta.tenant_id,
+                        ciphertext.version,
+                    )),
+                    _ => return Err(Error::InvalidCiphertext),
+                };
+                let aad: aead::Aad<&[u8]> = match &aad_bytes_v2 {
+                    Some(b) => aead::Aad::from(b.as_slice()),
+                    None => aead::Aad::from(&[][..]),
+                };
+
                 let plaintext = opening_key
-                    .open_in_place(aead::Aad::empty(), &mut in_out)
+                    .open_in_place(aad, &mut in_out)
                     .map_err(|_| Error::InvalidCiphertext)?;
 
                 Ok(plaintext.to_vec())
@@ -1052,11 +1077,20 @@ impl super::KeystoreBackend for SoftwareKeystore {
                 let cipher = Sm4Cipher::new(key_material)
                     .map_err(|e| Error::DecryptionFailed(e.to_string()))?;
 
+                // PR-1.4: see AES branch — v2 AAD binds the ciphertext
+                // to (key_id, tenant_id, version). v1 (and 0) keep the
+                // empty-AAD behaviour for backwards compatibility.
+                let aad_bytes: Vec<u8> = match ciphertext.format_version {
+                    0 | 1 => Vec::new(),
+                    2 => user_data_aad(*key_id, &entry.meta.tenant_id, ciphertext.version),
+                    _ => return Err(Error::InvalidCiphertext),
+                };
+
                 let plaintext = cipher
                     .decrypt_gcm(
                         &ciphertext.ciphertext,
                         &ciphertext.nonce,
-                        &[],
+                        &aad_bytes,
                         &ciphertext.tag,
                     )
                     .map_err(|_| Error::InvalidCiphertext)?;

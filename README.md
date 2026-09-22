@@ -74,7 +74,7 @@ export KMS_KEK="<your-kek-hex-64>"
 
 # 3. 构建与测试
 cargo build --release
-cargo test --workspace           # 998+ tests
+cargo test --workspace           # 1015+ tests
 
 # 4. 启动服务（默认 TLS 1.3 + SM）
 cargo run --release -p kms -- --server
@@ -153,18 +153,18 @@ gm-kms/
 
 | Crate | 测试数 | 状态 |
 |-------|--------|------|
-| kms-core | 282 | passed |
+| kms-core | 291 | passed |
 | kms-api | 267 (+ 5 ignored) | passed |
 | kms-policy | 28 | passed |
 | kms-audit | 95 | passed |
 | kms-hsm | 52 | passed |
 | kms-mfa | 46 | passed |
 | kms-approval | 16 | passed |
-| kms-keystore | 86 (+ 13 ignored) | passed |
+| kms-keystore | 94 (+ 13 ignored) | passed |
 | kms-cli | 8 | passed |
 | kms binary（含 tlcp_listener + config TLCP 测试） | 37 | passed |
 | integration_tests / kat_vectors | 81 | passed |
-| **合计** | **998 passed**（另 25 ignored） | |
+| **合计** | **1015 passed**（另 18 ignored） | |
 
 ## 第三方组件
 

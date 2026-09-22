@@ -52,6 +52,17 @@ All notable changes to gm-kms will be documented in this file.
   新增 12 个测试：9 个跨租户返回 `KeyNotFound`（sign / decrypt / encrypt / verify / export_key_material / get_key_material / get_key_material_version / rotate_key / delete_key）+ 3 个正向不破坏（Ed25519 / SM2 sign/verify、AES encrypt/decrypt）。
   （对应 P0-3）
 
+- **AAD 绑定到 `(key_id, tenant_id, version)`（P0-5 / PR-1.4）**：AES-GCM / SM4-GCM 用户数据加密以及 Postgres KEK 信封、KeyService 导出信封都绑定稳定上下文后，AGC 标签检查必须失败—记帐 AAD blob 。 
+  旧实现 `seal_in_place_separate_tag` 传入 `Aad::empty()`：对于攻击者可以互换持久化存储行的场景，同一租户的合法 `decrypt(key_b)` 调用可能被递给 key-a 的密文。 
+  新增 `crates/kms-core/src/aad.rs`：`Purpose` 枚举区分 `UserData` / `KekWrap` / `ExportWrap`； 42 字节 v2 AAD 格式 = magic(2) + aad_version(2) + purpose(2) + key_id(16) + SHA-256(tenant)[..16] + version(4)。三个公开构造器：`user_data_aad`、`kek_wrap_aad`、`export_wrap_aad`，以及 9 个 aad.rs 单元测试。 
+  wire 格式向后兼容：`Ciphertext::format_version ∈ {0, 1}` 走 empty-AAD 分支；`format_version == 2` 走绑定-AAD 分支；未知 format_version 返回 `Error::InvalidCiphertext`。  五个调用点改动：
+  - `crates/kms-keystore/src/software/mod.rs`：`encrypt`（AES / SM4 两个分支） 使用 `user_data_aad(*key_id, &entry.meta.tenant_id, entry.meta.version)`，输出 `format_version = 2`；`decrypt` 两 个分支按 `format_version` 分流。
+  - `crates/kms-keystore/src/postgres.rs`：四个调用点（load_keys、generate_key、rotate_key 的 encrypted_dek、import_key_material）传 `key_id: &Uuid` 给 `encrypt_material` / `decrypt_material`，信封 AAD  为 `kek_wrap_aad(*key_id)`；`crypto_encrypt` / `crypto_decrypt` 加 `tenant_id: &str` 参数以使用 `user_data_aad`。SM2 分支不变（SM2 是公钥加密，无 AEAD-AAD）。
+  - `crates/kms-api/src/service/key_service.rs`：导出信封使用 `export_wrap_aad(*key_id, tenant_id)` 替代 `Aad::empty()`。
+  - `crates/kms-core/src/lib.rs`：增加 `pub mod aad` 及再导出。
+  新增 8 个回归测试：AES/SM4 往返 、AES/SM4 跨 key 复制拒绝、跨 version 伪造拒绝、`format_version ∈ {0, 1}` 向后兼容、未知 format_version 拒绝、跨租户 AAD 发散验证。  跨租户 AES-GCM “零 AAD” 场景（与 PR-1.2 / PR-1.3 形成纵深防御：即使上层漏检，标签不匹配也拒绝）。
+  （对应 P0-5）
+
 ### Known Limitations（本项目固有，不在本版本修复范围）
 
 - gRPC over TLCP 未实现（TLCP 协议无 ALPN，gRPC 需要 h2）

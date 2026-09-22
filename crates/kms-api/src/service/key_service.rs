@@ -5,6 +5,7 @@
 use super::{IntoApiError, KeyFormatParser, ServiceError};
 use crate::{ApiError, KmsState, Result, quota::TenantQuotaTracker};
 use base64::{Engine, engine::general_purpose::STANDARD};
+use kms_core::aad::export_wrap_aad;
 use kms_core::key::{KeyFilter, KeyMeta, KeySpec};
 use kms_core::sanitize::sanitize_for_log;
 use ring::rand::SecureRandom;
@@ -314,7 +315,7 @@ impl KeyService {
             .map_err(|e| ApiError::Internal(format!("failed to generate transport key: {e}")))?;
 
         // Wrap key material with transport key using AES-256-GCM
-        use ring::aead::{AES_256_GCM, Aad, LessSafeKey, Nonce, UnboundKey};
+        use ring::aead::{AES_256_GCM, LessSafeKey, Nonce, UnboundKey};
         let unbound_kek = UnboundKey::new(&AES_256_GCM, &transport_key)
             .map_err(|e| ApiError::Internal(format!("failed to create KEK: {e}")))?;
         let less_safe_kek = LessSafeKey::new(unbound_kek);
@@ -324,9 +325,17 @@ impl KeyService {
         rng.fill(&mut nonce_bytes)
             .map_err(|e| ApiError::Internal(format!("failed to generate nonce: {e}")))?;
         let nonce = Nonce::assume_unique_for_key(nonce_bytes);
+
+        // PR-1.4: bind the export envelope to (key_id, tenant_id) so a
+        // stored export record cannot be replayed against another
+        // key/tenant. The AAD tag is the dedicated `ExportWrap` purpose
+        // (different from `UserData`), so an attacker cannot lift a
+        // user-data ciphertext and pass it off as an export envelope.
+        let export_aad = export_wrap_aad(*key_id, tenant_id);
+        let export_aad = ring::aead::Aad::from(export_aad.as_slice());
         let mut in_out = key_material.clone();
         let tag = less_safe_kek
-            .seal_in_place_separate_tag(nonce, Aad::empty(), &mut in_out)
+            .seal_in_place_separate_tag(nonce, export_aad, &mut in_out)
             .map_err(|e| ApiError::Internal(format!("failed to wrap key: {e}")))?;
 
         // Append tag to ciphertext (combined = wrapped_key)
