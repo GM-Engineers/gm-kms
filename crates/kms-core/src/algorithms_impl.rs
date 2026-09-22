@@ -130,8 +130,7 @@ impl crate::Decryptor for Aes256GcmDecryptor {
             }
             other => {
                 return Err(Error::DecryptionFailed(format!(
-                    "invalid AES-256-GCM nonce length: {} (expected 12 or 16)",
-                    other
+                    "invalid AES-256-GCM nonce length: {other} (expected 12 or 16)"
                 )));
             }
         };
