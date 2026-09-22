@@ -36,6 +36,10 @@ All notable changes to gm-kms will be documented in this file.
 
 - README 测试统计表数字与实测一致（877 passed，含 18 个 ignored）
 - README 合规自评估表改为如实标注（已实现 ≠ 已认证）
+- **`crates/kms-core/src/algorithms_impl.rs::Aes256GcmDecryptor::decrypt`**：修复 12-byte nonce 越界 panic。
+  旧实现 `if len >= 12 { [4..16] }` 对 len ∈ [12, 16) 的密文会 panic；外部导入 / 跨实现密文可触发进程崩溃（DoS）。改用穷举 `match` 接受 12（RFC 5116 §5.2 固定 N_MIN = N_MAX = 12 octets）与 16（自产 counter）两种格式，其他长度返回 `DecryptionFailed`。
+  新增 4 个回归测试覆盖 12-byte 外密文解密、16-byte 截断为 12-byte 解密、长度 8 与 15 负测试。
+  （对应 P0-1）
 
 ### Known Limitations（本项目固有，不在本版本修复范围）
 
