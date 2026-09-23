@@ -12,6 +12,7 @@ pub mod envelope;
 pub mod error;
 pub mod event;
 pub mod hybrid_kem;
+pub mod kek_source;
 pub mod key;
 pub mod key_io;
 pub mod memory_protection;

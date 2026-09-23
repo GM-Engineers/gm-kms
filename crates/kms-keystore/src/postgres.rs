@@ -9,6 +9,7 @@ use kms_core::{
     aad::{kek_wrap_aad, user_data_aad},
     dh::SharedSecret,
     error::Error,
+    kek_source::KekSource,
     key::{Ciphertext, DestructionProof, KeyFilter, KeyMeta, KeySpec, KeyStatus, Signature},
 };
 use ring::rand::{SecureRandom, SystemRandom};
@@ -76,39 +77,41 @@ impl PostgresKeystore {
         Ok(())
     }
 
-    /// Load KEK from environment variable or generate a warning
+    /// Load KEK from the configured source.
     ///
-    /// In production, KEK should be managed by an HSM or Vault.
-    /// In development, KMS_DEV_MODE=1 generates a random KEK at startup.
+    /// PR-4.7 / P1-7 (阶段 1/3): the source is resolved by
+    /// [`KekSource::from_env`] which honors both `KMS_KEK_FILE`
+    /// (preferred; enforces 0600) and `KMS_KEK` (env var).
+    /// HSM / TPM providers will be added in a later phase
+    /// without breaking this signature.
+    ///
+    /// In development (`KMS_DEV_MODE=1`), if neither `KMS_KEK`
+    /// nor `KMS_KEK_FILE` is set, a random KEK is generated
+    /// with a loud warning. In production the process exits
+    /// with code 1 to fail hard (caller-visible via
+    /// container restart policy).
     fn load_or_generate_kek() -> Result<[u8; 32]> {
-        // If KMS_KEK is set, use it (hex-decoded)
-        if let Ok(kek_hex) = std::env::var("KMS_KEK") {
-            let kek = hex::decode(&kek_hex)
-                .map_err(|e| Error::Internal(format!("Invalid KMS_KEK hex: {e}")))?
-                .try_into()
-                .map_err(|_| {
-                    Error::Internal("KMS_KEK must be 32 bytes (64 hex characters)".to_string())
-                })?;
-            return Ok(kek);
+        let source = KekSource::from_env();
+        match source.load() {
+            Ok(kek) => Ok(*kek),
+            Err(_) if std::env::var("KMS_DEV_MODE").as_deref() == Ok("1") => {
+                tracing::warn!(
+                    "KMS_KEK / KMS_KEK_FILE not set and KMS_DEV_MODE=1: \
+                     generating a random KEK. DO NOT use this configuration \
+                     in production. WARNING: All encrypted data will be \
+                     unrecoverable after restart because the random KEK is \
+                     not persisted."
+                );
+                let mut kek = [0u8; 32];
+                use rand::Rng;
+                rand::rng().fill_bytes(&mut kek);
+                Ok(kek)
+            }
+            Err(e) => {
+                eprintln!("ERROR: KEK source failed to load: {e}. Exiting.");
+                std::process::exit(1);
+            }
         }
-
-        // KMS_KEK not set — check DEV mode
-        if std::env::var("KMS_DEV_MODE").as_deref() == Ok("1") {
-            tracing::warn!(
-                "KMS_KEK not set and KMS_DEV_MODE=1: generating a random KEK. \
-                DO NOT use this configuration in production. \
-                WARNING: All encrypted data will be unrecoverable after restart \
-                because the random KEK is not persisted."
-            );
-            let mut kek = [0u8; 32];
-            use rand::Rng;
-            rand::rng().fill_bytes(&mut kek);
-            return Ok(kek);
-        }
-
-        // Production: fail hard
-        eprintln!("ERROR: KMS_KEK must be set in production. Exiting.");
-        std::process::exit(1);
     }
 
     /// Encrypt key material with KEK for storage

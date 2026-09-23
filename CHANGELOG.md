@@ -4,6 +4,20 @@ All notable changes to gm-kms will be documented in this file.
 
 ## [0.3.0] — Unreleased
 
+### Added
+
+- **KEK source layering** (PR-4.7 / P1-7 阶段 1/3): new
+  `kms_core::kek_source` module with `KekSource` enum (Env / File
+  / Missing). Operators can now load the master KEK from either
+  `KMS_KEK` (env var, hex) or `KMS_KEK_FILE` (path to a file with
+  mode 0600 on Unix; the mode bit is enforced and any other mode
+  is rejected with a clear error). File beats env when both are
+  set (file is more secure). Replaces the inline hex-parsing in
+  `kms-keystore::postgres` and `kms-api::mfa`, removing duplication.
+  HSM / TPM provider integration is scoped for PR-4.8;
+  KEK rotation (kek_label persistence + multi-active-KEK) is scoped
+  for PR-4.9. Added 17 unit tests in `pr47_kek_source_tests`.
+
 ### 重塑定位（Breaking change in messaging, not code）
 
 本版本将项目定位从"生产 KMS"调整为"Rust 国密 KMS 参考实现"，面向学习、内部演示、生态集成和小规模辅助场景。**不替代**商业云 KMS，**未通过**密评或等保认证。

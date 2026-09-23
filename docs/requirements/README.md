@@ -1,7 +1,7 @@
 # Requirements / 功能需求文档
 
-> 版本 Version: 1.1
-> 更新 Updated: 2026-09-05
+> 版本 Version: 1.2
+> 更新 Updated: 2026-09-23
 
 ---
 
@@ -22,6 +22,7 @@ This directory contains functional requirements for gm-kms, each document in Chi
 | **N2-tls-failfast.md** | 启动 TLS 失败即停 / TLS Startup Fail-Fast | ✅ 已实现 Implemented |
 | **N3-db-redis-tls-defaults.md** | DB/Redis TLS 生产默认值 / DB & Redis TLS Production Defaults | ✅ 已实现 Implemented |
 | **N4-sm9-generate-not-implemented.md** | SM9 密钥生成未实现显式报错 / SM9 Key Generation Must Fail-Loud | ✅ 已实现 Implemented |
+| **N5-kek-source-layering.md** | KEK 来源分层 (env/file) / KEK Source Layering (Env / File) | ✅ 已实现 Implemented (阶段 1/3) |
 | **sm2-kex-requirement.md** | SM2 密钥交换需求 / SM2 Key Exchange | ✅ 已实现 Implemented |
 
 ## 文档结构 / Document Structure
