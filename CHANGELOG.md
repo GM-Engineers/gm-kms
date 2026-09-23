@@ -63,6 +63,14 @@ All notable changes to gm-kms will be documented in this file.
   新增 8 个回归测试：AES/SM4 往返 、AES/SM4 跨 key 复制拒绝、跨 version 伪造拒绝、`format_version ∈ {0, 1}` 向后兼容、未知 format_version 拒绝、跨租户 AAD 发散验证。  跨租户 AES-GCM “零 AAD” 场景（与 PR-1.2 / PR-1.3 形成纵深防御：即使上层漏检，标签不匹配也拒绝）。
   （对应 P0-5）
 
+### Security
+
+- **`src/cmd/server.rs`：gRPC / REST 生产启动 TLS fail-fast**（PR-4.1 / P1-3）。仿照 KEK fail-fast 模式（`kms-keystore/src/postgres.rs:92-95`），默认启动需 TLS；仅 `KMS_ALLOW_INSECURE=1`（或测试 `KMS_DEV_MODE=1`）明确放行才使用明文。REST 两个分支（`rest_tls_config = None` 与 `rest_tls.enabled = false`）独立报错。
+- 新增 `kms_core::production_safety` 模块：`is_allow_insecure()`、`is_dev_mode()`、`is_insecure_opted_in()` 三个 helper；值严格为字符串 `"1"`，避免 `"true"`/`"yes"` 误选。
+- `cmd/server.rs` 拆出 `pub(crate) fn grpc_tls_failfast_message` 与 `pub(crate) fn rest_tls_failfast_message` 两个可测试 helper，避免 `cmd::server::run` 启动逻辑集成测试成本。
+- 新增 12 个 PR-4.1 单元测试（`kms-core/production_safety.rs` 5 个 + `cmd/server.rs::pr41_failfast_tests` 7 个），覆盖所有 helper 分支与 REST 两条互斥错误消息。
+- 新增 `discuss/40-pr-4-1-spec.md` 完整 SPEC。
+
 ### Known Limitations（本项目固有，不在本版本修复范围）
 
 - gRPC over TLCP 未实现（TLCP 协议无 ALPN，gRPC 需要 h2）

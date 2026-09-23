@@ -19,6 +19,7 @@ This directory contains functional requirements for gm-kms, each document in Chi
 | **F4-pbac.md** | 基于策略的访问控制 / Policy-Based Access Control | ✅ 已实现 Implemented |
 | **F5-audit.md** | 审计日志 / Audit Logging | ✅ 已实现 Implemented |
 | **N1-security.md** | 安全控制要求 / Security Requirements | ✅ 已实现 Implemented |
+| **N2-tls-failfast.md** | 启动 TLS 失败即停 / TLS Startup Fail-Fast | ✅ 已实现 Implemented |
 | **sm2-kex-requirement.md** | SM2 密钥交换需求 / SM2 Key Exchange | ✅ 已实现 Implemented |
 
 ## 文档结构 / Document Structure

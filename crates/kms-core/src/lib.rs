@@ -16,6 +16,7 @@ pub mod key;
 pub mod key_io;
 pub mod memory_protection;
 pub mod policy;
+pub mod production_safety;
 pub mod sanitize;
 pub mod secret_rotation;
 pub mod self_test;
