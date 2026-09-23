@@ -78,7 +78,13 @@ async fn maybe_create_rate_limiter(
     .await
     {
         Ok(conn) => {
-            let tls_config = kms_core::BackendTlsConfig::from_env();
+            // PR-4.4: BackendTlsConfig::from_env now returns
+            // `anyhow::Result`; fail-fast on bad config (no_verify
+            // in production, missing CA cert path, etc.).
+            let tls_config = kms_core::BackendTlsConfig::from_env().unwrap_or_else(|e| {
+                tracing::error!("Bad DB/Redis TLS config: {}", e);
+                std::process::exit(1);
+            });
             if tls_config.is_tls_enabled() {
                 tracing::info!(mode = %tls_config.mode, "Redis rate limiter using TLS");
             }
@@ -117,7 +123,10 @@ async fn maybe_create_quota_tracker(
     .await
     {
         Ok(conn) => {
-            let tls_config = kms_core::BackendTlsConfig::from_env();
+            let tls_config = kms_core::BackendTlsConfig::from_env().unwrap_or_else(|e| {
+                tracing::error!("Bad DB/Redis TLS config: {}", e);
+                std::process::exit(1);
+            });
             if tls_config.is_tls_enabled() {
                 tracing::info!(mode = %tls_config.mode, "Redis quota tracker using TLS");
             }
@@ -136,7 +145,11 @@ async fn maybe_create_mfa_pool(
     database_config: &crate::cmd::config::DatabaseConfig,
 ) -> Option<kms_api::sqlx::PgPool> {
     let url = database_config.connection_url();
-    let tls_config = kms_core::BackendTlsConfig::from_env();
+    // PR-4.4: same fail-fast unwrap for the MFA pool.
+    let tls_config = kms_core::BackendTlsConfig::from_env().unwrap_or_else(|e| {
+        tracing::error!("Bad DB/Redis TLS config: {}", e);
+        std::process::exit(1);
+    });
     let url = tls_config.build_postgres_url(&url);
 
     if tls_config.is_tls_enabled() {

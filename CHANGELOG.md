@@ -65,6 +65,18 @@ All notable changes to gm-kms will be documented in this file.
 
 ### Security
 
+- **DB / Redis TLS production-safety fail-fast**（PR-4.4 / P1-4）。`BackendTlsConfig::from_env` 由 `Self` 改为 `anyhow::Result<Self>`，三重生产安全门：
+  - `KMS_DB_TLS_MODE=no_verify` 在生产环境 fail-fast（不加 `KMS_DEV_MODE=1` / `KMS_ALLOW_INSECURE=1`）—— MITM 攻击者可伪造证书
+  - `KMS_DB_TLS_MODE=disabled` 在生产环境 fail-fast——明文数据库流量
+  - `verify_ca` 模式要求 `KMS_DB_TLS_CA_CERT` 非空；否则启动期拒绝（不等首连接才失败）
+  - 复用 PR-4.1 的 `kms_core::production_safety::is_insecure_opted_in()` helper
+- `src/cmd/server.rs` 与 `crates/kms-keystore/src/{repository,rate_limiter}.rs` 的 4 个 caller 同步升级为 `unwrap_or_else(|e| std::process::exit(1))` 以保证 fail-fast 契约。
+- 新增 14 个 `pr44_db_tls_defaults_tests` 单元测试覆盖所有分支（默认 / disabled / no_verify / 大小写 / 空路径 / opt-in）。
+- 新增双语需求文档 `docs/requirements/N3-db-redis-tls-defaults.md` 登记在 requirements 索引。
+- 现有 296 个 kms-core + 94 个 kms-keystore 单元测试继续通过。
+
+### Security (PR-4.1 / P1-3)
+
 - **`src/cmd/server.rs`：gRPC / REST 生产启动 TLS fail-fast**（PR-4.1 / P1-3）。仿照 KEK fail-fast 模式（`kms-keystore/src/postgres.rs:92-95`），默认启动需 TLS；仅 `KMS_ALLOW_INSECURE=1`（或测试 `KMS_DEV_MODE=1`）明确放行才使用明文。REST 两个分支（`rest_tls_config = None` 与 `rest_tls.enabled = false`）独立报错。
 - 新增 `kms_core::production_safety` 模块：`is_allow_insecure()`、`is_dev_mode()`、`is_insecure_opted_in()` 三个 helper；值严格为字符串 `"1"`，避免 `"true"`/`"yes"` 误选。
 - `cmd/server.rs` 拆出 `pub(crate) fn grpc_tls_failfast_message` 与 `pub(crate) fn rest_tls_failfast_message` 两个可测试 helper，避免 `cmd::server::run` 启动逻辑集成测试成本。

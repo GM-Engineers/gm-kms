@@ -81,44 +81,127 @@ impl BackendTlsConfig {
         self.client_cert_path.is_some() && self.client_key_path.is_some()
     }
 
-    /// Load from environment variables with production-safety check.
+    /// Load from environment variables with production-safety check
+    /// (PR-4.4 / P1-4).
     ///
-    /// In non-dev mode, refuses `Disabled` TLS and falls back to `VerifyCa` with a warning.
-    pub fn from_env() -> Self {
-        let is_dev = std::env::var("KMS_DEV_MODE").as_deref() == Ok("1");
+    /// Pre-PR-4.4 behavior: `verify_ca` was the default for unknown
+    /// values, but `no_verify` was accepted unconditionally in
+    /// production (silent security downgrade) and `disabled` was
+    /// silently demoted to `verify_ca` if not in dev mode (which
+    /// works only if a CA cert path is set, otherwise fails at first
+    /// connect rather than at startup).
+    ///
+    /// PR-4.4 fixes all three:
+    ///
+    /// 1. `verify_ca` is the production-safe default (same as pre-PR-4.4
+    ///    for unknown values; PR-4.4 extends this to ALL non-opted-in
+    ///    cases including empty / unset).
+    /// 2. `no_verify` requires `KMS_DEV_MODE=1` or
+    ///    `KMS_ALLOW_INSECURE=1` (otherwise fail-fast). Without
+    ///    verification, TLS gives encryption but no authentication —
+    ///    a MITM attacker can present any cert.
+    /// 3. `disabled` similarly requires one of the opt-in flags.
+    /// 4. `verify_ca` REQUIRES a non-empty CA cert path; missing
+    ///    cert path produces an error rather than silently
+    ///    constructing a `VerifyCa` config that will fail at first
+    ///    connection.
+    ///
+    /// # Returns
+    /// - `Ok(Self)` — production-safe config.
+    /// - `Err(anyhow::Error)` — fail-fast condition tripped; the
+    ///   caller MUST bubble this up to fail the KMS startup. We use
+    ///   `anyhow::Error` rather than defining a dedicated error
+    ///   type because this is a startup-time invariant violation,
+    ///   not a runtime per-operation error.
+    pub fn from_env() -> anyhow::Result<Self> {
+        use crate::production_safety;
+
         let mode_str = std::env::var("KMS_DB_TLS_MODE")
             .unwrap_or_default()
             .to_lowercase();
 
-        let mode = match mode_str.as_str() {
+        // Pre-resolve the candidate TlsMode (does not yet consider
+        // dev-mode / opt-in semantics; just maps the env-var value
+        // to the enum).
+        let candidate_mode = match mode_str.as_str() {
+            "" => TlsMode::VerifyCa, // PR-4.4: explicit default (was: dev-mode demote)
             "verify_ca" => TlsMode::VerifyCa,
             "no_verify" => TlsMode::NoVerify,
-            "disabled" | "" if is_dev => {
-                tracing::warn!("KMS_DEV_MODE=1: TLS disabled for database connection");
-                TlsMode::Disabled
-            }
-            "disabled" | "" => {
+            "disabled" => TlsMode::Disabled,
+            unknown => {
                 tracing::warn!(
-                    "KMS_DB_TLS_MODE not set or 'disabled' in non-dev mode — \
-                     defaulting to VerifyCa for production safety"
-                );
-                TlsMode::VerifyCa
-            }
-            _ => {
-                tracing::warn!(
-                    mode = %mode_str,
-                    "Unknown KMS_DB_TLS_MODE — defaulting to VerifyCa"
+                    mode = %unknown,
+                    "Unknown KMS_DB_TLS_MODE — defaulting to verify_ca"
                 );
                 TlsMode::VerifyCa
             }
         };
 
-        Self {
-            mode,
-            ca_cert_path: std::env::var("KMS_DB_TLS_CA_CERT").ok(),
-            client_cert_path: std::env::var("KMS_DB_TLS_CLIENT_CERT").ok(),
-            client_key_path: std::env::var("KMS_DB_TLS_CLIENT_KEY").ok(),
+        // PR-4.4 production-safety gate. Only `KMS_DEV_MODE=1`
+        // (test / embedded-integration) or `KMS_ALLOW_INSECURE=1`
+        // (explicit production opt-in) can accept `Disabled` or
+        // `NoVerify`. Anything else fail-fasts.
+        let opted_in = production_safety::is_insecure_opted_in();
+        let resolved_mode = match candidate_mode {
+            TlsMode::VerifyCa => TlsMode::VerifyCa,
+            TlsMode::NoVerify if !opted_in => {
+                anyhow::bail!(
+                    "KMS_DB_TLS_MODE=no_verify rejected in production; \
+                     set KMS_ALLOW_INSECURE=1 (or KMS_DEV_MODE=1) to opt in. \
+                     no_verify enables an MITM-attackable connection."
+                );
+            }
+            TlsMode::Disabled if !opted_in => {
+                anyhow::bail!(
+                    "KMS_DB_TLS_MODE=disabled rejected in production; \
+                     set KMS_ALLOW_INSECURE=1 (or KMS_DEV_MODE=1) to opt in. \
+                     Disabled means plaintext database traffic."
+                );
+            }
+            TlsMode::NoVerify => {
+                tracing::warn!(
+                    "KMS_DB_TLS_MODE=no_verify with KMS_ALLOW_INSECURE / KMS_DEV_MODE opt-in: \
+                     database TLS will encrypt but NOT authenticate the server \
+                     (MITM-attackable)"
+                );
+                TlsMode::NoVerify
+            }
+            TlsMode::Disabled => {
+                tracing::warn!(
+                    "KMS_DB_TLS_MODE=disabled with KMS_ALLOW_INSECURE / KMS_DEV_MODE opt-in: \
+                     database traffic will be plaintext"
+                );
+                TlsMode::Disabled
+            }
+        };
+
+        // VerifyCa MUST have a CA cert path. Without it, the
+        // connection would fail at first handshake; better to
+        // fail-fast at startup.
+        let ca_cert_path = std::env::var("KMS_DB_TLS_CA_CERT").ok();
+        if matches!(resolved_mode, TlsMode::VerifyCa)
+            && ca_cert_path.as_deref().is_none_or(str::is_empty)
+        {
+            anyhow::bail!(
+                "KMS_DB_TLS_MODE=verify_ca requires KMS_DB_TLS_CA_CERT to be set \
+                 to a non-empty CA certificate path"
+            );
         }
+
+        // Build the config. If VerifyCa is in effect, we already
+        // validated ca_cert_path is non-empty; unwrap is safe.
+        let config = if matches!(resolved_mode, TlsMode::VerifyCa) {
+            Self::verify_ca(ca_cert_path.unwrap_or_default())
+        } else {
+            Self {
+                mode: resolved_mode,
+                ca_cert_path: std::env::var("KMS_DB_TLS_CA_CERT").ok(),
+                client_cert_path: std::env::var("KMS_DB_TLS_CLIENT_CERT").ok(),
+                client_key_path: std::env::var("KMS_DB_TLS_CLIENT_KEY").ok(),
+            }
+        };
+
+        Ok(config)
     }
 
     /// Build a PostgreSQL connection string with TLS parameters.
@@ -234,5 +317,313 @@ mod tests {
         assert_eq!(format!("{}", TlsMode::Disabled), "disabled");
         assert_eq!(format!("{}", TlsMode::VerifyCa), "verify_ca");
         assert_eq!(format!("{}", TlsMode::NoVerify), "no_verify");
+    }
+}
+
+// ============================================================================
+// PR-4.4 (P1-4) unit tests: production-safety fail-fast for DB/Redis TLS
+// ============================================================================
+//
+// These tests lock in the production-safety gate added in PR-4.4:
+// `no_verify` and `disabled` modes are rejected unless one of the
+// production opt-in flags (`KMS_DEV_MODE=1` or `KMS_ALLOW_INSECURE=1`)
+// is set. `verify_ca` requires a non-empty CA cert path. The
+// pre-PR-4.4 silent demotion to `verify_ca` for unset / disabled
+// in non-dev mode is removed (it was misleading operators who
+// thought they had `disabled` but actually had an empty
+// `verify_ca` config).
+
+#[cfg(test)]
+mod pr44_db_tls_defaults_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    // Same env-var serialization pattern as PR-4.1 / PR-4.2:
+    // `from_env` reads three env vars (KMS_DB_TLS_MODE +
+    // KMS_DB_TLS_CA_CERT + KMS_DEV_MODE / KMS_ALLOW_INSECURE);
+    // serial mutation under a Mutex prevents parallel tests
+    // trampling each other.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn with_env<T>(vars: &[(&str, Option<&str>)], f: impl FnOnce() -> T) -> T {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let prev: Vec<(&str, Option<String>)> = vars
+            .iter()
+            .map(|(k, _)| (*k, std::env::var(k).ok()))
+            .collect();
+        // SAFETY: `ENV_LOCK` serializes access. We restore the
+        // previous values before returning.
+        unsafe {
+            for (k, v) in vars {
+                match v {
+                    Some(s) => std::env::set_var(k, s),
+                    None => std::env::remove_var(k),
+                }
+            }
+            let result = f();
+            for (k, prev_v) in prev {
+                match prev_v {
+                    Some(v) => std::env::set_var(k, v),
+                    None => std::env::remove_var(k),
+                }
+            }
+            result
+        }
+    }
+
+    fn unset_production_env() -> Vec<(&'static str, Option<&'static str>)> {
+        vec![
+            ("KMS_DB_TLS_MODE", None),
+            ("KMS_DB_TLS_CA_CERT", None),
+            ("KMS_DB_TLS_CLIENT_CERT", None),
+            ("KMS_DB_TLS_CLIENT_KEY", None),
+            ("KMS_DEV_MODE", None),
+            ("KMS_ALLOW_INSECURE", None),
+        ]
+    }
+
+    #[test]
+    fn pr44_db_tls_default_unset_production() {
+        // Unset all relevant env vars; expect VerifyCa default
+        // (which then fails because CA cert is also missing — the
+        // exact behavior PR-4.4 enforces).
+        with_env(&unset_production_env(), || {
+            let result = BackendTlsConfig::from_env();
+            assert!(
+                result.is_err(),
+                "verify_ca default without CA cert must fail-fast"
+            );
+            let err = result.unwrap_err().to_string();
+            assert!(
+                err.contains("KMS_DB_TLS_CA_CERT"),
+                "error must mention missing CA cert; got: {}",
+                err
+            );
+        });
+    }
+
+    #[test]
+    fn pr44_db_tls_verify_ca_default_with_cert() {
+        with_env(
+            &{
+                let mut v = unset_production_env();
+                v[1] = ("KMS_DB_TLS_CA_CERT", Some("/etc/ssl/ca.pem"));
+                v
+            },
+            || {
+                let config = BackendTlsConfig::from_env().expect("verify_ca with cert should work");
+                assert_eq!(config.mode, TlsMode::VerifyCa);
+                assert_eq!(config.ca_cert_path.as_deref(), Some("/etc/ssl/ca.pem"));
+            },
+        );
+    }
+
+    #[test]
+    fn pr44_db_tls_disabled_in_dev_mode_ok() {
+        with_env(
+            &{
+                let mut v = unset_production_env();
+                v[0] = ("KMS_DB_TLS_MODE", Some("disabled"));
+                v[4] = ("KMS_DEV_MODE", Some("1"));
+                v
+            },
+            || {
+                let config = BackendTlsConfig::from_env().expect("dev mode allows disabled");
+                assert_eq!(config.mode, TlsMode::Disabled);
+            },
+        );
+    }
+
+    #[test]
+    fn pr44_db_tls_disabled_in_prod_no_opt_in_rejected() {
+        with_env(
+            &{
+                let mut v = unset_production_env();
+                v[0] = ("KMS_DB_TLS_MODE", Some("disabled"));
+                v
+            },
+            || {
+                let err = BackendTlsConfig::from_env()
+                    .expect_err("disabled in production must fail-fast");
+                assert!(err.to_string().contains("rejected in production"));
+            },
+        );
+    }
+
+    #[test]
+    fn pr44_db_tls_disabled_in_prod_with_allow_insecure_ok() {
+        with_env(
+            &{
+                let mut v = unset_production_env();
+                v[0] = ("KMS_DB_TLS_MODE", Some("disabled"));
+                v[5] = ("KMS_ALLOW_INSECURE", Some("1"));
+                v
+            },
+            || {
+                let config =
+                    BackendTlsConfig::from_env().expect("KMS_ALLOW_INSECURE=1 opts in to disabled");
+                assert_eq!(config.mode, TlsMode::Disabled);
+            },
+        );
+    }
+
+    #[test]
+    fn pr44_db_tls_no_verify_in_prod_rejected() {
+        with_env(
+            &{
+                let mut v = unset_production_env();
+                v[0] = ("KMS_DB_TLS_MODE", Some("no_verify"));
+                v[1] = ("KMS_DB_TLS_CA_CERT", Some("/etc/ssl/ca.pem"));
+                v
+            },
+            || {
+                let err = BackendTlsConfig::from_env()
+                    .expect_err("no_verify in production must fail-fast (MITM risk)");
+                assert!(err.to_string().contains("no_verify rejected"));
+            },
+        );
+    }
+
+    #[test]
+    fn pr44_db_tls_no_verify_with_allow_insecure_ok() {
+        with_env(
+            &{
+                let mut v = unset_production_env();
+                v[0] = ("KMS_DB_TLS_MODE", Some("no_verify"));
+                v[1] = ("KMS_DB_TLS_CA_CERT", Some("/etc/ssl/ca.pem"));
+                v[5] = ("KMS_ALLOW_INSECURE", Some("1"));
+                v
+            },
+            || {
+                let config = BackendTlsConfig::from_env()
+                    .expect("KMS_ALLOW_INSECURE=1 opts in to no_verify");
+                assert_eq!(config.mode, TlsMode::NoVerify);
+            },
+        );
+    }
+
+    #[test]
+    fn pr44_db_tls_no_verify_in_dev_mode_ok() {
+        with_env(
+            &{
+                let mut v = unset_production_env();
+                v[0] = ("KMS_DB_TLS_MODE", Some("no_verify"));
+                v[1] = ("KMS_DB_TLS_CA_CERT", Some("/etc/ssl/ca.pem"));
+                v[4] = ("KMS_DEV_MODE", Some("1"));
+                v
+            },
+            || {
+                let config = BackendTlsConfig::from_env().expect("dev mode allows no_verify");
+                assert_eq!(config.mode, TlsMode::NoVerify);
+            },
+        );
+    }
+
+    #[test]
+    fn pr44_db_tls_verify_ca_explicit_with_cert() {
+        with_env(
+            &{
+                let mut v = unset_production_env();
+                v[0] = ("KMS_DB_TLS_MODE", Some("verify_ca"));
+                v[1] = ("KMS_DB_TLS_CA_CERT", Some("/etc/ssl/ca.pem"));
+                v
+            },
+            || {
+                let config = BackendTlsConfig::from_env().expect("explicit verify_ca with cert");
+                assert_eq!(config.mode, TlsMode::VerifyCa);
+            },
+        );
+    }
+
+    #[test]
+    fn pr44_db_tls_verify_ca_explicit_no_cert_rejected() {
+        with_env(
+            &{
+                let mut v = unset_production_env();
+                v[0] = ("KMS_DB_TLS_MODE", Some("verify_ca"));
+                v
+            },
+            || {
+                let err = BackendTlsConfig::from_env()
+                    .expect_err("verify_ca without CA cert must fail-fast");
+                assert!(err.to_string().contains("KMS_DB_TLS_CA_CERT"));
+            },
+        );
+    }
+
+    #[test]
+    fn pr44_db_tls_unknown_value_defaults_to_verify_ca() {
+        // Unknown value: same as before PR-4.4 — defaults to
+        // verify_ca (with the same CA-cert fail-fast behavior).
+        with_env(
+            &{
+                let mut v = unset_production_env();
+                v[0] = ("KMS_DB_TLS_MODE", Some("garbage"));
+                v[1] = ("KMS_DB_TLS_CA_CERT", Some("/etc/ssl/ca.pem"));
+                v
+            },
+            || {
+                let config = BackendTlsConfig::from_env()
+                    .expect("unknown value defaults to verify_ca (with cert)");
+                assert_eq!(config.mode, TlsMode::VerifyCa);
+            },
+        );
+    }
+
+    #[test]
+    fn pr44_db_tls_case_insensitive() {
+        // Verify_ca / VERIFY_CA / VerifyCa all accepted.
+        for val in &["verify_ca", "VERIFY_CA", "VerifyCa"] {
+            with_env(
+                &{
+                    let mut v = unset_production_env();
+                    v[0] = ("KMS_DB_TLS_MODE", Some(*val));
+                    v[1] = ("KMS_DB_TLS_CA_CERT", Some("/etc/ssl/ca.pem"));
+                    v
+                },
+                || {
+                    let config = BackendTlsConfig::from_env()
+                        .unwrap_or_else(|e| panic!("value {:?} must work: {}", val, e));
+                    assert_eq!(config.mode, TlsMode::VerifyCa);
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn pr44_db_tls_empty_path_set() {
+        // Empty string is treated the same as unset for the
+        // opt-in flags (matches PR-4.1 production_safety behavior).
+        with_env(
+            &{
+                let mut v = unset_production_env();
+                v[5] = ("KMS_ALLOW_INSECURE", Some(""));
+                v[0] = ("KMS_DB_TLS_MODE", Some("disabled"));
+                v
+            },
+            || {
+                let err = BackendTlsConfig::from_env()
+                    .expect_err("empty KMS_ALLOW_INSECURE must NOT opt in");
+                assert!(err.to_string().contains("rejected in production"));
+            },
+        );
+    }
+
+    #[test]
+    fn pr44_db_tls_verify_ca_empty_ca_cert_rejected() {
+        // KMS_DB_TLS_CA_CERT="" must be treated like unset —
+        // verify_ca still requires a non-empty path.
+        with_env(
+            &{
+                let mut v = unset_production_env();
+                v[1] = ("KMS_DB_TLS_CA_CERT", Some(""));
+                v
+            },
+            || {
+                let err =
+                    BackendTlsConfig::from_env().expect_err("empty CA cert path must fail-fast");
+                assert!(err.to_string().contains("KMS_DB_TLS_CA_CERT"));
+            },
+        );
     }
 }
