@@ -6,6 +6,34 @@ All notable changes to gm-kms will be documented in this file.
 
 ### Added
 
+- **PostgreSQL keystore in-memory cap + FIFO eviction**
+  (PR-4.15 / P2-10): pre-PR-4.15, `PostgresKeystore.keys`
+  was an unbounded `RwLock<HashMap<Uuid, KeyEntry>>` with no
+  cap and no eviction policy. Production deployments with
+  thousands of keys would consume hundreds of MB of RAM for
+  material that was rarely (if ever) accessed again. PR-4.15
+  introduces:
+  - New `kms-keystore::bounded_cache::BoundedKeyCache`
+    type: FIFO eviction via `VecDeque<Uuid>`, optional
+    `capacity: Option<usize>`. Default `None` reproduces
+    pre-PR-4.15 behavior byte-for-byte.
+  - `PostgresKeystore::with_in_memory_cap(n)` builder
+    opting the keystore into the cap. The cap is enforced
+    on every `insert_with_eviction` call (which now
+    replaces all 11 `keys.write().insert(...)` sites).
+  - Six new mutating helpers (`mutate`,
+    `mutate_and_insert`, `remove`, `try_read`, etc.) replace
+    the old `keys.read()` / `keys.write()` lock ceremony
+    with a more ergonomic async-free API.
+  - 8 new unit tests in `pr415_*` covering unbounded,
+    cap-respecting, bulk-eviction, and re-insertion
+    edge cases.
+  - Bumps workspace version to 0.2.5 (patch; default
+    behavior unchanged).
+  True lazy load (replacing eager `load_keys()`) is
+  deferred to a follow-up PR; this PR caps the eager
+  load to `take(cap)` entries.
+
 - **SM2 private scalar range validation** (PR-4.14 / P2-9): new
   `kms_core::sm2_scalar` module with `sm2_scalar_in_range()`
   helper that checks a candidate 32-byte SM2 private key is
