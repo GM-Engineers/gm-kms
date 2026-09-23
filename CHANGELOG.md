@@ -6,6 +6,27 @@ All notable changes to gm-kms will be documented in this file.
 
 ### Added
 
+- **WORM audit HMAC signing-key path isolation** (PR-4.11 / P2-6):
+  the WORM-backed signed-audit logger (`kms-audit::worm_logger`)
+  now allows operators to store the HMAC signing key at a path
+  separate from the WORM log. Pre-PR-4.11, the key was a sibling
+  file (`<worm_path>.signing_key`); a compromised process could
+  replace both the log AND the key, defeating WORM's integrity
+  guarantee. PR-4.11 adds:
+  - `WormSignedAuditConfig::with_signing_key_path(PathBuf)`
+    builder;
+  - `WormSignedAuditConfig::load_or_create_with_key_path(
+    worm_path, key_path, seq)` factory;
+  - `WormSignedAuditConfig::effective_signing_key_path()`
+    accessor (single source of truth);
+  - the `signing_key_path: Option<PathBuf>` field on the config
+    struct (`None` preserves pre-PR-4.11 sibling-path behavior).
+  Six unit tests in `pr411_signing_key_isolation_tests` cover
+  default-behavior preservation, custom-path override, 0600
+  enforcement, and existing-key loading. KEK integration
+  (`KekSource` wrapping the HMAC key) is deferred to PR-4.12
+  to keep this PR within kms-audit crate only.
+
 - **KEK source layering** (PR-4.7 / P1-7 阶段 1/3): new
   `kms_core::kek_source` module with `KekSource` enum (Env / File
   / Missing). Operators can now load the master KEK from either
