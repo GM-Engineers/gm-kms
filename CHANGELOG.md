@@ -6,6 +6,29 @@ All notable changes to gm-kms will be documented in this file.
 
 ### Added
 
+- **`PostgresKeystore` cache-miss lazy load** (PR-4.17 /
+  PR-4.15 follow-up): `verify_tenant` now falls back to a
+  DB round-trip via the new `load_entry_from_db` helper
+  when the bounded in-memory cache misses. Before PR-4.17,
+  keys beyond `with_in_memory_cap(n)` were silently
+  unreachable (only the first `n` keys loaded at startup
+  worked). After PR-4.17 the cap controls **memory
+  usage**, not **key access** — keys beyond the cap are
+  pulled in on first use and cached via
+  `BoundedKeyCache::insert_with_eviction` (which honours
+  the FIFO cap automatically). Tenant isolation
+  (PR-1.2 conflation) is preserved: lazy-load + wrong
+  tenant still returns `Error::KeyNotFound`. KEK-rotation
+  failures during lazy load are surfaced as
+  `Error::Internal` with a loud comment pointing operators
+  at the rotation. Four new tests: 3 live-DB `#[ignore]`
+  integration tests (`pr417_lazy_load_*`) cover
+  cap-beyond / unknown-id / wrong-tenant scenarios; 1 unit
+  smoke test (`pr417_helper_is_inherent_method`) verifies
+  the helper is reachable via inherent impl (no public
+  API change). Bumps the workspace to 0.2.6 (patch; no
+  API change).
+
 - **PostgreSQL keystore in-memory cap + FIFO eviction**
   (PR-4.15 / P2-10): pre-PR-4.15, `PostgresKeystore.keys`
   was an unbounded `RwLock<HashMap<Uuid, KeyEntry>>` with no
