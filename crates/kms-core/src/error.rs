@@ -55,6 +55,13 @@ pub enum Error {
     #[error("invalid signature")]
     InvalidSignature,
 
+    /// PR-4.14 / P2-9: SM2 private scalar is not in the
+    /// valid `[1, n-1]` range. The wrapped string carries a
+    /// human-readable reason (e.g. "scalar must be 32 bytes",
+    /// "scalar must be >= 1", "scalar must be < n").
+    #[error("invalid SM2 private scalar: {0}")]
+    InvalidSm2Scalar(String),
+
     #[error("key operation not allowed: {0}")]
     KeyOperationNotAllowed(String),
 

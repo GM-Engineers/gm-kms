@@ -6,6 +6,28 @@ All notable changes to gm-kms will be documented in this file.
 
 ### Added
 
+- **SM2 private scalar range validation** (PR-4.14 / P2-9): new
+  `kms_core::sm2_scalar` module with `sm2_scalar_in_range()`
+  helper that checks a candidate 32-byte SM2 private key is
+  in `[1, n-1]` per GB/T 32918.1-2016 §5.1.4. Pre-PR-4.14
+  the software keystore's `generate_sm2_key()` generated raw
+  32 random bytes without range validation, exposing a
+  (theoretical) attack surface against upstream scalar
+  generation. PR-4.14 routes SM2 key generation through the
+  canonical `Sm2KeyPair::generate()` path (which already
+  enforces `[1, n-1]` via rustcrypto `SecretKey::random`)
+  and adds a defense-in-depth `sm2_scalar_in_range` re-check.
+  New `KmsError::InvalidSm2Scalar(String)` variant surfaces
+  any future upstream regression as a typed error. The
+  `SM2_CURVE_ORDER_N` constant is exported and locked by a
+  unit test that compares against the GB/T 32918.1-2016
+  reference value. Nine new unit tests in
+  `pr414_sm2_scalar_tests` cover the boundary conditions
+  (accept 1, accept n-1, reject 0, reject n, reject n+1,
+  reject wrong lengths, reject MSB-overflow). Bumps
+  workspace version to 0.2.4 (patch; new public surface is
+  additive).
+
 - **WORM audit HMAC signing-key path isolation** (PR-4.11 / P2-6):
   the WORM-backed signed-audit logger (`kms-audit::worm_logger`)
   now allows operators to store the HMAC signing key at a path

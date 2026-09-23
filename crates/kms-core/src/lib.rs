@@ -22,6 +22,7 @@ pub mod sanitize;
 pub mod secret_rotation;
 pub mod self_test;
 pub mod shamir;
+pub mod sm2_scalar;
 pub mod sm9_key_rotation;
 pub mod sm9_master_key;
 pub mod tls_config;

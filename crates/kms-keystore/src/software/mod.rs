@@ -9,6 +9,7 @@
 
 use async_trait::async_trait;
 use chrono::Utc;
+use gm_crypto::sm2::Sm2KeyPair;
 use gm_crypto::sm2_kex::{KexSession, Sm2KexMessage, Sm2KexResult};
 use kms_core::{
     BackendType, Result,
@@ -16,6 +17,7 @@ use kms_core::{
     dh::SharedSecret,
     error::Error,
     key::{Ciphertext, DestructionProof, KeyMeta, KeySpec, KeyStatus, Signature},
+    sm2_scalar::sm2_scalar_in_range,
 };
 use parking_lot::RwLock;
 use rand::Rng;
@@ -124,11 +126,24 @@ impl SoftwareKeystore {
         key
     }
 
-    fn generate_sm2_key(&self) -> Vec<u8> {
-        // SM2 private key is 32 bytes
-        let mut key = vec![0u8; 32];
-        rand::rng().fill_bytes(&mut key);
-        key
+    fn generate_sm2_key(&self) -> Result<Vec<u8>> {
+        // PR-4.14 / P2-9: use the canonical SM2 key generation
+        // path (`Sm2KeyPair::generate`), which already enforces
+        // `[1, n-1]` via the underlying rustcrypto
+        // `SecretKey::<Sm2>::random`. We then re-validate the
+        // produced bytes with `kms_core::sm2_scalar_in_range`
+        // as defense-in-depth so any future upstream regression
+        // surfaces as a typed `KmsError::InvalidSm2Scalar` here
+        // instead of silently storing an out-of-range scalar.
+        let key_pair = Sm2KeyPair::generate()
+            .map_err(|e| Error::SignatureFailed(format!("Sm2KeyPair::generate failed: {e}")))?;
+        let bytes = key_pair.private_key_bytes();
+        sm2_scalar_in_range(&bytes).map_err(|e| {
+            Error::SignatureFailed(format!(
+                "Sm2KeyPair::generate produced out-of-range scalar: {e}"
+            ))
+        })?;
+        Ok(bytes)
     }
 
     /// Derive shared secret using ECDH with P-256 curve
@@ -691,7 +706,12 @@ impl super::KeystoreBackend for SoftwareKeystore {
                 self.generate_ed25519_key()
             }
             KeySpec::Sm4 => self.generate_sm4_key(),
-            KeySpec::Sm2 => self.generate_sm2_key(),
+            // PR-4.14 / P2-9: SM2 key generation now returns
+            // `Result<Vec<u8>>` because it must surface any
+            // upstream scalar-range regression as a typed
+            // `KmsError::InvalidSm2Scalar`. `?` propagates
+            // the error up to the caller of `generate_key`.
+            KeySpec::Sm2 => self.generate_sm2_key()?,
             KeySpec::Sm9Signing | KeySpec::Sm9Encryption => {
                 // PR-4.5 (P1-5): the pre-PR-4.5 code stored
                 // `Vec::new()` here and returned `Ok(KeyMeta)`,
@@ -1268,7 +1288,9 @@ impl super::KeystoreBackend for SoftwareKeystore {
         let new_material = match entry.meta.spec {
             KeySpec::Aes256Gcm | KeySpec::HmacSha256 => self.generate_aes_key(),
             KeySpec::Sm4 => self.generate_sm4_key(),
-            KeySpec::Sm2 => self.generate_sm2_key(),
+            // PR-4.14 / P2-9: same Result-propagation as in
+            // generate_key() above.
+            KeySpec::Sm2 => self.generate_sm2_key()?,
             KeySpec::Sm9Signing | KeySpec::Sm9Encryption => {
                 // SM9 rotation must be handled by Sm9RotationAdapter via
                 // RotationService::with_sm9_adapter(). Direct keystore
