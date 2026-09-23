@@ -693,9 +693,28 @@ impl super::KeystoreBackend for SoftwareKeystore {
             KeySpec::Sm4 => self.generate_sm4_key(),
             KeySpec::Sm2 => self.generate_sm2_key(),
             KeySpec::Sm9Signing | KeySpec::Sm9Encryption => {
-                // SM9 uses identity-based cryptography, material stores identity
-                // For now, we store the identity string as material
-                Vec::new()
+                // PR-4.5 (P1-5): the pre-PR-4.5 code stored
+                // `Vec::new()` here and returned `Ok(KeyMeta)`,
+                // which made the API lie about SM9 key creation
+                // success. Subsequent sign / encrypt / decrypt
+                // calls would all fail at runtime (the empty
+                // material isn't usable for any cryptographic
+                // operation), and callers had no way to
+                // distinguish "not yet implemented" from "I made
+                // a key but it doesn't work".
+                //
+                // The fix mirrors the `Rsa4096` arm above: return
+                // `Error::NotImplemented` with an actionable
+                // message. SM9 user-key derivation needs KMS-SM9
+                // master-key management infrastructure (HSM / KMS
+                // integration), which is a separate, larger
+                // workstream tracked independently of this PR.
+                return Err(Error::NotImplemented(
+                    "SM9 user-key generation requires KMS-SM9 master-key \
+                     management infrastructure (not yet integrated). \
+                     Use RSA / SM2 / SM4 / AES instead."
+                        .to_string(),
+                ));
             }
             KeySpec::Rsa4096 => {
                 return Err(Error::NotImplemented(
@@ -1480,3 +1499,84 @@ impl super::KeystoreBackend for SoftwareKeystore {
 
 #[cfg(test)]
 mod tests;
+
+// ============================================================================
+// PR-4.5 (P1-5) tests: SM9 generate_key must return NotImplemented
+// ============================================================================
+//
+// Pre-PR-4.5: KeySpec::Sm9Signing | Sm9Encryption generated a KeyMeta
+// with `material: Vec::new()`, making the API report key creation success
+// while every subsequent crypto op on the "key" would fail at
+// runtime. PR-4.5 replaces that with `Err(Error::NotImplemented)`,
+// mirroring the existing Rsa4096 branch.
+
+#[cfg(test)]
+mod pr45_sm9_generate_tests {
+    use super::*;
+    use crate::backend::KeystoreBackend;
+
+    #[tokio::test]
+    async fn pr45_sm9_signing_generate_returns_not_implemented() {
+        let ks = SoftwareKeystore::new();
+        let result = ks
+            .generate_key(&KeySpec::Sm9Signing, "sm9-signing-test", "tenant-A")
+            .await;
+        assert!(result.is_err(), "SM9 signing key generation must fail");
+        match result.unwrap_err() {
+            Error::NotImplemented(msg) => {
+                assert!(msg.contains("SM9"), "error must mention SM9; got: {msg}");
+            }
+            other => panic!("expected Error::NotImplemented, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn pr45_sm9_encryption_generate_returns_not_implemented() {
+        let ks = SoftwareKeystore::new();
+        let result = ks
+            .generate_key(&KeySpec::Sm9Encryption, "sm9-encryption-test", "tenant-A")
+            .await;
+        assert!(result.is_err(), "SM9 encryption key generation must fail");
+        match result.unwrap_err() {
+            Error::NotImplemented(msg) => {
+                assert!(msg.contains("SM9"), "error must mention SM9; got: {msg}");
+            }
+            other => panic!("expected Error::NotImplemented, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn pr45_rsa4096_generate_still_not_implemented() {
+        // Regression guard: the RSA branch must continue to return
+        // NotImplemented so the symmetric pattern isn't broken by
+        // a future refactor.
+        let ks = SoftwareKeystore::new();
+        let result = ks
+            .generate_key(&KeySpec::Rsa4096, "rsa4096-regression-test", "tenant-A")
+            .await;
+        assert!(result.is_err(), "RSA-4096 generation must still fail");
+        assert!(
+            matches!(result.unwrap_err(), Error::NotImplemented(_)),
+            "RSA-4096 must still be Error::NotImplemented"
+        );
+    }
+
+    #[tokio::test]
+    async fn pr45_sm2_generate_still_works() {
+        // Regression guard: the SM2 branch (which IS implemented)
+        // must continue to return Ok with non-empty material.
+        let ks = SoftwareKeystore::new();
+        let meta = ks
+            .generate_key(&KeySpec::Sm2, "sm2-regression-test", "tenant-A")
+            .await
+            .expect("SM2 generation must still work");
+        assert_eq!(meta.spec, KeySpec::Sm2);
+        // The keystore stores material; we can verify it's
+        // non-empty by attempting to fetch the entry directly.
+        let keys = ks.keys.read();
+        let entry = keys
+            .get(&meta.id)
+            .expect("key entry must exist after successful generation");
+        assert!(!entry.material.is_empty(), "SM2 material must be non-empty");
+    }
+}

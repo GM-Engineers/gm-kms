@@ -65,6 +65,12 @@ All notable changes to gm-kms will be documented in this file.
 
 ### Security
 
+- **SM9 key generation no longer reports success on empty material**（PR-4.5 / P1-5）。PR-4.5 之前 `SoftwareKeystore::generate_key(Sm9Signing | Sm9Encryption)` 静默返回 `Ok(KeyMeta)` 且 `material: Vec::new()`；后续所有 SM9 加解密调用都会在运行时失败，但 API 表面上报“创建成功”。PR-4.5 改为 `Err(Error::NotImplemented)`，与 RSA-4096 分支对称；rotate 路径仍保留原有的 `Error::KeyOperationNotAllowed` + Sm9RotationAdapter 提示。
+- 新增 4 个 `pr45_sm9_generate_tests` 单元测试（SM9 signing / encryption 返回 NotImplemented，RSA-4096 不变，SM2 仍正常）；并删除依赖该错误行为的旧 `test_sm9_direct_keystore_rotation_errors` 测试（该路径已无法从公开 API 到达）。
+- 新增双语需求文档 `docs/requirements/N4-sm9-generate-not-implemented.md` 登记在 requirements 索引。
+
+### Security (PR-4.4 / P1-4)
+
 - **DB / Redis TLS production-safety fail-fast**（PR-4.4 / P1-4）。`BackendTlsConfig::from_env` 由 `Self` 改为 `anyhow::Result<Self>`，三重生产安全门：
   - `KMS_DB_TLS_MODE=no_verify` 在生产环境 fail-fast（不加 `KMS_DEV_MODE=1` / `KMS_ALLOW_INSECURE=1`）—— MITM 攻击者可伪造证书
   - `KMS_DB_TLS_MODE=disabled` 在生产环境 fail-fast——明文数据库流量
