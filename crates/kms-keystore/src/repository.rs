@@ -96,8 +96,7 @@ impl PostgresKeyRepository {
         // PR-4.4: TLS config is now fallible; bubble up fail-fast errors.
         let tls_config = kms_core::BackendTlsConfig::from_env().map_err(|e| {
             sqlx::Error::Configuration(Box::new(std::io::Error::other(format!(
-                "DB TLS config fail-fast: {}",
-                e
+                "DB TLS config fail-fast: {e}"
             ))))
         })?;
         let url = tls_config.build_postgres_url(&database_url);

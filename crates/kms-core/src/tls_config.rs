@@ -396,8 +396,7 @@ mod pr44_db_tls_defaults_tests {
             let err = result.unwrap_err().to_string();
             assert!(
                 err.contains("KMS_DB_TLS_CA_CERT"),
-                "error must mention missing CA cert; got: {}",
-                err
+                "error must mention missing CA cert; got: {err}"
             );
         });
     }
@@ -583,7 +582,7 @@ mod pr44_db_tls_defaults_tests {
                 },
                 || {
                     let config = BackendTlsConfig::from_env()
-                        .unwrap_or_else(|e| panic!("value {:?} must work: {}", val, e));
+                        .unwrap_or_else(|e| panic!("value {val:?} must work: {e}"));
                     assert_eq!(config.mode, TlsMode::VerifyCa);
                 },
             );
