@@ -204,8 +204,13 @@ jobs:
 
       - name: Start KMS container
         run: |
+          # PR-4.1 (P1-3): KMS gRPC/REST listeners fail-fast without
+          # TLS unless `KMS_ALLOW_INSECURE=1` (or `KMS_DEV_MODE=1`)
+          # is set. The ZAP baseline scan runs against plaintext
+          # localhost so the container must opt in explicitly.
           docker run -d --name kms-target --network zap-net \
             -e KMS_API_KEY=zap-ci-test-key \
+            -e KMS_ALLOW_INSECURE=1 \
             -p 8080:8080 \
             gm-kms:latest \
             --server --config /app/config/kms-docker.toml
