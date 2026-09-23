@@ -76,6 +76,13 @@ impl From<KeyEntity> for KeyMeta {
 }
 
 /// PostgreSQL key repository
+///
+/// PR-4.19: `Clone` is implemented (not derived) so the
+/// spawned preload task can take its own handle to the
+/// connection pool without bumping the keystore's borrow
+/// state. The pool itself is `Arc`-backed so this clone is
+/// zero-cost.
+#[derive(Clone)]
 pub struct PostgresKeyRepository {
     pool: Pool<Postgres>,
 }

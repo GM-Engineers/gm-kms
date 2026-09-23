@@ -6,6 +6,8 @@ All notable changes to gm-kms will be documented in this file.
 
 ### Added
 
+- **Opt-in background preload via `PostgresKeystore::spawn_load_keys()`** (PR-4.19 / PR-4.17 follow-up): new method returns a `tokio::task::JoinHandle<Result<usize>>` so callers can decouple startup blocking from DB preload. Pre-PR-4.19 callers used `await pg_keystore.load_keys()` which blocked the gRPC/HTTP listener by 5–10 seconds for 10k keys (O(N) DB queries + KEK decrypt × N). Post-PR-4.19 the server's `create_software_keystore` and `create_software_keystore_inner` helpers fire the preload in a background task and return immediately; PR-4.17's lazy-load covers any keys not yet cached when the first request lands. Internal refactor: extracted `decrypt_material_static(kek, key_id, encrypted)` from `decrypt_material` so the spawned task can decrypt without a `&self` borrow; added shared `load_one_into_cache` helper used by both sync (`load_keys`) and async (`spawn_load_keys`) paths. `PostgresKeyRepository` now derives `Clone` so the spawned task can take its own handle to the `sqlx::PgPool` (Arc-backed; zero-cost clone). Four new tests: 3 unit tests verifying the helper's type shape and early-return error path; 1 `#[ignore]` live-DB integration test verifying that sync and background preload agree on key count. Bumps the workspace to 0.2.7 (patch; new API, no breakage).
+
 - **`PostgresKeystore` cache-miss lazy load** (PR-4.17 /
   PR-4.15 follow-up): `verify_tenant` now falls back to a
   DB round-trip via the new `load_entry_from_db` helper

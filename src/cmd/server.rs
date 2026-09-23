@@ -577,14 +577,28 @@ pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()
             let repo = PostgresKeyRepository::new(pool.clone());
             match PostgresKeystore::new(repo).await {
                 Ok(pg_keystore) => {
-                    match pg_keystore.load_keys().await {
-                        Ok(()) => {
-                            tracing::info!("Loaded keys from PostgreSQL");
+                    // PR-4.19: switch the eager-load to a
+                    // background task so the listen port
+                    // binds immediately. PR-4.17's lazy
+                    // load already covers any keys that
+                    // aren't yet in the cache when the
+                    // first request lands.
+                    let handle = pg_keystore.spawn_load_keys();
+                    tokio::spawn(async move {
+                        match handle.await {
+                            Ok(Ok(n)) => {
+                                tracing::info!(
+                                    "Background preload inserted {n} keys from PostgreSQL"
+                                );
+                            }
+                            Ok(Err(e)) => {
+                                tracing::warn!("Failed to load keys from PostgreSQL: {e}");
+                            }
+                            Err(join_err) => {
+                                tracing::error!("Preload task panicked: {join_err}");
+                            }
                         }
-                        Err(e) => {
-                            tracing::warn!("Failed to load keys from PostgreSQL: {}", e);
-                        }
-                    }
+                    });
                     Arc::new(pg_keystore)
                 }
                 Err(e) => {
@@ -616,7 +630,20 @@ pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()
             let repo = PostgresKeyRepository::new(pool.clone());
             match PostgresKeystore::new(repo).await {
                 Ok(pg_keystore) => {
-                    let _ = pg_keystore.load_keys().await;
+                    // PR-4.19: same background-preload
+                    // pattern as `create_software_keystore`
+                    // (no top-level `.await` on the
+                    // preload).
+                    let handle = pg_keystore.spawn_load_keys();
+                    tokio::spawn(async move {
+                        if let Err(e) = handle.await.ok().unwrap_or_else(|| {
+                            Err(kms_core::error::Error::Internal(
+                                "preload task panicked".into(),
+                            ))
+                        }) {
+                            tracing::warn!("Failed to load keys from PostgreSQL: {e}");
+                        }
+                    });
                     tracing::info!(
                         "PostgreSQL-backed keystore with Redis cache (keys survive restarts)"
                     );
