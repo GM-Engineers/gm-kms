@@ -208,9 +208,23 @@ jobs:
           # TLS unless `KMS_ALLOW_INSECURE=1` (or `KMS_DEV_MODE=1`)
           # is set. The ZAP baseline scan runs against plaintext
           # localhost so the container must opt in explicitly.
+          #
+          # PR-4.4 (P1-4): BackendTlsConfig::from_env reads DB / Redis
+          # TLS env vars unconditionally (it can't know whether DB /
+          # Redis is enabled without inspecting the call sites). The
+          # kms-docker.toml used here ships with redis=false,
+          # rate_limit=false, quota=false, no DATABASE_URL; in that
+          # state the DB / Redis TLS check still fires at startup
+          # (cmd/server.rs::maybe_create_mfa_pool +
+          # maybe_create_redis_rate_limiter + maybe_create_quota_tracker
+          # all eagerly call BackendTlsConfig::from_env). The
+          # KMS_DB_TLS_MODE=disabled + KMS_ALLOW_INSECURE=1 combo
+          # opts the in-memory ZAP fixture into plaintext DB
+          # listeners, mirroring the listener-side opt-in.
           docker run -d --name kms-target --network zap-net \
             -e KMS_API_KEY=zap-ci-test-key \
             -e KMS_ALLOW_INSECURE=1 \
+            -e KMS_DB_TLS_MODE=disabled \
             -p 8080:8080 \
             gm-kms:latest \
             --server --config /app/config/kms-docker.toml
