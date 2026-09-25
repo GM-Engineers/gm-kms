@@ -206,7 +206,7 @@ All notable changes to gm-kms will be documented in this file.
 - SM9 主密钥默认存内存，无 HSM/TPM 强制（`kms-hsm` 仍为 stub）
 - 无 bug bounty / 商业支持 / SLA
 
-## [0.2.1] — Unreleased
+## [0.2.1] — 2026-09-05
 
 ### Dependencies — upstream `gm` workspace 0.3.0
 
@@ -256,6 +256,8 @@ All notable changes to gm-kms will be documented in this file.
 - **文档修正**：明确 TLCP (GB/T 38636-2020) 当前为参考实现，位于独立 `gm-tlcp` crate 中维护。gm-kms REST/gRPC 入口当前走 TLS 1.3 + SM ciphers（通过 `gm-tls` 实现）。同步更新 README.md / CONTRIBUTING.md / kms.toml.example / `src/cmd/gm_listener.rs` 中“gm-kms 部署 TLCP”的不实描述。“gm” backend 配置实际为 TLS 1.3 + SM ciphers，未接入 TLCP 协议。
 
 ## [0.1.0] — 2026-08-27
+
+Initial public release.
 
 ### Added
 
@@ -308,7 +310,11 @@ All notable changes to gm-kms will be documented in this file.
   - `from_raw_parts` ordering: `.to_vec()` before `free()` — correct and safe
   - `verify_chain` startup: method present but not called at startup (not a P1 issue)
 
-## [0.1.0] — 2026-06-29
+## [Pre-0.1.0 development] — 2026-06-29
+
+Pre-release development snapshots folded into 0.1.0. Listed here for
+audit-trail purposes only; these items are NOT part of any published
+release and predate the v0.1.0 tag (18b32a3, 2026-08-27).
 
 ### Added
 
