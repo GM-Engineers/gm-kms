@@ -3,6 +3,7 @@
 //! Provides KeystoreBackend trait and SoftwareKeystore implementation.
 
 pub mod backend;
+pub mod bounded_cache;
 pub mod cache;
 pub mod postgres;
 pub mod rate_limiter;

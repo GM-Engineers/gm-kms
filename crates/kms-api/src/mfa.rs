@@ -8,6 +8,7 @@
 //! HashMap storage (the pre-existing behavior). This ensures backward
 //! compatibility but warns at creation that lockouts will not survive restarts.
 
+use kms_core::kek_source::{KekSource, KekSourceError};
 use kms_core::sanitize::sanitize_for_log;
 use kms_mfa::MfaStatus;
 use serde::Serialize;
@@ -123,30 +124,24 @@ impl MfaManager {
         }
     }
 
-    /// Load KEK from the KMS_KEK environment variable.
-    /// Returns None if the variable is not set (secrets stored in plaintext).
+    /// Load KEK from `KMS_KEK` (env) or `KMS_KEK_FILE` (0600 file).
+    /// PR-4.7 / P1-7 delegates to `kms_core::kek_source::KekSource`,
+    /// replacing the previous in-line hex parsing. Returns `None`
+    /// on any failure so that the existing plaintext-with-warning
+    /// fallback path remains the default when KEK is not configured.
     fn load_kek() -> Option<Zeroizing<[u8; 32]>> {
-        match std::env::var("KMS_KEK") {
-            Ok(kek_hex) => match hex::decode(&kek_hex) {
-                Ok(bytes) => match <[u8; 32]>::try_from(bytes.as_slice()) {
-                    Ok(arr) => Some(Zeroizing::new(arr)),
-                    Err(_) => {
-                        tracing::error!(
-                            "KMS_KEK must be 32 bytes (64 hex characters), got {} bytes",
-                            bytes.len()
-                        );
-                        None
-                    }
-                },
-                Err(e) => {
-                    tracing::error!("Invalid KMS_KEK hex: {}", e);
-                    None
-                }
-            },
-            Err(_) => {
+        match KekSource::from_env().load() {
+            Ok(kek) => Some(kek),
+            Err(KekSourceError::NotConfigured) => {
                 tracing::warn!(
-                    "KMS_KEK not set — TOTP secrets will be stored in plaintext. Set KMS_KEK for production."
+                    "KMS_KEK / KMS_KEK_FILE not set — TOTP secrets will be \
+                     stored in plaintext. Set KMS_KEK (or KMS_KEK_FILE with \
+                     mode 0600) for production."
                 );
+                None
+            }
+            Err(e) => {
+                tracing::error!("MFA KEK load failed: {}", sanitize_for_log(&e.to_string()));
                 None
             }
         }

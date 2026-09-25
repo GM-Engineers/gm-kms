@@ -19,10 +19,16 @@ pub struct WormSignedAuditConfig {
     pub worm_path: PathBuf,
     /// Rotation age in seconds (default: 1 hour)
     pub rotation_age_secs: u64,
+    /// PR-4.11 / P2-6: signing-key path is now configurable.
+    /// `None` preserves pre-4.11 behavior (sibling file at
+    /// `<worm_path>.signing_key`); `Some(p)` stores the key at `p`,
+    /// which SHOULD be on a separate filesystem from `worm_path`.
+    pub signing_key_path: Option<PathBuf>,
 }
 
-/// Path to the signing key file (lives alongside WORM storage)
-fn signing_key_path(worm_path: &Path) -> PathBuf {
+/// Default sibling signing-key path (preserved for backward
+/// compatibility with pre-PR-4.11 callers).
+fn default_signing_key_path(worm_path: &Path) -> PathBuf {
     worm_path.with_extension("signing_key")
 }
 
@@ -34,6 +40,7 @@ impl WormSignedAuditConfig {
             signed: signed_config,
             worm_path,
             rotation_age_secs: 3600,
+            signing_key_path: None,
         }
     }
 
@@ -45,6 +52,7 @@ impl WormSignedAuditConfig {
             signed: signed_config,
             worm_path,
             rotation_age_secs: 3600,
+            signing_key_path: None,
         }
     }
 
@@ -52,8 +60,17 @@ impl WormSignedAuditConfig {
     ///
     /// If the signing key file exists, loads it; otherwise generates a new random key.
     /// The key is stored with restrictive permissions (0o600).
+    /// Create new config, loading signing key from disk if present
+    ///
+    /// If the signing key file exists, loads it; otherwise generates a new random key.
+    /// The key is stored with restrictive permissions (0o600).
     pub fn load_or_create(worm_path: PathBuf, initial_sequence: u64) -> AuditResult<Self> {
-        let key_path = signing_key_path(&worm_path);
+        // PR-4.11 / P2-6: load the signing key from the DEFAULT
+        // sibling path. `load_or_create_with_key_path` is the
+        // variant for operators who want the key on a separate
+        // filesystem. We intentionally do NOT mutate `signing_key_path`
+        // here — pre-PR-4.11 callers see byte-identical behavior.
+        let key_path = default_signing_key_path(&worm_path);
         let signing_key = load_or_generate_key(&key_path)?;
 
         let signed_config =
@@ -62,6 +79,30 @@ impl WormSignedAuditConfig {
             signed: signed_config,
             worm_path,
             rotation_age_secs: 3600,
+            signing_key_path: None,
+        })
+    }
+
+    /// PR-4.11 / P2-6: load-or-create the signing key at a custom
+    /// path (separate from `worm_path`). Returns a config whose
+    /// `signing_key_path` is set to `key_path`, so subsequent calls
+    /// to `effective_signing_key_path()` resolve to the custom
+    /// location. Operators SHOULD deploy `key_path` on a different
+    /// filesystem / mount / account than `worm_path`.
+    pub fn load_or_create_with_key_path(
+        worm_path: PathBuf,
+        key_path: PathBuf,
+        initial_sequence: u64,
+    ) -> AuditResult<Self> {
+        let signing_key = load_or_generate_key(&key_path)?;
+
+        let signed_config =
+            SignedAuditConfig::with_key(AuditConfig::default(), signing_key, initial_sequence);
+        Ok(Self {
+            signed: signed_config,
+            worm_path,
+            rotation_age_secs: 3600,
+            signing_key_path: Some(key_path),
         })
     }
 
@@ -69,6 +110,29 @@ impl WormSignedAuditConfig {
     pub fn with_rotation_age_secs(mut self, secs: u64) -> Self {
         self.rotation_age_secs = secs;
         self
+    }
+
+    /// PR-4.11 / P2-6: store the HMAC signing key at a custom
+    /// path, separate from the WORM storage path. Operators are
+    /// STRONGLY advised to deploy the key on a different
+    /// filesystem / mount / account than the WORM log, so that
+    /// the audit signing material is not co-located with the data
+    /// it signs (preserving the integrity guarantee of WORM
+    /// append-only storage).
+    pub fn with_signing_key_path(mut self, p: PathBuf) -> Self {
+        self.signing_key_path = Some(p);
+        self
+    }
+
+    /// PR-4.11 / P2-6: resolve the effective signing-key path,
+    /// honoring the operator-supplied override if set; otherwise
+    /// returns the default sibling path. This is the SINGLE
+    /// source of truth — every key load/generation call MUST go
+    /// through this method.
+    pub fn effective_signing_key_path(&self) -> PathBuf {
+        self.signing_key_path
+            .clone()
+            .unwrap_or_else(|| default_signing_key_path(&self.worm_path))
     }
 }
 
@@ -309,7 +373,7 @@ mod tests {
     fn test_load_or_create_new_key() -> AuditResult<()> {
         let temp_dir = tempdir()?;
         let worm_path = temp_dir.path().join("audit");
-        let key_path = signing_key_path(&worm_path);
+        let key_path = default_signing_key_path(&worm_path);
 
         assert!(!key_path.exists());
 
@@ -328,7 +392,7 @@ mod tests {
     fn test_load_or_create_existing_key() -> AuditResult<()> {
         let temp_dir = tempdir()?;
         let worm_path = temp_dir.path().join("audit");
-        let _key_path = signing_key_path(&worm_path);
+        let _key_path = default_signing_key_path(&worm_path);
 
         // First call creates
         let config1 = WormSignedAuditConfig::load_or_create(worm_path.clone(), 0)?;
@@ -403,10 +467,151 @@ mod tests {
     #[test]
     fn test_signing_key_path() {
         let worm_path = std::path::PathBuf::from("/data/audit.log");
-        let key_path = signing_key_path(&worm_path);
+        let key_path = default_signing_key_path(&worm_path);
         assert_eq!(
             key_path,
             std::path::PathBuf::from("/data/audit.signing_key")
         );
+    }
+}
+
+// ============================================================================
+// PR-4.11 / P2-6: signing-key isolation tests
+// ============================================================================
+//
+// Pre-PR-4.11, the HMAC signing key file was a sibling of the
+// WORM log file. A compromised process could replace both the
+// log AND the signing key, defeating the integrity guarantee of
+// the hash chain. PR-4.11 introduces an opt-in
+// `with_signing_key_path` builder + a `load_or_create_with_key_path`
+// factory so operators can deploy the signing key on a separate
+// filesystem / mount.
+
+#[cfg(test)]
+mod pr411_signing_key_isolation_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn pr411_default_signing_key_path_is_sibling() {
+        // No `with_signing_key_path` call: must fall back to the
+        // pre-PR-4.11 sibling path.
+        let worm_path = PathBuf::from("/data/audit.log");
+        let config = WormSignedAuditConfig::new(worm_path.clone(), 0);
+        assert_eq!(
+            config.effective_signing_key_path(),
+            PathBuf::from("/data/audit.signing_key")
+        );
+        assert!(config.signing_key_path.is_none());
+    }
+
+    #[test]
+    fn pr411_with_signing_key_path_overrides() {
+        let worm_path = PathBuf::from("/data/audit.log");
+        let key_path = PathBuf::from("/secure/keys/audit-hmac.key");
+        let config =
+            WormSignedAuditConfig::new(worm_path, 0).with_signing_key_path(key_path.clone());
+        assert_eq!(config.effective_signing_key_path(), key_path);
+        assert_eq!(config.signing_key_path, Some(key_path));
+    }
+
+    #[test]
+    fn pr411_separate_key_path_creates_file_in_custom_location() -> AuditResult<()> {
+        // Real tmp-dir test: WORM dir + key dir are separate.
+        let worm_dir = tempdir()?;
+        let key_dir = tempdir()?;
+        let worm_path = worm_dir.path().join("audit.log");
+        let custom_key_path = key_dir.path().join("audit-hmac.key");
+
+        let config =
+            WormSignedAuditConfig::load_or_create_with_key_path(worm_path, custom_key_path, 0)?;
+
+        // Key was created at the custom path, NOT the sibling path.
+        assert!(config.signing_key_path.is_some());
+        assert_eq!(
+            config.effective_signing_key_path(),
+            key_dir.path().join("audit-hmac.key")
+        );
+        // Sibling path MUST NOT exist (no leakage).
+        assert!(!worm_dir.path().join("audit.signing_key").exists());
+
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pr411_signing_key_file_is_0o600_on_unix() -> AuditResult<()> {
+        use std::os::unix::fs::PermissionsExt;
+        let worm_dir = tempdir()?;
+        let key_dir = tempdir()?;
+        let worm_path = worm_dir.path().join("audit.log");
+        let custom_key_path = key_dir.path().join("audit-hmac.key");
+
+        let _ = WormSignedAuditConfig::load_or_create_with_key_path(
+            worm_path,
+            custom_key_path.clone(),
+            0,
+        )?;
+
+        let metadata = std::fs::metadata(&custom_key_path)?;
+        let mode = metadata.permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "signing-key file must be 0600 on unix (got 0o{mode:o})"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn pr411_existing_key_at_custom_path_is_loaded() -> AuditResult<()> {
+        // Pre-write a 32-byte key; load_or_create_with_key_path
+        // must load it rather than generate a new one.
+        let worm_dir = tempdir()?;
+        let key_dir = tempdir()?;
+        let worm_path = worm_dir.path().join("audit.log");
+        let custom_key_path = key_dir.path().join("audit-hmac.key");
+
+        // Use a deterministic 32-byte sequence so we can assert.
+        let expected_key: Vec<u8> = (0u8..32).collect();
+        std::fs::write(&custom_key_path, &expected_key)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&custom_key_path, std::fs::Permissions::from_mode(0o600))?;
+        }
+
+        let config = WormSignedAuditConfig::load_or_create_with_key_path(
+            worm_path,
+            custom_key_path.clone(),
+            0,
+        )?;
+        // `signed.signing_key` is wrapped in `Zeroizing<Vec<u8>>`
+        // for defense-in-depth; dereference it for assertion
+        // against our plain `Vec<u8>` expected_key.
+        assert_eq!(
+            &*config.signed.signing_key,
+            &expected_key[..],
+            "existing key must be loaded, not regenerated"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn pr411_load_or_create_unchanged_default_behavior() -> AuditResult<()> {
+        // Backward compat: pre-PR-4.11 callers using
+        // `load_or_create(worm_path, ...)` continue to write
+        // the key to the sibling path with signing_key_path=Some(None).
+        let worm_dir = tempdir()?;
+        let worm_path = worm_dir.path().join("audit.log");
+        let sibling_key_path = worm_dir.path().join("audit.signing_key");
+
+        let config = WormSignedAuditConfig::load_or_create(worm_path, 0)?;
+        assert!(config.signing_key_path.is_none());
+        assert!(sibling_key_path.exists());
+        assert_eq!(config.effective_signing_key_path(), sibling_key_path);
+
+        Ok(())
     }
 }

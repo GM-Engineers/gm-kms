@@ -5,6 +5,7 @@
 use super::{IntoApiError, KeyFormatParser, ServiceError};
 use crate::{ApiError, KmsState, Result, quota::TenantQuotaTracker};
 use base64::{Engine, engine::general_purpose::STANDARD};
+use kms_core::aad::export_wrap_aad;
 use kms_core::key::{KeyFilter, KeyMeta, KeySpec};
 use kms_core::sanitize::sanitize_for_log;
 use ring::rand::SecureRandom;
@@ -73,7 +74,9 @@ impl KeyService {
         tenant_id: &str,
         _user_id: &str,
     ) -> Result<KeyMeta> {
-        // Verify tenant ownership before rotating
+        // Verify tenant ownership before rotating. Cross-tenant and
+        // missing-key responses are deliberately conflated (KeyNotFound
+        // for both) — distinguishing is a key-enumeration oracle.
         let meta = self
             .keystore
             .get_key_metadata(key_id)
@@ -81,7 +84,13 @@ impl KeyService {
             .map_err(|e| ServiceError::from(e).into_api_error())?;
 
         if meta.tenant_id != tenant_id {
-            return Err(ApiError::Forbidden("access denied".to_string()));
+            tracing::warn!(
+                key_id = %key_id,
+                requester_tenant = %sanitize_for_log(tenant_id),
+                owner_tenant = %sanitize_for_log(&meta.tenant_id),
+                "tenant mismatch on key rotate — possible enumeration attempt"
+            );
+            return Err(ApiError::KeyNotFound(key_id.to_string()));
         }
 
         let meta = self
@@ -102,7 +111,8 @@ impl KeyService {
         tenant_id: &str,
         _user_id: &str,
     ) -> Result<()> {
-        // Verify tenant ownership before deleting
+        // Verify tenant ownership before deleting. Cross-tenant and
+        // missing-key responses are conflated (KeyNotFound for both).
         let meta = self
             .keystore
             .get_key_metadata(key_id)
@@ -110,7 +120,13 @@ impl KeyService {
             .map_err(|e| ServiceError::from(e).into_api_error())?;
 
         if meta.tenant_id != tenant_id {
-            return Err(ApiError::Forbidden("access denied".to_string()));
+            tracing::warn!(
+                key_id = %key_id,
+                requester_tenant = %sanitize_for_log(tenant_id),
+                owner_tenant = %sanitize_for_log(&meta.tenant_id),
+                "tenant mismatch on key delete — possible enumeration attempt"
+            );
+            return Err(ApiError::KeyNotFound(key_id.to_string()));
         }
 
         self.keystore
@@ -131,9 +147,16 @@ impl KeyService {
             .await
             .map_err(|e| ServiceError::from(e).into_api_error())?;
 
-        // Verify tenant isolation
+        // Verify tenant isolation. Cross-tenant and missing-key responses
+        // are conflated (KeyNotFound for both).
         if meta.tenant_id != tenant_id {
-            return Err(ApiError::Forbidden("access denied".to_string()));
+            tracing::warn!(
+                key_id = %key_id,
+                requester_tenant = %sanitize_for_log(tenant_id),
+                owner_tenant = %sanitize_for_log(&meta.tenant_id),
+                "tenant mismatch on key read — possible enumeration attempt"
+            );
+            return Err(ApiError::KeyNotFound(key_id.to_string()));
         }
 
         Ok(meta)
@@ -239,7 +262,8 @@ impl KeyService {
         tenant_id: &str,
         _user_id: &str,
     ) -> Result<ExportedKey> {
-        // Verify tenant ownership before exporting
+        // Verify tenant ownership before exporting. Cross-tenant and
+        // missing-key responses are conflated (KeyNotFound for both).
         let meta = self
             .keystore
             .get_key_metadata(key_id)
@@ -247,7 +271,13 @@ impl KeyService {
             .map_err(|e| ServiceError::from(e).into_api_error())?;
 
         if meta.tenant_id != tenant_id {
-            return Err(ApiError::Forbidden("access denied".to_string()));
+            tracing::warn!(
+                key_id = %key_id,
+                requester_tenant = %sanitize_for_log(tenant_id),
+                owner_tenant = %sanitize_for_log(&meta.tenant_id),
+                "tenant mismatch on key export — possible enumeration attempt"
+            );
+            return Err(ApiError::KeyNotFound(key_id.to_string()));
         }
         // Validate target_public_key is at least 256 bytes (2048-bit RSA minimum)
         if target_public_key.len() < 256 {
@@ -285,7 +315,7 @@ impl KeyService {
             .map_err(|e| ApiError::Internal(format!("failed to generate transport key: {e}")))?;
 
         // Wrap key material with transport key using AES-256-GCM
-        use ring::aead::{AES_256_GCM, Aad, LessSafeKey, Nonce, UnboundKey};
+        use ring::aead::{AES_256_GCM, LessSafeKey, Nonce, UnboundKey};
         let unbound_kek = UnboundKey::new(&AES_256_GCM, &transport_key)
             .map_err(|e| ApiError::Internal(format!("failed to create KEK: {e}")))?;
         let less_safe_kek = LessSafeKey::new(unbound_kek);
@@ -295,9 +325,17 @@ impl KeyService {
         rng.fill(&mut nonce_bytes)
             .map_err(|e| ApiError::Internal(format!("failed to generate nonce: {e}")))?;
         let nonce = Nonce::assume_unique_for_key(nonce_bytes);
+
+        // PR-1.4: bind the export envelope to (key_id, tenant_id) so a
+        // stored export record cannot be replayed against another
+        // key/tenant. The AAD tag is the dedicated `ExportWrap` purpose
+        // (different from `UserData`), so an attacker cannot lift a
+        // user-data ciphertext and pass it off as an export envelope.
+        let export_aad = export_wrap_aad(*key_id, tenant_id);
+        let export_aad = ring::aead::Aad::from(export_aad.as_slice());
         let mut in_out = key_material.clone();
         let tag = less_safe_kek
-            .seal_in_place_separate_tag(nonce, Aad::empty(), &mut in_out)
+            .seal_in_place_separate_tag(nonce, export_aad, &mut in_out)
             .map_err(|e| ApiError::Internal(format!("failed to wrap key: {e}")))?;
 
         // Append tag to ciphertext (combined = wrapped_key)
@@ -683,5 +721,72 @@ mod tests {
             .await;
 
         assert!(result.is_err());
+    }
+
+    // ── PR-1.2: KeyService cross-tenant error unification ──
+
+    /// Helper: generate an Aes256Gcm key under `tenant`.
+    async fn create_aes_key(svc: &KeyService, name: &str, tenant: &str) -> uuid::Uuid {
+        svc.create_key(KeySpec::Aes256Gcm, name, tenant, "user-1")
+            .await
+            .expect("key creation should succeed")
+            .id
+    }
+
+    /// get_key: cross-tenant access returns KeyNotFound, not Forbidden.
+    #[tokio::test]
+    async fn test_pr12_key_get_cross_tenant_returns_keynotfound() {
+        let state = create_test_state();
+        let svc = KeyService::new(&state);
+        let key_id = create_aes_key(&svc, "p12-kg", "tenant-a").await;
+
+        let result = svc.get_key(&key_id, "tenant-b").await;
+        assert!(
+            matches!(result, Err(ApiError::KeyNotFound(_))),
+            "cross-tenant get_key must return KeyNotFound, got {result:?}"
+        );
+    }
+
+    /// rotate_key: cross-tenant access returns KeyNotFound, not Forbidden.
+    #[tokio::test]
+    async fn test_pr12_key_rotate_cross_tenant_returns_keynotfound() {
+        let state = create_test_state();
+        let svc = KeyService::new(&state);
+        let key_id = create_aes_key(&svc, "p12-kr", "tenant-a").await;
+
+        let result = svc.rotate_key(&key_id, "tenant-b", "user-1").await;
+        assert!(
+            matches!(result, Err(ApiError::KeyNotFound(_))),
+            "cross-tenant rotate_key must return KeyNotFound, got {result:?}"
+        );
+    }
+
+    /// delete_key: cross-tenant access returns KeyNotFound, not Forbidden.
+    #[tokio::test]
+    async fn test_pr12_key_delete_cross_tenant_returns_keynotfound() {
+        let state = create_test_state();
+        let svc = KeyService::new(&state);
+        let key_id = create_aes_key(&svc, "p12-kd", "tenant-a").await;
+
+        let result = svc.delete_key(&key_id, "tenant-b", "user-1").await;
+        assert!(
+            matches!(result, Err(ApiError::KeyNotFound(_))),
+            "cross-tenant delete_key must return KeyNotFound, got {result:?}"
+        );
+    }
+
+    /// get_key: a non-existent key also returns KeyNotFound — the two
+    /// responses are byte-identical to a probing client.
+    #[tokio::test]
+    async fn test_pr12_key_get_nonexistent_returns_keynotfound() {
+        let state = create_test_state();
+        let svc = KeyService::new(&state);
+        let bogus = uuid::Uuid::new_v4();
+
+        let result = svc.get_key(&bogus, "tenant-a").await;
+        assert!(
+            matches!(result, Err(ApiError::KeyNotFound(_))),
+            "non-existent get_key must return KeyNotFound, got {result:?}"
+        );
     }
 }

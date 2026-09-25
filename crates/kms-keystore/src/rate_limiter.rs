@@ -84,7 +84,9 @@ impl SlidingWindowRateLimiter {
     ///
     /// If `KMS_DB_TLS_MODE` is set and the URL uses `rediss://`, TLS is enabled.
     pub async fn new(redis_url: &str, config: RateLimitConfig) -> Result<Self, redis::RedisError> {
-        let tls_config = kms_core::BackendTlsConfig::from_env();
+        let tls_config = kms_core::BackendTlsConfig::from_env().map_err(|e| {
+            redis::RedisError::from((redis::ErrorKind::IoError, "TLS config", e.to_string()))
+        })?;
         let client = if tls_config.is_tls_enabled() || redis_url.starts_with("rediss://") {
             tracing::info!(mode = %tls_config.mode, "Connecting to Redis with TLS");
             redis::Client::open(redis_url)?

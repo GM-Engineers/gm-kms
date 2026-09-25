@@ -2,6 +2,7 @@
 //!
 //! This crate contains core types with no I/O dependencies.
 
+pub mod aad;
 pub mod algorithms;
 pub mod algorithms_impl;
 pub mod backup;
@@ -11,14 +12,17 @@ pub mod envelope;
 pub mod error;
 pub mod event;
 pub mod hybrid_kem;
+pub mod kek_source;
 pub mod key;
 pub mod key_io;
 pub mod memory_protection;
 pub mod policy;
+pub mod production_safety;
 pub mod sanitize;
 pub mod secret_rotation;
 pub mod self_test;
 pub mod shamir;
+pub mod sm2_scalar;
 pub mod sm9_key_rotation;
 pub mod sm9_master_key;
 pub mod tls_config;
@@ -28,6 +32,9 @@ pub mod webhook;
 #[cfg(test)]
 mod proptests;
 
+pub use aad::{
+    AAD_MAGIC, AAD_V2_LEN, AAD_VERSION, Purpose, export_wrap_aad, kek_wrap_aad, user_data_aad,
+};
 pub use algorithms::{
     AlgorithmInfo, AlgorithmRegistry, DecryptResult, Decryptor, EncryptResult, Encryptor,
     SignResult, Signer, SymmetricCrypto, Verifier, VerifyResult, get_algorithm_info,

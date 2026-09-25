@@ -1,5 +1,15 @@
 # GM-KMS Kubernetes Operator
 
+> **EXPERIMENTAL — NOT MAINTAINED**
+>
+> This operator is kept in the repository as a reference for how a Kubernetes
+> controller could integrate with gm-kms, but it is **not** actively maintained
+> alongside the core Rust codebase. It may be out of sync with the current
+> REST/gRPC API surface. **Use at your own risk.**
+>
+> For current Kubernetes deployment patterns, see
+> [`../../examples/k8s-demo/`](../../examples/k8s-demo/README.md).
+
 A Kubernetes operator for managing GM-KMS keys as native Kubernetes secrets.
 
 ## Overview

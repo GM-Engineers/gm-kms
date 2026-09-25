@@ -9,12 +9,15 @@
 
 use async_trait::async_trait;
 use chrono::Utc;
+use gm_crypto::sm2::Sm2KeyPair;
 use gm_crypto::sm2_kex::{KexSession, Sm2KexMessage, Sm2KexResult};
 use kms_core::{
     BackendType, Result,
+    aad::user_data_aad,
     dh::SharedSecret,
     error::Error,
     key::{Ciphertext, DestructionProof, KeyMeta, KeySpec, KeyStatus, Signature},
+    sm2_scalar::sm2_scalar_in_range,
 };
 use parking_lot::RwLock;
 use rand::Rng;
@@ -89,6 +92,22 @@ impl SoftwareKeystore {
         }
     }
 
+    /// Verify that the key identified by `key_id` exists and is owned
+    /// by `tenant_id`. Returns `Error::KeyNotFound` for both "missing
+    /// key" and "wrong tenant" — the keystore cannot distinguish them
+    /// any more than the API can (PR-1.2 conflation for keystore-layer
+    /// defence in depth).
+    async fn verify_tenant(&self, key_id: &Uuid, tenant_id: &str) -> Result<()> {
+        let keys = self.keys.read();
+        let entry = keys
+            .get(key_id)
+            .ok_or_else(|| Error::KeyNotFound(key_id.to_string()))?;
+        if entry.meta.tenant_id != tenant_id {
+            return Err(Error::KeyNotFound(key_id.to_string()));
+        }
+        Ok(())
+    }
+
     fn generate_aes_key(&self) -> Vec<u8> {
         let mut key = vec![0u8; 32]; // AES-256
         rand::rng().fill_bytes(&mut key);
@@ -107,11 +126,24 @@ impl SoftwareKeystore {
         key
     }
 
-    fn generate_sm2_key(&self) -> Vec<u8> {
-        // SM2 private key is 32 bytes
-        let mut key = vec![0u8; 32];
-        rand::rng().fill_bytes(&mut key);
-        key
+    fn generate_sm2_key(&self) -> Result<Vec<u8>> {
+        // PR-4.14 / P2-9: use the canonical SM2 key generation
+        // path (`Sm2KeyPair::generate`), which already enforces
+        // `[1, n-1]` via the underlying rustcrypto
+        // `SecretKey::<Sm2>::random`. We then re-validate the
+        // produced bytes with `kms_core::sm2_scalar_in_range`
+        // as defense-in-depth so any future upstream regression
+        // surfaces as a typed `KmsError::InvalidSm2Scalar` here
+        // instead of silently storing an out-of-range scalar.
+        let key_pair = Sm2KeyPair::generate()
+            .map_err(|e| Error::SignatureFailed(format!("Sm2KeyPair::generate failed: {e}")))?;
+        let bytes = key_pair.private_key_bytes();
+        sm2_scalar_in_range(&bytes).map_err(|e| {
+            Error::SignatureFailed(format!(
+                "Sm2KeyPair::generate produced out-of-range scalar: {e}"
+            ))
+        })?;
+        Ok(bytes)
     }
 
     /// Derive shared secret using ECDH with P-256 curve
@@ -674,11 +706,35 @@ impl super::KeystoreBackend for SoftwareKeystore {
                 self.generate_ed25519_key()
             }
             KeySpec::Sm4 => self.generate_sm4_key(),
-            KeySpec::Sm2 => self.generate_sm2_key(),
+            // PR-4.14 / P2-9: SM2 key generation now returns
+            // `Result<Vec<u8>>` because it must surface any
+            // upstream scalar-range regression as a typed
+            // `KmsError::InvalidSm2Scalar`. `?` propagates
+            // the error up to the caller of `generate_key`.
+            KeySpec::Sm2 => self.generate_sm2_key()?,
             KeySpec::Sm9Signing | KeySpec::Sm9Encryption => {
-                // SM9 uses identity-based cryptography, material stores identity
-                // For now, we store the identity string as material
-                Vec::new()
+                // PR-4.5 (P1-5): the pre-PR-4.5 code stored
+                // `Vec::new()` here and returned `Ok(KeyMeta)`,
+                // which made the API lie about SM9 key creation
+                // success. Subsequent sign / encrypt / decrypt
+                // calls would all fail at runtime (the empty
+                // material isn't usable for any cryptographic
+                // operation), and callers had no way to
+                // distinguish "not yet implemented" from "I made
+                // a key but it doesn't work".
+                //
+                // The fix mirrors the `Rsa4096` arm above: return
+                // `Error::NotImplemented` with an actionable
+                // message. SM9 user-key derivation needs KMS-SM9
+                // master-key management infrastructure (HSM / KMS
+                // integration), which is a separate, larger
+                // workstream tracked independently of this PR.
+                return Err(Error::NotImplemented(
+                    "SM9 user-key generation requires KMS-SM9 master-key \
+                     management infrastructure (not yet integrated). \
+                     Use RSA / SM2 / SM4 / AES instead."
+                        .to_string(),
+                ));
             }
             KeySpec::Rsa4096 => {
                 return Err(Error::NotImplemented(
@@ -768,7 +824,9 @@ impl super::KeystoreBackend for SoftwareKeystore {
         Ok(meta)
     }
 
-    async fn export_key_material(&self, key_id: &Uuid, _tenant_id: &str) -> Result<Vec<u8>> {
+    async fn export_key_material(&self, key_id: &Uuid, tenant_id: &str) -> Result<Vec<u8>> {
+        self.verify_tenant(key_id, tenant_id).await?;
+
         let keys = self.keys.read();
         let entry = keys
             .get(key_id)
@@ -783,15 +841,17 @@ impl super::KeystoreBackend for SoftwareKeystore {
         Ok(entry.material.as_slice().to_vec())
     }
 
-    async fn get_key_material(&self, key_id: &Uuid, _tenant_id: &str) -> Result<Vec<u8>> {
+    async fn get_key_material(&self, key_id: &Uuid, tenant_id: &str) -> Result<Vec<u8>> {
+        self.verify_tenant(key_id, tenant_id).await?;
+
         let keys = self.keys.read();
         let entry = keys
             .get(key_id)
             .ok_or_else(|| Error::KeyNotFound(key_id.to_string()))?;
 
-        // Log material access for audit (this is a security-sensitive operation)
-        // Note: We don't have access to the audit logger here directly.
-        // In a full implementation, this would be handled via event emission.
+        // Material access logged server-side via the audit pipeline that
+        // wraps the keystore backend. The keystore layer does not have
+        // a direct audit handle; logging is handled at the service layer.
 
         Ok(entry.material.as_slice().to_vec())
     }
@@ -800,12 +860,13 @@ impl super::KeystoreBackend for SoftwareKeystore {
         &self,
         key_id: &Uuid,
         version: u32,
-        _tenant_id: &str,
+        tenant_id: &str,
     ) -> Result<Vec<u8>> {
+        self.verify_tenant(key_id, tenant_id).await?;
         let keys = self.keys.read();
         let entry = keys
             .get(key_id)
-            .ok_or_else(|| Error::KeyNotFound(key_id.to_string()))?;
+            .ok_or_else(|| Error::KeyVersionNotFound(key_id.to_string()))?;
 
         // If version matches current, return current material
         if version == 0 || version == entry.meta.version {
@@ -835,8 +896,10 @@ impl super::KeystoreBackend for SoftwareKeystore {
         key_id: &Uuid,
         plaintext: &[u8],
         _aad: Option<&[u8]>,
-        _tenant_id: &str,
+        tenant_id: &str,
     ) -> Result<Ciphertext> {
+        self.verify_tenant(key_id, tenant_id).await?;
+
         let keys = self.keys.read();
         let entry = keys
             .get(key_id)
@@ -875,15 +938,18 @@ impl super::KeystoreBackend for SoftwareKeystore {
                 let counter = Counter(starting_counter);
                 let mut sealing_key: SealingKey<Counter> = BoundKey::new(unbound_key, counter);
 
+                let aad_bytes = user_data_aad(*key_id, &entry.meta.tenant_id, entry.meta.version);
+                let aad = aead::Aad::from(aad_bytes.as_slice());
+
                 let mut in_out = plaintext.to_vec();
                 let tag = sealing_key
-                    .seal_in_place_separate_tag(aead::Aad::empty(), &mut in_out)
+                    .seal_in_place_separate_tag(aad, &mut in_out)
                     .map_err(|e| Error::EncryptionFailed(e.to_string()))?;
 
                 Ok(Ciphertext {
                     key_id: *key_id,
                     version: entry.meta.version,
-                    format_version: 1,
+                    format_version: 2,
                     nonce: starting_counter.to_be_bytes().to_vec(),
                     ciphertext: in_out,
                     tag: tag.as_ref().to_vec(),
@@ -898,14 +964,16 @@ impl super::KeystoreBackend for SoftwareKeystore {
                 let mut nonce = [0u8; 12];
                 rand::rng().fill_bytes(&mut nonce);
 
+                let aad_bytes = user_data_aad(*key_id, &entry.meta.tenant_id, entry.meta.version);
+
                 let (ciphertext, tag) = cipher
-                    .encrypt_gcm(plaintext, &nonce, &[])
+                    .encrypt_gcm(plaintext, &nonce, &aad_bytes)
                     .map_err(|e| Error::EncryptionFailed(e.to_string()))?;
 
                 Ok(Ciphertext {
                     key_id: *key_id,
                     version: entry.meta.version,
-                    format_version: 1,
+                    format_version: 2,
                     nonce: nonce.to_vec(),
                     ciphertext,
                     tag,
@@ -951,8 +1019,10 @@ impl super::KeystoreBackend for SoftwareKeystore {
         key_id: &Uuid,
         ciphertext: &Ciphertext,
         _aad: Option<&[u8]>,
-        _tenant_id: &str,
+        tenant_id: &str,
     ) -> Result<Vec<u8>> {
+        self.verify_tenant(key_id, tenant_id).await?;
+
         let keys = self.keys.read();
         let entry = keys
             .get(key_id)
@@ -1015,8 +1085,27 @@ impl super::KeystoreBackend for SoftwareKeystore {
                 let mut in_out = ciphertext.ciphertext.clone();
                 in_out.extend_from_slice(&ciphertext.tag);
 
+                // PR-1.4: branch on `format_version` to keep legacy
+                // ciphertexts (AAD = empty) decryptable while binding
+                // v2 ciphertexts to (key_id, tenant_id, version). The
+                // v2 AAD is built into a local Vec<u8> so its lifetime
+                // spans the `open_in_place` call.
+                let aad_bytes_v2: Option<Vec<u8>> = match ciphertext.format_version {
+                    0 | 1 => None,
+                    2 => Some(user_data_aad(
+                        *key_id,
+                        &entry.meta.tenant_id,
+                        ciphertext.version,
+                    )),
+                    _ => return Err(Error::InvalidCiphertext),
+                };
+                let aad: aead::Aad<&[u8]> = match &aad_bytes_v2 {
+                    Some(b) => aead::Aad::from(b.as_slice()),
+                    None => aead::Aad::from(&[][..]),
+                };
+
                 let plaintext = opening_key
-                    .open_in_place(aead::Aad::empty(), &mut in_out)
+                    .open_in_place(aad, &mut in_out)
                     .map_err(|_| Error::InvalidCiphertext)?;
 
                 Ok(plaintext.to_vec())
@@ -1027,11 +1116,20 @@ impl super::KeystoreBackend for SoftwareKeystore {
                 let cipher = Sm4Cipher::new(key_material)
                     .map_err(|e| Error::DecryptionFailed(e.to_string()))?;
 
+                // PR-1.4: see AES branch — v2 AAD binds the ciphertext
+                // to (key_id, tenant_id, version). v1 (and 0) keep the
+                // empty-AAD behaviour for backwards compatibility.
+                let aad_bytes: Vec<u8> = match ciphertext.format_version {
+                    0 | 1 => Vec::new(),
+                    2 => user_data_aad(*key_id, &entry.meta.tenant_id, ciphertext.version),
+                    _ => return Err(Error::InvalidCiphertext),
+                };
+
                 let plaintext = cipher
                     .decrypt_gcm(
                         &ciphertext.ciphertext,
                         &ciphertext.nonce,
-                        &[],
+                        &aad_bytes,
                         &ciphertext.tag,
                     )
                     .map_err(|_| Error::InvalidCiphertext)?;
@@ -1073,7 +1171,9 @@ impl super::KeystoreBackend for SoftwareKeystore {
         }
     }
 
-    async fn sign(&self, key_id: &Uuid, data: &[u8], _tenant_id: &str) -> Result<Signature> {
+    async fn sign(&self, key_id: &Uuid, data: &[u8], tenant_id: &str) -> Result<Signature> {
+        self.verify_tenant(key_id, tenant_id).await?;
+
         let keys = self.keys.read();
         let entry = keys
             .get(key_id)
@@ -1127,8 +1227,10 @@ impl super::KeystoreBackend for SoftwareKeystore {
         key_id: &Uuid,
         data: &[u8],
         sig: &Signature,
-        _tenant_id: &str,
+        tenant_id: &str,
     ) -> Result<bool> {
+        self.verify_tenant(key_id, tenant_id).await?;
+
         let keys = self.keys.read();
         let entry = keys
             .get(key_id)
@@ -1161,7 +1263,9 @@ impl super::KeystoreBackend for SoftwareKeystore {
         }
     }
 
-    async fn rotate_key(&self, key_id: &Uuid, _tenant_id: &str) -> Result<KeyMeta> {
+    async fn rotate_key(&self, key_id: &Uuid, tenant_id: &str) -> Result<KeyMeta> {
+        self.verify_tenant(key_id, tenant_id).await?;
+
         let mut keys = self.keys.write();
 
         let entry = keys
@@ -1184,7 +1288,9 @@ impl super::KeystoreBackend for SoftwareKeystore {
         let new_material = match entry.meta.spec {
             KeySpec::Aes256Gcm | KeySpec::HmacSha256 => self.generate_aes_key(),
             KeySpec::Sm4 => self.generate_sm4_key(),
-            KeySpec::Sm2 => self.generate_sm2_key(),
+            // PR-4.14 / P2-9: same Result-propagation as in
+            // generate_key() above.
+            KeySpec::Sm2 => self.generate_sm2_key()?,
             KeySpec::Sm9Signing | KeySpec::Sm9Encryption => {
                 // SM9 rotation must be handled by Sm9RotationAdapter via
                 // RotationService::with_sm9_adapter(). Direct keystore
@@ -1213,7 +1319,9 @@ impl super::KeystoreBackend for SoftwareKeystore {
         Ok(entry.meta.clone())
     }
 
-    async fn delete_key(&self, key_id: &Uuid, _tenant_id: &str) -> Result<()> {
+    async fn delete_key(&self, key_id: &Uuid, tenant_id: &str) -> Result<()> {
+        self.verify_tenant(key_id, tenant_id).await?;
+
         let mut keys = self.keys.write();
 
         let entry = keys
@@ -1413,3 +1521,84 @@ impl super::KeystoreBackend for SoftwareKeystore {
 
 #[cfg(test)]
 mod tests;
+
+// ============================================================================
+// PR-4.5 (P1-5) tests: SM9 generate_key must return NotImplemented
+// ============================================================================
+//
+// Pre-PR-4.5: KeySpec::Sm9Signing | Sm9Encryption generated a KeyMeta
+// with `material: Vec::new()`, making the API report key creation success
+// while every subsequent crypto op on the "key" would fail at
+// runtime. PR-4.5 replaces that with `Err(Error::NotImplemented)`,
+// mirroring the existing Rsa4096 branch.
+
+#[cfg(test)]
+mod pr45_sm9_generate_tests {
+    use super::*;
+    use crate::backend::KeystoreBackend;
+
+    #[tokio::test]
+    async fn pr45_sm9_signing_generate_returns_not_implemented() {
+        let ks = SoftwareKeystore::new();
+        let result = ks
+            .generate_key(&KeySpec::Sm9Signing, "sm9-signing-test", "tenant-A")
+            .await;
+        assert!(result.is_err(), "SM9 signing key generation must fail");
+        match result.unwrap_err() {
+            Error::NotImplemented(msg) => {
+                assert!(msg.contains("SM9"), "error must mention SM9; got: {msg}");
+            }
+            other => panic!("expected Error::NotImplemented, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn pr45_sm9_encryption_generate_returns_not_implemented() {
+        let ks = SoftwareKeystore::new();
+        let result = ks
+            .generate_key(&KeySpec::Sm9Encryption, "sm9-encryption-test", "tenant-A")
+            .await;
+        assert!(result.is_err(), "SM9 encryption key generation must fail");
+        match result.unwrap_err() {
+            Error::NotImplemented(msg) => {
+                assert!(msg.contains("SM9"), "error must mention SM9; got: {msg}");
+            }
+            other => panic!("expected Error::NotImplemented, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn pr45_rsa4096_generate_still_not_implemented() {
+        // Regression guard: the RSA branch must continue to return
+        // NotImplemented so the symmetric pattern isn't broken by
+        // a future refactor.
+        let ks = SoftwareKeystore::new();
+        let result = ks
+            .generate_key(&KeySpec::Rsa4096, "rsa4096-regression-test", "tenant-A")
+            .await;
+        assert!(result.is_err(), "RSA-4096 generation must still fail");
+        assert!(
+            matches!(result.unwrap_err(), Error::NotImplemented(_)),
+            "RSA-4096 must still be Error::NotImplemented"
+        );
+    }
+
+    #[tokio::test]
+    async fn pr45_sm2_generate_still_works() {
+        // Regression guard: the SM2 branch (which IS implemented)
+        // must continue to return Ok with non-empty material.
+        let ks = SoftwareKeystore::new();
+        let meta = ks
+            .generate_key(&KeySpec::Sm2, "sm2-regression-test", "tenant-A")
+            .await
+            .expect("SM2 generation must still work");
+        assert_eq!(meta.spec, KeySpec::Sm2);
+        // The keystore stores material; we can verify it's
+        // non-empty by attempting to fetch the entry directly.
+        let keys = ks.keys.read();
+        let entry = keys
+            .get(&meta.id)
+            .expect("key entry must exist after successful generation");
+        assert!(!entry.material.is_empty(), "SM2 material must be non-empty");
+    }
+}

@@ -39,8 +39,12 @@ tonic = "0.14"
 tonic-health = "0.14"
 
 # GM TLS for mTLS (TLS 1.3 + SM ciphers; gm-tls 0.2 dropped the TLCP module — TLCP
-# now lives in the standalone gm-tlcp crate, which gm-kms does not depend on).
+# now lives in the standalone gm-tlcp crate).
 gm-tls = { version = "0.2", features = ["grpc"] }
+
+# TLCP (GB/T 38636-2020) for REST listener (see src/cmd/tlcp_listener.rs).
+# REST over TLCP is wired in 0.3.0; gRPC stays on TLS 1.3 + SM (TLCP has no ALPN).
+gm-tlcp = { version = "0.6" }
 
 # TLS for REST API (rustls for native TLS support)
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
@@ -76,8 +80,8 @@ utoipa = { workspace = true }
 utoipa-swagger-ui = { workspace = true }
 
 # SM2 certificate generation (dev/test only)
-gm-ca = { version = "0.1.0" }
-gm-crypto = { version = "0.2" }
+gm-ca = { version = "0.2" }
+gm-crypto = { version = "0.3" }
 elliptic-curve = "0.13"
 asn1 = "0.17"
 tempfile = "3"
@@ -86,7 +90,7 @@ x509-parser = "0.16"
 axum-server = { version = "0.8.0", default-features = false, features = ["tls-rustls-no-provider"] }
 
 [workspace.package]
-version = "0.2.1"
+version = "0.2.7"
 edition = "2024"
 authors = ["Eric Zhang"]
 license = "MIT OR Apache-2.0"
@@ -123,7 +127,7 @@ p256 = { version = "0.13", features = ["ecdh"] }
 p384 = { version = "0.13", features = ["ecdh"] }
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 # GM 国密 SM2/SM3/SM4
-gm-crypto = { version = "0.2" }
+gm-crypto = { version = "0.3" }
 gm-sm9-rs = { version = "0.1.0" }
 sm2 = "0.13"
 
@@ -173,7 +177,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 url = "2"
 
 # For SM2 certificate generation (dev/test only)
-gm-ca = { version = "0.1.0" }
+gm-ca = { version = "0.2" }
 elliptic-curve = "0.13"
 asn1 = "0.17"
 tempfile = "3"
@@ -198,23 +202,30 @@ tempfile = "3"
 hex = "0.4"
 ring = "0.17"
 chrono = { workspace = true }
-gm-crypto = { version = "0.2" }
+gm-crypto = { version = "0.3" }
 gm-sm9-rs = { version = "0.1.0" }
 
-# gm-ca 0.1.1 + gm-tls 0.2.0 + gm-crypto 0.2.0 + gm-sm9-rs 0.1.0 是 gm 仓库
-# 0.3.0 release 的协调版本（发布于 commit 37e1b21 / tag gm-tls-v0.2.0）。gm-kms
-# 通过 patch.crates-io 将 gm-ca / gm-crypto / gm-sm9-rs 锁定到同一 git rev，
-# 以确保所有使用者从同一源加载同版本的 gm-crypto，避免 cargo 解出“同一 crate
-# 两个不同源”（crates.io 0.1.0 与 git 0.2.0）导致 examples/generate_sm2_certs.rs
-# 中 Sm2KeyPair 传给 gm_ca::cert::CaSigner 的 E0308 类型不匹配。
+# gm-ca 0.2.2 + gm-tls 0.2.2 + gm-crypto 0.3.3 + gm-sm9-rs 0.1.1 + gm-tlcp 0.6.6 是
+# gm 仓库的协调版本（发布于 c77f0d7 — 2026-09-18 cert-verification audit 修复后）。
+# gm-kms 通过 patch.crates-io 将以上五个 crate 锁定到同一 git rev，以确保所有使用者从同一源加载
+# 同一版本的 gm-crypto，避免 cargo 解出“同一 crate 两个不同源”（crates.io 0.x 与 git
+# 0.y）导致 examples/generate_sm2_certs.rs 中 Sm2KeyPair 传给 gm_ca::cert::CaSigner
+# 的 E0308 类型不匹配。
 #
 # kms 二进制本身不交叉 gm_crypto 类型（不使用 CaSigner），故即使双源问题存在
 # Release 构建不受影响；但 cargo check --workspace --all-targets 会暴露该问题。
 #
-# 同步点选 37e1b21（gm-tls-v0.2.0 tag 提交）而非 bf31dbb（main HEAD）的原因：
-# 37e1b21 是已发布的 tag，包含协调后的 0.2.0 版本号；bf31dbb 仅多出文档微调，
-# 与生产构建无关。后续如 gm 仓库再次发布，可仅修改下面三条 git rev 同步。
+# gm-tls 必须也加入 patch：crates.io gm-tls 0.2.0 强依赖 gm-crypto 0.2.0，会绕过
+# 上面的 patch、引入 crates.io 版 gm-crypto，与 git 版（0.3.x）形成双源。
+# gm-tls 0.2.2 依赖 gm-crypto 0.3，与其他 crate 协调。
+#
+# 同步点选 c77f0d7 的原因：该提交包含 2026-09-18 audit 修复 (NEW-1 KU BIT STRING
+# wrapper, NEW-2 verify role_for_idx, NEW-3 SM2 OID 字节修正为 GM/T 38636-2020
+# canonical DER, NEW-4 gm-tlcp 测试注释刷新)；所有依赖 crate 的上游使用者必须在
+# 同一 SHA 下加载同一组安全修复。后续如 gm 仓库再次发布，可仅修改下面五条 git rev 同步。
 [patch.crates-io]
-gm-ca = { git = "https://github.com/GM-Engineers/gm", rev = "37e1b21a32198e70cccb3dfc49cf8d31f57b277b" }
-gm-crypto = { git = "https://github.com/GM-Engineers/gm", rev = "37e1b21a32198e70cccb3dfc49cf8d31f57b277b" }
-gm-sm9-rs = { git = "https://github.com/GM-Engineers/gm", rev = "37e1b21a32198e70cccb3dfc49cf8d31f57b277b" }
+gm-ca     = { git = "https://github.com/GM-Engineers/gm", rev = "c77f0d71eeb75b3500f8a80d20a3dfe3c221ebac" }
+gm-crypto = { git = "https://github.com/GM-Engineers/gm", rev = "c77f0d71eeb75b3500f8a80d20a3dfe3c221ebac" }
+gm-sm9-rs = { git = "https://github.com/GM-Engineers/gm", rev = "c77f0d71eeb75b3500f8a80d20a3dfe3c221ebac" }
+gm-tlcp   = { git = "https://github.com/GM-Engineers/gm", rev = "c77f0d71eeb75b3500f8a80d20a3dfe3c221ebac" }
+gm-tls    = { git = "https://github.com/GM-Engineers/gm", rev = "c77f0d71eeb75b3500f8a80d20a3dfe3c221ebac" }

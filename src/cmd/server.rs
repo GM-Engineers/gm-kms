@@ -13,6 +13,7 @@ use kms_api::{
     rest::create_routes,
 };
 use kms_audit::{AuditConfig, AuditLogger, TimestampedAuditConfig, TimestampedAuditLogger};
+use kms_core::production_safety;
 use kms_hsm::create_tpm_keystore;
 use kms_keystore::{
     KeystoreBackend, PostgresKeyRepository, PostgresKeystore, RedisCachedKeystore, SoftwareKeystore,
@@ -77,7 +78,13 @@ async fn maybe_create_rate_limiter(
     .await
     {
         Ok(conn) => {
-            let tls_config = kms_core::BackendTlsConfig::from_env();
+            // PR-4.4: BackendTlsConfig::from_env now returns
+            // `anyhow::Result`; fail-fast on bad config (no_verify
+            // in production, missing CA cert path, etc.).
+            let tls_config = kms_core::BackendTlsConfig::from_env().unwrap_or_else(|e| {
+                tracing::error!("Bad DB/Redis TLS config: {}", e);
+                std::process::exit(1);
+            });
             if tls_config.is_tls_enabled() {
                 tracing::info!(mode = %tls_config.mode, "Redis rate limiter using TLS");
             }
@@ -116,7 +123,10 @@ async fn maybe_create_quota_tracker(
     .await
     {
         Ok(conn) => {
-            let tls_config = kms_core::BackendTlsConfig::from_env();
+            let tls_config = kms_core::BackendTlsConfig::from_env().unwrap_or_else(|e| {
+                tracing::error!("Bad DB/Redis TLS config: {}", e);
+                std::process::exit(1);
+            });
             if tls_config.is_tls_enabled() {
                 tracing::info!(mode = %tls_config.mode, "Redis quota tracker using TLS");
             }
@@ -135,7 +145,11 @@ async fn maybe_create_mfa_pool(
     database_config: &crate::cmd::config::DatabaseConfig,
 ) -> Option<kms_api::sqlx::PgPool> {
     let url = database_config.connection_url();
-    let tls_config = kms_core::BackendTlsConfig::from_env();
+    // PR-4.4: same fail-fast unwrap for the MFA pool.
+    let tls_config = kms_core::BackendTlsConfig::from_env().unwrap_or_else(|e| {
+        tracing::error!("Bad DB/Redis TLS config: {}", e);
+        std::process::exit(1);
+    });
     let url = tls_config.build_postgres_url(&url);
 
     if tls_config.is_tls_enabled() {
@@ -563,14 +577,28 @@ pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()
             let repo = PostgresKeyRepository::new(pool.clone());
             match PostgresKeystore::new(repo).await {
                 Ok(pg_keystore) => {
-                    match pg_keystore.load_keys().await {
-                        Ok(()) => {
-                            tracing::info!("Loaded keys from PostgreSQL");
+                    // PR-4.19: switch the eager-load to a
+                    // background task so the listen port
+                    // binds immediately. PR-4.17's lazy
+                    // load already covers any keys that
+                    // aren't yet in the cache when the
+                    // first request lands.
+                    let handle = pg_keystore.spawn_load_keys();
+                    tokio::spawn(async move {
+                        match handle.await {
+                            Ok(Ok(n)) => {
+                                tracing::info!(
+                                    "Background preload inserted {n} keys from PostgreSQL"
+                                );
+                            }
+                            Ok(Err(e)) => {
+                                tracing::warn!("Failed to load keys from PostgreSQL: {e}");
+                            }
+                            Err(join_err) => {
+                                tracing::error!("Preload task panicked: {join_err}");
+                            }
                         }
-                        Err(e) => {
-                            tracing::warn!("Failed to load keys from PostgreSQL: {}", e);
-                        }
-                    }
+                    });
                     Arc::new(pg_keystore)
                 }
                 Err(e) => {
@@ -602,7 +630,20 @@ pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()
             let repo = PostgresKeyRepository::new(pool.clone());
             match PostgresKeystore::new(repo).await {
                 Ok(pg_keystore) => {
-                    let _ = pg_keystore.load_keys().await;
+                    // PR-4.19: same background-preload
+                    // pattern as `create_software_keystore`
+                    // (no top-level `.await` on the
+                    // preload).
+                    let handle = pg_keystore.spawn_load_keys();
+                    tokio::spawn(async move {
+                        if let Err(e) = handle.await.ok().unwrap_or_else(|| {
+                            Err(kms_core::error::Error::Internal(
+                                "preload task panicked".into(),
+                            ))
+                        }) {
+                            tracing::warn!("Failed to load keys from PostgreSQL: {e}");
+                        }
+                    });
                     tracing::info!(
                         "PostgreSQL-backed keystore with Redis cache (keys survive restarts)"
                     );
@@ -1031,9 +1072,12 @@ pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()
             "gRPC mTLS configured: require_client_cert={}",
             tls.require_client_cert
         );
+    } else if let Some(msg) = grpc_tls_failfast_message() {
+        anyhow::bail!(msg);
     } else {
         tracing::warn!(
-            "gRPC running without TLS - set TLS_CERT_PATH, TLS_KEY_PATH, TLS_CA_PATH to enable"
+            "KMS_ALLOW_INSECURE / KMS_DEV_MODE: gRPC running without TLS — \
+             API keys will transit in plaintext"
         );
     }
 
@@ -1050,15 +1094,18 @@ pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()
 
         let app = create_routes(rest_state, api_key_config.clone()).layer(cors);
 
-        let listener = tokio::net::TcpListener::bind(rest_addr)
-            .await
-            .expect("Failed to bind REST port");
-
+        // IMPORTANT: the plain TCP listener is created INSIDE the no-TLS arm only.
+        // The TLS-enabled arms (gm / tlcp / rustls) bind their own listeners on the
+        // same address via `GmTlsListener::bind` / `TlcpListener::bind` /
+        // `axum_server::bind_rustls`. Creating a plain TCP listener here
+        // unconditionally would EADDRINUSE the TLS listeners since the kernel
+        // disallows two sockets on the same (host, port). (Pre-existing bug
+        // fixed in 0.3.0.)
         match rest_tls_config {
             Some(ref tls) if tls.enabled && tls.backend == "gm" => {
                 // REST with TLS 1.3 + SM cipher suites (via gm-tls::TlsAcceptor).
                 // Note: This is RFC 8446 TLS 1.3 with SM cipher suites (0x0303),
-                // NOT TLCP (GB/T 38636-2020, 0x0101). For TLCP, use the separate `gm-tlcp` crate.
+                // NOT TLCP (GB/T 38636-2020, 0x0101). For TLCP, use backend = "tlcp".
                 tracing::info!("REST API listening on tls13-sm://{}", rest_addr);
 
                 let ca_path = tls.ca_path.as_deref().unwrap_or("");
@@ -1087,6 +1134,41 @@ pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()
                     .expect("TLS 1.3 + SM REST server error");
                 Ok(())
             }
+            Some(ref tls) if tls.enabled && tls.backend == "tlcp" => {
+                // REST with TLCP (GB/T 38636-2020) via gm-tlcp::TlcpAcceptor.
+                // Dual-cert ECDHE handshake; gRPC stays on TLS 1.3 + SM
+                // (TLCP has no ALPN, gRPC needs h2).
+                if let Err(e) = tls.validate_tlcp_paths() {
+                    tracing::error!("TLCP startup aborted: {e}");
+                    return Err(e);
+                }
+                let acceptor = match tls.to_tlcp_acceptor() {
+                    Ok(a) => a,
+                    Err(e) => {
+                        tracing::error!(
+                            "TLCP startup aborted: failed to load dual-certs from {}/{}: {e}",
+                            tls.tlcp_sign_cert_path.as_deref().unwrap_or("?"),
+                            tls.tlcp_enc_cert_path.as_deref().unwrap_or("?")
+                        );
+                        return Err(anyhow::anyhow!("Failed to load TLCP dual-certs: {e}"));
+                    }
+                };
+
+                tracing::info!("REST API listening on tlcp://{}", rest_addr);
+
+                let tlcp_listener =
+                    crate::cmd::tlcp_listener::TlcpListener::bind(rest_addr, acceptor)
+                        .await
+                        .expect("Failed to bind TLCP REST listener");
+
+                axum::serve(tlcp_listener, app)
+                    .with_graceful_shutdown(async {
+                        rest_shutdown_rx.await.ok();
+                    })
+                    .await
+                    .expect("TLCP REST server error");
+                Ok(())
+            }
             Some(ref tls) if tls.enabled => {
                 // REST with TLS using axum_server
                 tracing::info!("REST API listening on https://{}", rest_addr);
@@ -1113,10 +1195,21 @@ pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()
                 shutdown_handle.graceful_shutdown(Some(std::time::Duration::from_secs(30)));
                 Ok(())
             }
-            _ => {
-                // REST without TLS
+            Some(ref tls) if !tls.enabled => {
+                // PR-4.1 (REST side; see helper doc for the audit rationale):
+                // see `rest_tls_failfast_message` helper.
+                if let Some(msg) = rest_tls_failfast_message(true) {
+                    anyhow::bail!(msg);
+                }
+                tracing::warn!(
+                    "rest_tls.enabled=false + KMS_ALLOW_INSECURE / KMS_DEV_MODE: \
+                     REST listening on plaintext http"
+                );
+                // Inline plaintext listener bind.
+                let listener = tokio::net::TcpListener::bind(rest_addr)
+                    .await
+                    .expect("Failed to bind REST port");
                 tracing::info!("REST API listening on http://{}", rest_addr);
-
                 axum::serve(listener, app)
                     .with_graceful_shutdown(async {
                         rest_shutdown_rx.await.ok();
@@ -1124,6 +1217,34 @@ pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()
                     .await
                     .expect("REST server error");
                 Ok(())
+            }
+            None => {
+                // PR-4.1 (REST side): see `rest_tls_failfast_message` helper.
+                if let Some(msg) = rest_tls_failfast_message(false) {
+                    anyhow::bail!(msg);
+                }
+                tracing::warn!(
+                    "KMS_ALLOW_INSECURE / KMS_DEV_MODE: REST listening on plaintext http"
+                );
+                // Inline plaintext listener bind.
+                let listener = tokio::net::TcpListener::bind(rest_addr)
+                    .await
+                    .expect("Failed to bind REST port");
+                tracing::info!("REST API listening on http://{}", rest_addr);
+                axum::serve(listener, app)
+                    .with_graceful_shutdown(async {
+                        rest_shutdown_rx.await.ok();
+                    })
+                    .await
+                    .expect("REST server error");
+                Ok(())
+            }
+            _ => {
+                // Pre-existing unreachable (TLS arms already returned above);
+                // kept for forward-compat with future variants.
+                unreachable!(
+                    "all match arms above either return explicitly; this arm is a safety net"
+                );
             }
         }
     });
@@ -1243,6 +1364,71 @@ pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()
 }
 
 // ============================================================================
+// PR-4.1 fail-fast helpers (referenced as "PR 4.1" in audit docs)
+// ============================================================================
+//
+// Module-level helpers extracted from `cmd::server::run` so the
+// unit-test module at the bottom of this file can drive them
+// directly (the surrounding `run` function has too much network /
+// keystore setup for an end-to-end integration test). Both helpers
+// read `KMS_ALLOW_INSECURE` / `KMS_DEV_MODE` via
+// `kms_core::production_safety::is_insecure_opted_in()` and return
+// `None` when the operator has opted in to plaintext listeners,
+// or `Some(msg)` describing the failure when production-safety
+// must be enforced.
+
+/// Fail-fast trigger: returns `Some(msg)` iff the gRPC startup
+/// path should bail because no TLS is configured. The pre-PR-4.1
+/// behavior at the call site was `tracing::warn!` only. API keys
+/// and signed payloads transited in the clear, which is
+/// unacceptable for production. This helper mirrors the KEK
+/// fail-fast pattern in
+/// `kms-keystore/src/postgres.rs:92-95` (any operator who reads
+/// the codebase will recognize the symmetric guard). Operators
+/// who really need plaintext (tightly-controlled segments behind
+/// a TLS-terminating reverse proxy) opt in via
+/// `KMS_ALLOW_INSECURE=1`; the test harness uses `KMS_DEV_MODE=1`.
+///
+/// Note: the original PR-4.1 ID is left in the source comment for
+/// traceability against the SPEC and improvement-plan PDF.
+pub(crate) fn grpc_tls_failfast_message() -> Option<&'static str> {
+    if production_safety::is_insecure_opted_in() {
+        None
+    } else {
+        Some(
+            "KMS gRPC requires TLS in production; \
+             set KMS_ALLOW_INSECURE=1 (or KMS_DEV_MODE=1) \
+             to run with plaintext (DEV / TEST ONLY)",
+        )
+    }
+}
+
+/// Fail-fast trigger: returns `Some(msg)` iff the REST startup
+/// path should bail because no TLS is configured. Pre-PR-4.1
+/// behavior was to bind a plaintext `http://` TCP listener when
+/// `rest_tls_config` was `None` OR `rest_tls.enabled == false`.
+/// PR-4.1 gates both branches behind the same env-var opt-in,
+/// with distinct error messages so the operator can tell which
+/// arm they tripped over.
+pub(crate) fn rest_tls_failfast_message(rest_tls_present: bool) -> Option<&'static str> {
+    if production_safety::is_insecure_opted_in() {
+        None
+    } else if rest_tls_present {
+        Some(
+            "KMS REST requires TLS in production; \
+             rest_tls.enabled=false in config but \
+             KMS_ALLOW_INSECURE=1 (or KMS_DEV_MODE=1) is not set",
+        )
+    } else {
+        Some(
+            "KMS REST requires TLS in production; \
+             no [rest_tls] config block + KMS_ALLOW_INSECURE=1 \
+             (or KMS_DEV_MODE=1) is not set",
+        )
+    }
+}
+
+// ============================================================================
 // SM9 Master Key Repository Bridge Adapter
 // ============================================================================
 //
@@ -1286,5 +1472,115 @@ impl kms_api::Sm9MasterKeyRepository for Sm9RepoAdapter {
             .exists()
             .await
             .map_err(|e| kms_api::ApiError::Internal(format!("SM9 repo exists: {e}")))
+    }
+}
+
+// ============================================================================
+// PR 4.1 unit tests (audit doc reference)
+// ============================================================================
+
+// PR-4.1 (see audit docs): unit tests
+// ============================================================================
+
+#[cfg(test)]
+mod pr41_failfast_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    // Serializes env-var mutations across the test runner. The
+    // helper functions read KMS_ALLOW_INSECURE + KMS_DEV_MODE; if
+    // tests set them concurrently they could trample each other.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn with_env<T>(vars: &[(&str, &str)], f: impl FnOnce() -> T) -> T {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let prev: Vec<(&str, Option<String>)> = vars
+            .iter()
+            .map(|(k, _)| (*k, std::env::var(k).ok()))
+            .collect();
+        // SAFETY: `ENV_LOCK` serializes access. We always restore the
+        // previous values before returning.
+        unsafe {
+            for (k, v) in vars {
+                std::env::set_var(k, v);
+            }
+            let result = f();
+            for (k, prev_v) in prev {
+                match prev_v {
+                    Some(v) => std::env::set_var(k, v),
+                    None => std::env::remove_var(k),
+                }
+            }
+            result
+        }
+    }
+
+    #[test]
+    fn pr41_grpc_failfast_no_opt_in() {
+        with_env(&[("KMS_ALLOW_INSECURE", ""), ("KMS_DEV_MODE", "")], || {
+            let msg = grpc_tls_failfast_message();
+            assert!(msg.is_some(), "must fail-fast without opt-in");
+            let s = msg.unwrap();
+            assert!(s.contains("gRPC requires TLS"));
+            assert!(s.contains("KMS_ALLOW_INSECURE"));
+        });
+    }
+
+    #[test]
+    fn pr41_grpc_failfast_allow_insecure_opt_in() {
+        with_env(&[("KMS_ALLOW_INSECURE", "1"), ("KMS_DEV_MODE", "")], || {
+            assert!(grpc_tls_failfast_message().is_none());
+        });
+    }
+
+    #[test]
+    fn pr41_grpc_failfast_dev_mode_opt_in() {
+        with_env(&[("KMS_ALLOW_INSECURE", ""), ("KMS_DEV_MODE", "1")], || {
+            assert!(grpc_tls_failfast_message().is_none());
+        });
+    }
+
+    #[test]
+    fn pr41_rest_failfast_no_opt_in_config_present() {
+        with_env(&[("KMS_ALLOW_INSECURE", ""), ("KMS_DEV_MODE", "")], || {
+            let msg = rest_tls_failfast_message(true);
+            assert!(msg.is_some());
+            let s = msg.unwrap();
+            assert!(s.contains("REST requires TLS"));
+            assert!(s.contains("rest_tls.enabled=false"));
+        });
+    }
+
+    #[test]
+    fn pr41_rest_failfast_no_opt_in_config_absent() {
+        with_env(&[("KMS_ALLOW_INSECURE", ""), ("KMS_DEV_MODE", "")], || {
+            let msg = rest_tls_failfast_message(false);
+            assert!(msg.is_some());
+            let s = msg.unwrap();
+            assert!(s.contains("REST requires TLS"));
+            assert!(s.contains("no [rest_tls] config block"));
+        });
+    }
+
+    #[test]
+    fn pr41_rest_failfast_allow_insecure_overrides_both() {
+        with_env(&[("KMS_ALLOW_INSECURE", "1"), ("KMS_DEV_MODE", "")], || {
+            assert!(rest_tls_failfast_message(true).is_none());
+            assert!(rest_tls_failfast_message(false).is_none());
+        });
+    }
+
+    #[test]
+    fn pr41_messages_distinct_per_arm() {
+        // The two REST error messages must remain distinct so an
+        // operator can tell whether they forgot the [rest_tls]
+        // config block entirely vs set enabled = false on a
+        // present block. Lock down this invariant so a future
+        // refactor doesn't accidentally collapse them.
+        with_env(&[("KMS_ALLOW_INSECURE", ""), ("KMS_DEV_MODE", "")], || {
+            let a = rest_tls_failfast_message(true).unwrap().to_string();
+            let b = rest_tls_failfast_message(false).unwrap().to_string();
+            assert_ne!(a, b, "REST fail-fast messages must be distinct");
+        });
     }
 }

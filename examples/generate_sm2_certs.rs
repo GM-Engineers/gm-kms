@@ -10,12 +10,14 @@
 use asn1::{ObjectIdentifier, SequenceWriter};
 use elliptic_curve::sec1::ToEncodedPoint;
 use gm_ca::cert::CaSigner;
+use gm_ca::cert_profile::CertProfile;
 use gm_crypto::sm2::Sm2KeyPair;
 use std::fs;
 use std::path::PathBuf;
 
-// SM2 public key OID: 1.2.156.10197.1.301 = 2A 8C D8 E3 65 6A 01 01
-const SM2_PK_OID_BYTES: &[u8] = &[0x2A, 0x8C, 0xD8, 0xE3, 0x65, 0x6A, 0x01, 0x01];
+// SM2 public key OID: 1.2.156.10197.1.301.
+// DER base-128: ... 301 = 0x82 0x2D.
+const SM2_PK_OID_BYTES: &[u8] = &[0x2A, 0x81, 0x1C, 0xCF, 0x55, 0x01, 0x82, 0x2D];
 // CN OID: 2.5.4.3 = 55 04 03
 const CN_OID_BYTES: &[u8] = &[0x55, 0x04, 0x03];
 
@@ -239,16 +241,24 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let client_csr_der = build_sm2_csr_der("client.test", client_pubkey_bytes, &client_keypair)?;
     let client_csr_pem = csr_to_pem(&client_csr_der);
 
-    // 4. Sign both certs with our test CA
-    let server_cert_pem = ca_signer.sign_csr(server_csr_pem.as_bytes(), 365)?;
-    let client_cert_pem = ca_signer.sign_csr(client_csr_pem.as_bytes(), 365)?;
+    // 4. Sign both certs with our test CA.
+    // Use the default end-entity profile (digitalSignature + serverAuth +
+    // clientAuth + SAN + SKI + AKI + BasicConstraints CA:FALSE).
+    let (_server_serial, server_cert_pem) = ca_signer
+        .sign_csr_with_profile(server_csr_pem.as_bytes(), 365, &CertProfile::default())
+        .map_err(|e| anyhow::anyhow!("server cert sign: {e}"))?;
+    let (_client_serial, client_cert_pem) = ca_signer
+        .sign_csr_with_profile(client_csr_pem.as_bytes(), 365, &CertProfile::default())
+        .map_err(|e| anyhow::anyhow!("client cert sign: {e}"))?;
 
     // 5. CA self-signed cert for trust chain
     let ca_pubkey = ca_keypair.public_key().to_encoded_point(false);
     let ca_pubkey_bytes = ca_pubkey.as_bytes();
     let ca_csr_der = build_sm2_csr_der("Test GM CA", ca_pubkey_bytes, &ca_keypair)?;
     let ca_csr_pem = csr_to_pem(&ca_csr_der);
-    let ca_cert_pem = ca_signer.sign_csr(ca_csr_pem.as_bytes(), 3650)?;
+    let (_ca_serial, ca_cert_pem) = ca_signer
+        .sign_csr_with_profile(ca_csr_pem.as_bytes(), 3650, &CertProfile::default())
+        .map_err(|e| anyhow::anyhow!("CA self-sign: {e}"))?;
 
     // 6. Write to output directory
     let write_str = |name: &str, data: &str| {
@@ -259,15 +269,15 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     };
 
     println!("\nWriting certificates to {}:", out_dir.display());
-    write_str("ca.pem", &ca_cert_pem.0);
-    write_str("server.pem", &server_cert_pem.0);
+    write_str("ca.pem", &ca_cert_pem);
+    write_str("server.pem", &server_cert_pem);
     write_str(
         "server-key.pem",
         &server_keypair
             .private_key_pem()
             .map_err(|e| anyhow::anyhow!("{e}"))?,
     );
-    write_str("client.pem", &client_cert_pem.0);
+    write_str("client.pem", &client_cert_pem);
     write_str(
         "client-key.pem",
         &client_keypair

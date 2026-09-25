@@ -67,15 +67,25 @@ enabled = true
 #   - "gm"     — TLS 1.3 (RFC 8446) with SM cipher suites (SM2/SM3/SM4),
 #                protocol version byte 0x0303. Implemented via gm-tls::TlsAcceptor.
 #                This is **NOT TLCP** (GB/T 38636-2020, 0x0101).
-#                For TLCP support, use the separate `gm-tlcp` crate.
+#   - "tlcp"   — TLCP (GB/T 38636-2020, 0x0101) via gm-tlcp::TlcpAcceptor.
+#                Requires dual certificates (sign + enc). cert_path / key_path
+#                fields below are IGNORED when backend = "tlcp"; use the
+#                four `tlcp_*_path` fields instead.
+#
 # Uncomment and configure to enable HTTPS for REST API
 # [rest_tls]
 # enabled = true
-# backend = "rustls"               # "rustls" or "gm"
-# cert_path = "/path/to/rest-server.crt"
-# key_path = "/path/to/rest-server.key"
-# ca_path = ""                     # Required for "gm" backend (CA for client cert auth)
-# require_client_auth = false      # Set to true for mTLS
+# backend = "tlcp"                  # "rustls", "gm", or "tlcp"
+# cert_path = "/path/to/unused.crt" # unused when backend = "tlcp"
+# key_path  = "/path/to/unused.key" # unused when backend = "tlcp"
+# ca_path = ""                      # Required for "gm" backend only
+# require_client_auth = false       # Set to true for mTLS (gm-tls only)
+#
+# TLCP-only fields (required when backend = "tlcp", ignored otherwise):
+# tlcp_sign_cert_path = "/etc/kms/tlcerts/server-sign.crt"      # DER, signing cert
+# tlcp_enc_cert_path  = "/etc/kms/tlcerts/server-enc.crt"       # DER, encryption cert
+# tlcp_sign_key_path  = "/etc/kms/tlcerts/server-sign.key.pem"  # PEM, SM2 signing key
+# tlcp_enc_key_path   = "/etc/kms/tlcerts/server-enc.key.pem"   # PEM, SM2 encryption key
 
 [audit]
 # Audit log output: "stdout" or file path

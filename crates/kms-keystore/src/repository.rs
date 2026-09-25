@@ -76,6 +76,13 @@ impl From<KeyEntity> for KeyMeta {
 }
 
 /// PostgreSQL key repository
+///
+/// PR-4.19: `Clone` is implemented (not derived) so the
+/// spawned preload task can take its own handle to the
+/// connection pool without bumping the keystore's borrow
+/// state. The pool itself is `Arc`-backed so this clone is
+/// zero-cost.
+#[derive(Clone)]
 pub struct PostgresKeyRepository {
     pool: Pool<Postgres>,
 }
@@ -93,7 +100,12 @@ impl PostgresKeyRepository {
         let database_url = std::env::var("DATABASE_URL")
             .unwrap_or_else(|_| "postgres://localhost:5432/kms".to_string());
 
-        let tls_config = kms_core::BackendTlsConfig::from_env();
+        // PR-4.4: TLS config is now fallible; bubble up fail-fast errors.
+        let tls_config = kms_core::BackendTlsConfig::from_env().map_err(|e| {
+            sqlx::Error::Configuration(Box::new(std::io::Error::other(format!(
+                "DB TLS config fail-fast: {e}"
+            ))))
+        })?;
         let url = tls_config.build_postgres_url(&database_url);
 
         if tls_config.is_tls_enabled() {

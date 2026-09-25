@@ -7,9 +7,10 @@
 
 use crate::rotation::OperationCounter;
 use crate::{ApiError, KmsMetrics, KmsState, Result, quota::TenantQuotaTracker};
-use kms_core::key::{Ciphertext, Signature};
+use kms_core::key::{Ciphertext, KeyMeta, Signature};
 use kms_core::sanitize::sanitize_for_log;
 use std::sync::Arc;
+use uuid::Uuid;
 
 use super::{IntoApiError, ServiceError};
 
@@ -32,6 +33,40 @@ impl CryptoService {
         }
     }
 
+    /// Fetch key metadata and confirm the key belongs to `tenant_id`.
+    ///
+    /// Returns `ApiError::KeyNotFound` for BOTH cases:
+    /// - the key does not exist in the keystore
+    /// - the key exists but is owned by another tenant
+    ///
+    /// The two cases are deliberately conflated so a probing client cannot
+    /// distinguish "this key_id is not in the system" from "this key_id
+    /// exists but you don't own it" — that distinction is a key-enumeration
+    /// oracle. Performing the check before any cryptographic operation
+    /// also prevents the keystore from spending HSM/TPM signing quotas on
+    /// requests the caller is not authorised to make.
+    async fn fetch_owned_key_meta(&self, key_id: &Uuid, tenant_id: &str) -> Result<KeyMeta> {
+        let meta = self
+            .keystore
+            .get_key_metadata(key_id)
+            .await
+            .map_err(|e| ServiceError::from(e).into_api_error())?;
+
+        if meta.tenant_id != tenant_id {
+            // Possible enumeration attempt; record server-side but never
+            // distinguish from a missing key in the API response.
+            tracing::warn!(
+                key_id = %key_id,
+                requester_tenant = %sanitize_for_log(tenant_id),
+                owner_tenant = %sanitize_for_log(&meta.tenant_id),
+                "tenant mismatch on key access — possible enumeration attempt"
+            );
+            return Err(ApiError::KeyNotFound(key_id.to_string()));
+        }
+
+        Ok(meta)
+    }
+
     /// Encrypt data
     pub async fn encrypt(
         &self,
@@ -41,7 +76,7 @@ impl CryptoService {
         tenant_id: &str,
         user_id: &str,
     ) -> Result<Ciphertext> {
-        // Check quota - record_request returns Result<bool, QuotaExceeded>
+        // Check quota
         if let Some(ref tracker) = self.quota_tracker {
             let quota_ok = tracker.record_request(tenant_id).await;
             if let Err(quota_err) = quota_ok {
@@ -58,6 +93,10 @@ impl CryptoService {
             }
         }
 
+        // Verify the key exists and is owned by `tenant_id` before
+        // spending any encryption quota on it.
+        let meta = self.fetch_owned_key_meta(key_id, tenant_id).await?;
+
         // Encrypt
         let ciphertext = self
             .keystore
@@ -65,23 +104,10 @@ impl CryptoService {
             .await
             .map_err(|e| ServiceError::from(e).into_api_error())?;
 
-        // Record metrics (algorithm-aware) and verify tenant ownership
-        match self.keystore.get_key_metadata(key_id).await {
-            Ok(meta) => {
-                // Verify tenant isolation: key must belong to the requesting tenant
-                if meta.tenant_id != tenant_id {
-                    return Err(ApiError::Forbidden("access denied".to_string()));
-                }
-                self.metrics.record_key_op_with_spec("encrypt", &meta.spec);
-                self.metrics.record_key_access(key_id);
-            }
-            Err(_) => {
-                // Fallback: record without spec if metadata unavailable
-                self.metrics.record_key_op("encrypt");
-            }
-        }
+        // Record metrics (algorithm-aware; ownership already verified)
+        self.metrics.record_key_op_with_spec("encrypt", &meta.spec);
+        self.metrics.record_key_access(key_id);
 
-        // Increment operation counter for usage-based rotation
         if let Some(ref counter) = self.op_counter {
             counter.increment(key_id).await;
         }
@@ -122,6 +148,11 @@ impl CryptoService {
             }
         }
 
+        // Verify the key exists and is owned by `tenant_id` before any
+        // decryption work happens (and before any side-channel
+        // distinguishing key existence from nonce absence).
+        let meta = self.fetch_owned_key_meta(key_id, tenant_id).await?;
+
         // Decrypt
         let plaintext = self
             .keystore
@@ -129,20 +160,9 @@ impl CryptoService {
             .await
             .map_err(|e| ServiceError::from(e).into_api_error())?;
 
-        // Record metrics (algorithm-aware) and verify tenant ownership
-        match self.keystore.get_key_metadata(key_id).await {
-            Ok(meta) => {
-                // Verify tenant isolation: key must belong to the requesting tenant
-                if meta.tenant_id != tenant_id {
-                    return Err(ApiError::Forbidden("access denied".to_string()));
-                }
-                self.metrics.record_key_op_with_spec("decrypt", &meta.spec);
-                self.metrics.record_key_access(key_id);
-            }
-            Err(_) => {
-                self.metrics.record_key_op("decrypt");
-            }
-        }
+        // Record metrics (algorithm-aware; ownership already verified)
+        self.metrics.record_key_op_with_spec("decrypt", &meta.spec);
+        self.metrics.record_key_access(key_id);
 
         if let Some(ref counter) = self.op_counter {
             counter.increment(key_id).await;
@@ -183,6 +203,10 @@ impl CryptoService {
             }
         }
 
+        // Verify the key exists and is owned by `tenant_id` BEFORE
+        // spending a remote HSM/TPM signing quota on it.
+        let meta = self.fetch_owned_key_meta(key_id, tenant_id).await?;
+
         // Sign
         let signature = self
             .keystore
@@ -190,20 +214,9 @@ impl CryptoService {
             .await
             .map_err(|e| ServiceError::from(e).into_api_error())?;
 
-        // Record metrics (algorithm-aware) and verify tenant ownership
-        match self.keystore.get_key_metadata(key_id).await {
-            Ok(meta) => {
-                // Verify tenant isolation: key must belong to the requesting tenant
-                if meta.tenant_id != tenant_id {
-                    return Err(ApiError::Forbidden("access denied".to_string()));
-                }
-                self.metrics.record_key_op_with_spec("sign", &meta.spec);
-                self.metrics.record_key_access(key_id);
-            }
-            Err(_) => {
-                self.metrics.record_key_op("sign");
-            }
-        }
+        // Record metrics (algorithm-aware; ownership already verified)
+        self.metrics.record_key_op_with_spec("sign", &meta.spec);
+        self.metrics.record_key_access(key_id);
 
         if let Some(ref counter) = self.op_counter {
             counter.increment(key_id).await;
@@ -244,6 +257,12 @@ impl CryptoService {
             }
         }
 
+        // Verify the key exists and is owned by `tenant_id` before any
+        // verification work. Without this pre-check, a verification on
+        // another tenant's key would leak its key_id via timing and via
+        // the distinction between Forbidden and KeyNotFound.
+        let meta = self.fetch_owned_key_meta(key_id, tenant_id).await?;
+
         // Verify
         let result = self
             .keystore
@@ -251,20 +270,9 @@ impl CryptoService {
             .await
             .map_err(|e| ServiceError::from(e).into_api_error())?;
 
-        // Record metrics (algorithm-aware) and verify tenant ownership
-        match self.keystore.get_key_metadata(key_id).await {
-            Ok(meta) => {
-                // Verify tenant isolation: key must belong to the requesting tenant
-                if meta.tenant_id != tenant_id {
-                    return Err(ApiError::Forbidden("access denied".to_string()));
-                }
-                self.metrics.record_key_op_with_spec("verify", &meta.spec);
-                self.metrics.record_key_access(key_id);
-            }
-            Err(_) => {
-                self.metrics.record_key_op("verify");
-            }
-        }
+        // Record metrics (algorithm-aware; ownership already verified)
+        self.metrics.record_key_op_with_spec("verify", &meta.spec);
+        self.metrics.record_key_access(key_id);
 
         if let Some(ref counter) = self.op_counter {
             counter.increment(key_id).await;
@@ -629,13 +637,362 @@ mod tests {
         let key_id = meta.id;
 
         // Sign with correct tenant
-        let sig = svc
-            .sign(&key_id, b"msg", "tenant-s", "user1")
-            .await
-            .unwrap();
+        let sig = store.sign(&key_id, b"msg", "tenant-s").await.unwrap();
 
         // Verify with wrong tenant — rejected
         let result = svc.verify(&key_id, b"msg", &sig, "tenant-t").await;
         assert!(result.is_err());
+    }
+
+    // ── PR-1.2 tenant isolation + Kafka enumeration audit ──
+
+    /// Helper: encrypt a plaintext under a tenant, return the ciphertext.
+    async fn encrypt_under(
+        store: &Arc<SoftwareKeystore>,
+        key_id: &Uuid,
+        tenant: &str,
+    ) -> Ciphertext {
+        store
+            .encrypt(key_id, b"plaintext", None, tenant)
+            .await
+            .expect("encryption under owning tenant should succeed")
+    }
+
+    /// Sign with a tenant that does not own the key must return
+    /// `KeyNotFound`, NOT `Forbidden`. The two are deliberately conflated
+    /// to close the key-enumeration oracle.
+    #[tokio::test]
+    async fn test_pr12_sign_cross_tenant_returns_keynotfound() {
+        let store = Arc::new(SoftwareKeystore::new());
+        let svc = build_test_service(store.clone(), None);
+
+        let meta = store
+            .generate_key(&KeySpec::Ed25519, "p12-sign", "tenant-a")
+            .await
+            .unwrap();
+        let key_id = meta.id;
+
+        let result = svc.sign(&key_id, b"msg", "tenant-b", "user1").await;
+        assert!(
+            matches!(result, Err(ApiError::KeyNotFound(_))),
+            "cross-tenant sign must return KeyNotFound, got {result:?}"
+        );
+    }
+
+    /// Decrypt with a tenant that does not own the key must return
+    /// `KeyNotFound`.
+    #[tokio::test]
+    async fn test_pr12_decrypt_cross_tenant_returns_keynotfound() {
+        let store = Arc::new(SoftwareKeystore::new());
+        let svc = build_test_service(store.clone(), None);
+
+        let meta = store
+            .generate_key(&KeySpec::Aes256Gcm, "p12-dec", "tenant-a")
+            .await
+            .unwrap();
+        let key_id = meta.id;
+        let ct = encrypt_under(&store, &key_id, "tenant-a").await;
+
+        let result = svc.decrypt(&key_id, &ct, None, "tenant-b", "user1").await;
+        assert!(
+            matches!(result, Err(ApiError::KeyNotFound(_))),
+            "cross-tenant decrypt must return KeyNotFound, got {result:?}"
+        );
+    }
+
+    /// Encrypt with a tenant that does not own the key must return
+    /// `KeyNotFound`.
+    #[tokio::test]
+    async fn test_pr12_encrypt_cross_tenant_returns_keynotfound() {
+        let store = Arc::new(SoftwareKeystore::new());
+        let svc = build_test_service(store.clone(), None);
+
+        let meta = store
+            .generate_key(&KeySpec::Aes256Gcm, "p12-enc", "tenant-a")
+            .await
+            .unwrap();
+        let key_id = meta.id;
+
+        let result = svc
+            .encrypt(&key_id, b"data", None, "tenant-b", "user1")
+            .await;
+        assert!(
+            matches!(result, Err(ApiError::KeyNotFound(_))),
+            "cross-tenant encrypt must return KeyNotFound, got {result:?}"
+        );
+    }
+
+    /// Verify with a tenant that does not own the key must return
+    /// `KeyNotFound`.
+    #[tokio::test]
+    async fn test_pr12_verify_cross_tenant_returns_keynotfound() {
+        let store = Arc::new(SoftwareKeystore::new());
+        let svc = build_test_service(store.clone(), None);
+
+        let meta = store
+            .generate_key(&KeySpec::Ed25519, "p12-verify", "tenant-a")
+            .await
+            .unwrap();
+        let key_id = meta.id;
+        let sig = store.sign(&key_id, b"msg", "tenant-a").await.unwrap();
+
+        let result = svc.verify(&key_id, b"msg", &sig, "tenant-b").await;
+        assert!(
+            matches!(result, Err(ApiError::KeyNotFound(_))),
+            "cross-tenant verify must return KeyNotFound, got {result:?}"
+        );
+    }
+
+    /// Sign with a fully non-existent key_id must also return
+    /// `KeyNotFound` — same shape as the cross-tenant case.
+    #[tokio::test]
+    async fn test_pr12_sign_nonexistent_key_returns_keynotfound() {
+        let store = Arc::new(SoftwareKeystore::new());
+        let svc = build_test_service(store.clone(), None);
+
+        let bogus = Uuid::new_v4();
+        let result = svc.sign(&bogus, b"msg", "tenant-a", "user1").await;
+        assert!(
+            matches!(result, Err(ApiError::KeyNotFound(_))),
+            "non-existent key must return KeyNotFound, got {result:?}"
+        );
+    }
+
+    /// Cross-tenant and non-existent-key responses must produce byte-
+    /// identical `IntoResponse` output: same HTTP status, same body.
+    /// This is the core anti-enumeration assertion.
+    #[tokio::test]
+    async fn test_pr12_cross_tenant_and_nonexistent_have_identical_responses() {
+        use axum::body::to_bytes;
+        use axum::response::IntoResponse;
+
+        // Set up: tenant-a owns a key; tenant-b is the attacker.
+        let store = Arc::new(SoftwareKeystore::new());
+        let svc = build_test_service(store.clone(), None);
+
+        let meta = store
+            .generate_key(&KeySpec::Aes256Gcm, "p12-idem", "tenant-a")
+            .await
+            .unwrap();
+        let key_id = meta.id;
+        let ct = encrypt_under(&store, &key_id, "tenant-a").await;
+
+        // Response 1: tenant-b decrypts a key owned by tenant-a (cross-tenant).
+        let resp1 = svc
+            .decrypt(&key_id, &ct, None, "tenant-b", "user1")
+            .await
+            .expect_err("cross-tenant decrypt must error")
+            .into_response();
+        let status1 = resp1.status();
+        let body1 = to_bytes(resp1.into_body(), 1024).await.unwrap();
+
+        // Response 2: tenant-a decrypts with a fully bogus key_id (non-existent).
+        let bogus = Uuid::new_v4();
+        let resp2 = svc
+            .decrypt(&bogus, &ct, None, "tenant-a", "user1")
+            .await
+            .expect_err("non-existent key decrypt must error")
+            .into_response();
+        let status2 = resp2.status();
+        let body2 = to_bytes(resp2.into_body(), 1024).await.unwrap();
+
+        // Must be indistinguishable to the client.
+        assert_eq!(status1, status2, "HTTP status must match");
+        assert_eq!(
+            body1, body2,
+            "response body must match byte-for-byte to prevent enumeration"
+        );
+        assert_eq!(
+            status1.as_u16(),
+            404,
+            "both responses must surface as HTTP 404 (NOT 403)"
+        );
+    }
+
+    /// The pre-check must reject a cross-tenant request BEFORE the keystore
+    /// spends the signing computation. We verify by wrapping the keystore
+    /// in a counter that fails `sign` calls; if the pre-check is working,
+    /// the cross-tenant request returns `KeyNotFound` (not the sign-fault
+    /// error), and the counter shows zero `sign` calls.
+    #[tokio::test]
+    async fn test_pr12_sign_does_not_call_keystore_on_tenant_mismatch() {
+        use async_trait::async_trait;
+        use kms_core::BackendType;
+        use kms_core::key::{Ciphertext, KeyFilter, KeyMeta, Signature};
+        use kms_keystore::KeystoreBackend;
+
+        struct SignCountingKeystore {
+            inner: Arc<SoftwareKeystore>,
+            sign_calls: Arc<std::sync::atomic::AtomicUsize>,
+        }
+
+        #[async_trait]
+        impl KeystoreBackend for SignCountingKeystore {
+            fn backend_type(&self) -> BackendType {
+                self.inner.backend_type()
+            }
+            async fn generate_key(
+                &self,
+                spec: &KeySpec,
+                name: &str,
+                tenant_id: &str,
+            ) -> kms_core::Result<KeyMeta> {
+                self.inner.generate_key(spec, name, tenant_id).await
+            }
+            async fn get_key_metadata(&self, key_id: &Uuid) -> kms_core::Result<KeyMeta> {
+                self.inner.get_key_metadata(key_id).await
+            }
+            async fn encrypt(
+                &self,
+                key_id: &Uuid,
+                plaintext: &[u8],
+                aad: Option<&[u8]>,
+                tenant_id: &str,
+            ) -> kms_core::Result<Ciphertext> {
+                self.inner.encrypt(key_id, plaintext, aad, tenant_id).await
+            }
+            async fn decrypt(
+                &self,
+                key_id: &Uuid,
+                ct: &Ciphertext,
+                aad: Option<&[u8]>,
+                tenant_id: &str,
+            ) -> kms_core::Result<Vec<u8>> {
+                self.inner.decrypt(key_id, ct, aad, tenant_id).await
+            }
+            async fn sign(
+                &self,
+                _key_id: &Uuid,
+                _data: &[u8],
+                _tenant_id: &str,
+            ) -> kms_core::Result<Signature> {
+                self.sign_calls
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Err(kms_core::Error::Internal("sign disabled for test".into()))
+            }
+            async fn verify(
+                &self,
+                key_id: &Uuid,
+                data: &[u8],
+                sig: &Signature,
+                tenant_id: &str,
+            ) -> kms_core::Result<bool> {
+                self.inner.verify(key_id, data, sig, tenant_id).await
+            }
+            async fn rotate_key(
+                &self,
+                key_id: &Uuid,
+                tenant_id: &str,
+            ) -> kms_core::Result<KeyMeta> {
+                self.inner.rotate_key(key_id, tenant_id).await
+            }
+            async fn delete_key(&self, key_id: &Uuid, tenant_id: &str) -> kms_core::Result<()> {
+                self.inner.delete_key(key_id, tenant_id).await
+            }
+            async fn destroy_key(&self, key_id: &Uuid) -> kms_core::Result<()> {
+                self.inner.destroy_key(key_id).await
+            }
+            async fn destroy_key_with_proof(
+                &self,
+                key_id: &Uuid,
+            ) -> kms_core::Result<kms_core::DestructionProof> {
+                self.inner.destroy_key_with_proof(key_id).await
+            }
+            async fn list_keys(&self, filter: &KeyFilter) -> kms_core::Result<Vec<KeyMeta>> {
+                self.inner.list_keys(filter).await
+            }
+            async fn export_key_material(
+                &self,
+                key_id: &Uuid,
+                _tenant_id: &str,
+            ) -> kms_core::Result<Vec<u8>> {
+                self.inner.export_key_material(key_id, _tenant_id).await
+            }
+            async fn get_key_material(
+                &self,
+                key_id: &Uuid,
+                tenant_id: &str,
+            ) -> kms_core::Result<Vec<u8>> {
+                self.inner.get_key_material(key_id, tenant_id).await
+            }
+            async fn get_key_material_version(
+                &self,
+                key_id: &Uuid,
+                version: u32,
+                tenant_id: &str,
+            ) -> kms_core::Result<Vec<u8>> {
+                self.inner
+                    .get_key_material_version(key_id, version, tenant_id)
+                    .await
+            }
+            async fn health(&self) -> kms_core::Result<kms_core::HealthStatus> {
+                self.inner.health().await
+            }
+            async fn import_key_material(
+                &self,
+                spec: &KeySpec,
+                name: &str,
+                tenant_id: &str,
+                material: Vec<u8>,
+            ) -> kms_core::Result<KeyMeta> {
+                self.inner
+                    .import_key_material(spec, name, tenant_id, material)
+                    .await
+            }
+            async fn derive_shared_secret(
+                &self,
+                key_id: &Uuid,
+                peer_public_key: &[u8],
+                algorithm: kms_core::dh::DhAlgorithm,
+            ) -> kms_core::Result<kms_core::dh::SharedSecret> {
+                self.inner
+                    .derive_shared_secret(key_id, peer_public_key, algorithm)
+                    .await
+            }
+        }
+
+        let store = Arc::new(SoftwareKeystore::new());
+        let meta = store
+            .generate_key(&KeySpec::Ed25519, "p12-pre", "tenant-a")
+            .await
+            .unwrap();
+        let key_id = meta.id;
+        let sign_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+        let counting: Arc<dyn KeystoreBackend> = Arc::new(SignCountingKeystore {
+            inner: store,
+            sign_calls: sign_calls.clone(),
+        });
+        let svc = build_test_service(counting, None);
+
+        // Cross-tenant attempt: pre-check rejects; `sign` must NOT be called.
+        let result = svc.sign(&key_id, b"msg", "tenant-b", "user1").await;
+        assert!(
+            matches!(result, Err(ApiError::KeyNotFound(_))),
+            "cross-tenant sign must return KeyNotFound without invoking keystore, got {result:?}"
+        );
+        assert_eq!(
+            sign_calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "keystore.sign must NOT be called on cross-tenant access (was 0)"
+        );
+
+        // Correct-tenant attempt: pre-check passes, then keystore.sign is
+        // invoked and fails with our injected "sign disabled" error.
+        let result2 = svc.sign(&key_id, b"msg", "tenant-a", "user1").await;
+        assert!(
+            result2.is_err(),
+            "correct-tenant sign must fail (sign disabled), got {result2:?}"
+        );
+        assert_eq!(
+            sign_calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "keystore.sign must be called exactly once for the correct-tenant attempt"
+        );
+        assert!(
+            !matches!(result2, Err(ApiError::KeyNotFound(_))),
+            "correct-tenant attempt must NOT be conflated with cross-tenant; \
+             must surface the underlying sign-disabled error"
+        );
     }
 }

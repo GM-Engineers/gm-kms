@@ -981,27 +981,6 @@ mod tests {
         assert_eq!(meta.version, 4);
     }
 
-    /// SM9 direct keystore rotation returns error (must use adapter)
-    #[tokio::test]
-    async fn test_sm9_direct_keystore_rotation_errors() {
-        use kms_keystore::SoftwareKeystore;
-        use std::sync::Arc;
-
-        let store = Arc::new(SoftwareKeystore::new());
-        let meta = store
-            .generate_key(&KeySpec::Sm9Signing, "sm9-direct", "test-tenant")
-            .await
-            .unwrap();
-
-        let result = store.rotate_key(&meta.id, "test-tenant").await;
-        assert!(result.is_err());
-        let err_msg = result.unwrap_err().to_string();
-        assert!(
-            err_msg.contains("Sm9RotationAdapter"),
-            "Error should mention Sm9RotationAdapter, got: {err_msg}"
-        );
-    }
-
     /// check_rotation_needed returns true when version exceeds max
     #[tokio::test]
     async fn test_sm9_check_rotation_needed() {

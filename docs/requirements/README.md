@@ -1,7 +1,7 @@
 # Requirements / 功能需求文档
 
-> 版本 Version: 1.1
-> 更新 Updated: 2026-09-05
+> 版本 Version: 1.2
+> 更新 Updated: 2026-09-23
 
 ---
 
@@ -19,6 +19,13 @@ This directory contains functional requirements for gm-kms, each document in Chi
 | **F4-pbac.md** | 基于策略的访问控制 / Policy-Based Access Control | ✅ 已实现 Implemented |
 | **F5-audit.md** | 审计日志 / Audit Logging | ✅ 已实现 Implemented |
 | **N1-security.md** | 安全控制要求 / Security Requirements | ✅ 已实现 Implemented |
+| **N2-tls-failfast.md** | 启动 TLS 失败即停 / TLS Startup Fail-Fast | ✅ 已实现 Implemented |
+| **N3-db-redis-tls-defaults.md** | DB/Redis TLS 生产默认值 / DB & Redis TLS Production Defaults | ✅ 已实现 Implemented |
+| **N4-sm9-generate-not-implemented.md** | SM9 密钥生成未实现显式报错 / SM9 Key Generation Must Fail-Loud | ✅ 已实现 Implemented |
+| **N5-kek-source-layering.md** | KEK 来源分层 (env/file) / KEK Source Layering (Env / File) | ✅ 已实现 Implemented (阶段 1/3) |
+| **N6-worm-hmac-key-isolation.md** | WORM 审计 HMAC 密钥路径独立化 / WORM Audit HMAC Key Isolation | ✅ 已实现 Implemented |
+| **N7-sm2-private-key-range.md** | SM2 私钥 [1, n-1] 范围校验 / SM2 Private Scalar Range Validation | ✅ 已实现 Implemented |
+| **N8-keystore-in-memory-cap.md** | Postgres keystore 内存上限 + FIFO eviction / Postgres Keystore In-Memory Cap + FIFO Eviction | ✅ 已实现 Implemented |
 | **sm2-kex-requirement.md** | SM2 密钥交换需求 / SM2 Key Exchange | ✅ 已实现 Implemented |
 
 ## 文档结构 / Document Structure

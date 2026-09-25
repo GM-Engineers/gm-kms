@@ -104,22 +104,35 @@ impl crate::Decryptor for Aes256GcmDecryptor {
 
         let less_safe_key = LessSafeKey::new(unbound_key);
 
-        // Reconstruct nonce from stored counter bytes
+        // Combine ciphertext and tag into a single in-place buffer for ring's
+        // open_in_place API, which expects `ct || tag` layout.
         let mut in_out = ciphertext.ciphertext.to_vec();
         in_out.extend_from_slice(&ciphertext.tag);
 
-        // The nonce stored is the starting counter, we need to reconstruct
-        // This is a simplified version - real implementation would need proper counter handling
-        let nonce_bytes: [u8; 12] = if ciphertext.nonce.len() >= 12 {
-            let mut arr = [0u8; 12];
-            arr.copy_from_slice(&ciphertext.nonce[4..16]);
-            arr
-        } else if ciphertext.nonce.len() == 12 {
-            let mut arr = [0u8; 12];
-            arr.copy_from_slice(&ciphertext.nonce);
-            arr
-        } else {
-            return Err(Error::DecryptionFailed("invalid nonce length".to_string()));
+        // Reconstruct the 12-byte AES-GCM nonce from the stored nonce bytes.
+        //
+        // Self-produced ciphertexts store a 16-byte big-endian counter; the
+        // lower 12 bytes [4..16] are the actual AES-GCM nonce. External /
+        // legacy ciphertexts may already carry the 12-byte nonce directly.
+        // RFC 5116 §5.2 fixes the AES-256-GCM nonce length to exactly 12
+        // octets (N_MIN = N_MAX = 12). Accept either form; reject other
+        // lengths with an error rather than panicking.
+        let nonce_bytes: [u8; 12] = match ciphertext.nonce.len() {
+            12 => {
+                let mut arr = [0u8; 12];
+                arr.copy_from_slice(&ciphertext.nonce);
+                arr
+            }
+            16 => {
+                let mut arr = [0u8; 12];
+                arr.copy_from_slice(&ciphertext.nonce[4..16]);
+                arr
+            }
+            other => {
+                return Err(Error::DecryptionFailed(format!(
+                    "invalid AES-256-GCM nonce length: {other} (expected 12 or 16)"
+                )));
+            }
         };
 
         less_safe_key
@@ -366,6 +379,7 @@ impl AlgorithmFactory {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use uuid::Uuid;
 
     #[test]
     fn test_aes256gcm_encrypt_decrypt() {
@@ -423,5 +437,112 @@ mod tests {
 
         let encryptor = AlgorithmFactory::create_encryptor(KeySpec::Rsa4096);
         assert!(encryptor.is_none());
+    }
+
+    /// Regression: a `Ciphertext` whose `nonce` is exactly 12 bytes (the
+    /// RFC 5116 §5.2 standard length for AES-256-GCM, used by external /
+    /// legacy / cross-implementation ciphertexts) must decrypt
+    /// successfully. The decryptor must accept either the 12-byte direct
+    /// form or the 16-byte self-produced counter form, and must never
+    /// panic on a length that simply requires slicing.
+    #[test]
+    fn test_aes256gcm_decrypt_12byte_nonce_no_panic() {
+        use ring::aead::{AES_256_GCM, Aad, LessSafeKey, Nonce, UnboundKey};
+
+        let crypto = Aes256GcmCrypto::new();
+        let key = [0u8; 32];
+        let nonce_bytes = [0x42u8; 12];
+        let plaintext = b"external 12-byte nonce ciphertext";
+
+        // Encrypt directly with ring using the 12-byte nonce to mirror
+        // what an external producer would emit.
+        let unbound_key = UnboundKey::new(&AES_256_GCM, &key).unwrap();
+        let sealing_key = LessSafeKey::new(unbound_key);
+        let mut in_out = plaintext.to_vec();
+        let tag = sealing_key
+            .seal_in_place_separate_tag(
+                Nonce::assume_unique_for_key(nonce_bytes),
+                Aad::empty(),
+                &mut in_out,
+            )
+            .unwrap();
+
+        let ct = Ciphertext {
+            key_id: Uuid::new_v4(),
+            version: 1,
+            format_version: 1,
+            nonce: nonce_bytes.to_vec(),
+            ciphertext: in_out,
+            tag: tag.as_ref().to_vec(),
+        };
+
+        let decrypted = crypto.decrypt(&key, &ct, None).unwrap();
+        assert_eq!(decrypted, plaintext);
+    }
+
+    /// Regression: a self-produced ciphertext with a 16-byte nonce must
+    /// decrypt successfully after the nonce is truncated to its lower
+    /// 12 bytes — the actual AES-GCM nonce used during encryption. The
+    /// two accepted forms are equivalent and must round-trip identically.
+    #[test]
+    fn test_aes256gcm_decrypt_truncated_native_nonce_to_12bytes_succeeds() {
+        let crypto = Aes256GcmCrypto::new();
+        let key = vec![0u8; 32];
+        let plaintext = b"native 16-byte nonce truncated to 12 bytes";
+
+        let mut ct = crypto.encrypt(&key, plaintext, None).unwrap();
+        assert_eq!(ct.nonce.len(), 16, "self-produced nonce must be 16 bytes");
+
+        // Truncate to the lower 12 bytes — this is the actual AES-GCM nonce
+        // used during encryption.
+        let lower_12 = ct.nonce[4..16].to_vec();
+        ct.nonce = lower_12;
+        assert_eq!(ct.nonce.len(), 12);
+
+        let decrypted = crypto.decrypt(&key, &ct, None).unwrap();
+        assert_eq!(decrypted, plaintext);
+    }
+
+    /// Negative: a `Ciphertext` whose `nonce` length is neither 12 nor 16
+    /// must return `DecryptionFailed` rather than panic, so that
+    /// malformed inputs cannot crash the KMS process.
+    #[test]
+    fn test_aes256gcm_decrypt_invalid_nonce_length_8_returns_error() {
+        let crypto = Aes256GcmCrypto::new();
+        let key = vec![0u8; 32];
+
+        let ct = Ciphertext {
+            key_id: Uuid::new_v4(),
+            version: 1,
+            format_version: 1,
+            nonce: vec![0u8; 8],
+            ciphertext: vec![0u8; 0],
+            tag: vec![0u8; 16],
+        };
+
+        let result = crypto.decrypt(&key, &ct, None);
+        assert!(matches!(result, Err(Error::DecryptionFailed(_))));
+    }
+
+    /// Negative: a `nonce` length of 15 (in the gap between the two
+    /// accepted forms) must return `DecryptionFailed` rather than
+    /// panic. Malformed inputs of any other length must behave the
+    /// same way.
+    #[test]
+    fn test_aes256gcm_decrypt_invalid_nonce_length_15_returns_error() {
+        let crypto = Aes256GcmCrypto::new();
+        let key = vec![0u8; 32];
+
+        let ct = Ciphertext {
+            key_id: Uuid::new_v4(),
+            version: 1,
+            format_version: 1,
+            nonce: vec![0u8; 15],
+            ciphertext: vec![0u8; 0],
+            tag: vec![0u8; 16],
+        };
+
+        let result = crypto.decrypt(&key, &ct, None);
+        assert!(matches!(result, Err(Error::DecryptionFailed(_))));
     }
 }
