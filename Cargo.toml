@@ -125,7 +125,7 @@ x25519-dalek = { version = "2", features = ["static_secrets"] }
 # GM 国密 SM2/SM3/SM4
 gm-crypto = { version = "0.2" }
 gm-sm9-rs = { version = "0.1.0" }
-sm2 = "0.13"
+sm2 = "0.14"
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
