@@ -894,6 +894,54 @@ async fn decrypt(
     }))
 }
 
+/// Shared approval gate for sensitive key-lifecycle operations (delete/export/rotate).
+///
+/// Enforces that `approval_id` refers to a fully-approved, non-expired request of
+/// `operation` that is **bound to `resource_id`** (the key being acted on). Centralizes
+/// audit fixes P1-2 (resource binding), P2-8 (expiry) and P2-4 (uniform
+/// `OperationType`-driven gate). Returns the same `ApiError` shape the handlers
+/// previously produced inline.
+fn require_approved(
+    state: &KmsState,
+    approval_id: Option<&str>,
+    operation: kms_approval::OperationType,
+    resource_id: &str,
+    action: &str,
+) -> Result<()> {
+    let id_str = match approval_id {
+        Some(id) if !id.is_empty() => id,
+        _ => {
+            tracing::warn!(
+                resource_id,
+                action,
+                "{action} rejected: no approval_id provided"
+            );
+            return Err(ApiError::InvalidRequest(format!(
+                "{action} requires an approved request. Create one via POST /v1/approvals first"
+            )));
+        }
+    };
+    let approval_uuid = uuid::Uuid::parse_str(id_str)
+        .map_err(|_| ApiError::InvalidRequest("invalid approval_id format".to_string()))?;
+    // sync block — guard dropped before any .await
+    let approval_ok = {
+        let guard = state.approval_manager.read();
+        guard.is_approved(approval_uuid, operation, resource_id)
+    };
+    if !approval_ok {
+        tracing::warn!(
+            resource_id,
+            approval_id = id_str,
+            action,
+            "{action} rejected: approval not found, not bound to this resource/operation, not fully approved, or expired"
+        );
+        return Err(ApiError::InvalidRequest(format!(
+            "{action} requires a fully approved request bound to this resource"
+        )));
+    }
+    Ok(())
+}
+
 async fn rotate_key(
     CallerId { key_id: caller_id }: CallerId,
     State(state): State<Arc<KmsState>>,
@@ -910,6 +958,17 @@ async fn rotate_key(
     )
     .await
     .map_err(|_| ApiError::PermissionDenied)?;
+
+    // Security: key rotation is a Double-approval operation (workflow.rs declares
+    // KeyRotate => ApprovalLevel::Double); enforce it at the interface too, bound
+    // to THIS key (audit P2-4).
+    require_approved(
+        &state,
+        tenant_query.approval_id.as_deref(),
+        kms_approval::OperationType::KeyRotate,
+        &id.to_string(),
+        "key rotation",
+    )?;
 
     let tenant_id = &tenant_query.tenant_id;
 
@@ -942,32 +1001,15 @@ async fn delete_key(
     .await
     .map_err(|_| ApiError::PermissionDenied)?;
 
-    // Security: enforce dual-control approval for key deletion
-    use kms_approval::OperationType;
-    let approval_id = match &tenant_query.approval_id {
-        Some(id) if !id.is_empty() => id.clone(),
-        _ => {
-            tracing::warn!(key_id = %id, caller = %caller_id, "key deletion rejected: no approval_id");
-            return Err(ApiError::InvalidRequest(
-                "key deletion requires an approved DeleteKey request. Create one via POST /v1/approvals first".to_string(),
-            ));
-        }
-    };
-    let approval_uuid = uuid::Uuid::parse_str(&approval_id)
-        .map_err(|_| ApiError::InvalidRequest("invalid approval_id format".to_string()))?;
-    {
-        let guard = state.approval_manager.read();
-        if !guard.is_approved(approval_uuid, OperationType::KeyDelete) {
-            tracing::warn!(
-                key_id = %id,
-                approval_id = %approval_id,
-                "key deletion rejected: approval not found or not fully approved"
-            );
-            return Err(ApiError::InvalidRequest(
-                "key deletion requires a fully approved DeleteKey request".to_string(),
-            ));
-        }
-    }
+    // Security: enforce dual-control approval bound to THIS key for deletion
+    // (audit P1-2/P2-4/P2-8 via the shared gate).
+    require_approved(
+        &state,
+        tenant_query.approval_id.as_deref(),
+        kms_approval::OperationType::KeyDelete,
+        &id.to_string(),
+        "key deletion",
+    )?;
 
     let tenant_id = &tenant_query.tenant_id;
 
@@ -2265,6 +2307,7 @@ async fn export_key(
     CallerId { key_id: caller_id }: CallerId,
     State(state): State<Arc<KmsState>>,
     Path(key_id): Path<Uuid>,
+    Query(tenant_query): Query<TenantQuery>,
     Json(req): Json<ExportKeyRequest>,
 ) -> Result<Json<ExportKeyResponse>> {
     use base64::{Engine, engine::general_purpose::STANDARD};
@@ -2280,48 +2323,32 @@ async fn export_key(
     .await
     .map_err(|_| ApiError::PermissionDenied)?;
 
-    // Enforce approval gate: KeyExport requires an approved request
-    let approval_id = match &req.approval_id {
-        Some(id) => id.clone(),
-        None => {
-            tracing::warn!(key_id = %key_id, "key export rejected: no approval_id provided");
-            return Err(ApiError::InvalidRequest(
-                "key export requires an approved KeyExport request. Create one via POST /v1/approvals first".to_string(),
-            ));
-        }
-    };
-
-    let approval_uuid = uuid::Uuid::parse_str(&approval_id)
-        .map_err(|_| ApiError::InvalidRequest("invalid approval_id format".to_string()))?;
-
-    // Check approval is valid and fully approved for KeyExport
-    // (sync block — no .await inside the RwLockReadGuard scope)
-    let approval_ok = {
-        let guard = state.approval_manager.read();
-        guard.is_approved(approval_uuid, OperationType::KeyExport)
-    }; // guard dropped here, before any .await
-    if !approval_ok {
-        tracing::warn!(
-            key_id = %key_id,
-            approval_id = %approval_id,
-            "key export rejected: approval not found, not for KeyExport, or not fully approved"
-        );
-        return Err(ApiError::InvalidRequest(
-            "key export requires a fully approved KeyExport request".to_string(),
-        ));
-    }
+    // Enforce approval gate: an approved, un-expired KeyExport request **bound to
+    // this key** (audit P1-2/P2-8).
+    require_approved(
+        &state,
+        req.approval_id.as_deref(),
+        kms_approval::OperationType::KeyExport,
+        &key_id.to_string(),
+        "key export",
+    )?;
 
     let target_pubkey = STANDARD
         .decode(&req.target_public_key)
         .map_err(|_| ApiError::InvalidRequest("invalid base64 target_public_key".to_string()))?;
 
     let key_svc = state.key_service();
+    // Pass the caller-supplied tenant through to the service layer, which enforces
+    // `meta.tenant_id == tenant_id` (cross-tenant/missing => 404). This replaces the
+    // previous hardcoded "" that made every REST export fail (audit P1-1). Batch 3
+    // will derive the tenant from the authenticated identity instead of trusting the
+    // request.
     let exported = key_svc
         .export_key(
             &key_id,
             &target_pubkey,
             &req.purpose,
-            "", // tenant_id - not used in current implementation
+            &tenant_query.tenant_id,
             &caller_id,
         )
         .await?;

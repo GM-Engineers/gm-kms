@@ -52,10 +52,16 @@ impl ApprovalManager {
         Some(request.into())
     }
 
-    /// Check if an approval request is fully approved for the given operation type.
-    /// This is the security gate for sensitive operations (key export, etc.).
-    pub fn is_approved(&self, request_id: uuid::Uuid, operation: OperationType) -> bool {
-        self.engine.is_approved(request_id, operation)
+    /// Check if an approval request is fully approved for the given operation and
+    /// resource, and has not expired. This is the security gate for sensitive
+    /// operations (key export/delete/rotate).
+    pub fn is_approved(
+        &self,
+        request_id: uuid::Uuid,
+        operation: OperationType,
+        resource_id: &str,
+    ) -> bool {
+        self.engine.is_approved(request_id, operation, resource_id)
     }
 
     /// Approve a request

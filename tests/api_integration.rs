@@ -27,6 +27,7 @@ use serde_json::json;
 use tokio::net::TcpListener;
 
 const ADMIN_SECRET: &str = "integration-admin-key-secret";
+const OFFICER_SECRET: &str = "integration-officer-key-secret";
 const ADMIN_HEADER: &str = "x-api-key";
 
 /// 起一个绑定随机 loopback 端口的 REST 服务器，返回 `http://addr` base URL 与
@@ -58,6 +59,7 @@ async fn spawn_rest_server() -> (String, reqwest::Client, tokio::task::JoinHandl
 
     let api_key_config = ApiKeyConfig::with_keys(vec![
         ApiKey::key_admin(ADMIN_SECRET.to_string()).with_key_id("admin".to_string()),
+        ApiKey::security_officer(OFFICER_SECRET.to_string()).with_key_id("officer".to_string()),
     ]);
 
     let app = create_routes(state, api_key_config);
@@ -223,4 +225,221 @@ async fn aes256gcm_encrypt_decrypt_roundtrip_rest() {
 async fn sm2_encrypt_decrypt_roundtrip_rest() {
     // SM2 走 format_version:1、不绑定 AAD，作为对照用例（应通过）。
     assert_roundtrip("sm2", b"sm2 asymmetric control case").await;
+}
+
+// =============================================================================
+// Batch 2: export usability (P1-1) + approval resource/expiry binding (P1-2/P2-8)
+// + rotation approval gate (P2-4)
+// =============================================================================
+
+/// A valid RSA-2048 public key in PKCS#1 DER (base64), for the wrapped-export path.
+const RSA_PUB_PKCS1_B64: &str = "MIIBCgKCAQEAutdoRksj77EXTbJUvB0nyAKtIEkEjbpt8Bnu9LsmrwV/UK4he6mT3NaySjOgYJ9NOew0QkGRzD3eyy13Cwam8sISDxlF+2tCOiSACNqDQCs8SY9nQZUwmhZPTrtuWzVeHhR9FDEou+d0FiFSR5zgHnVQ4XPXP9DuYGBkB+DVQweHFW37Qdpr6pCPeTNkUjfCny9N8wlM1qtNUtCDCkuhsEUrvTgZwOnS9pZ78ldPlZfqENjZrRRIZkGjIKMLPusJfgSSbB1wg2Ppb9eP+iSgySUG9IWybAoCWE0e4/uBm9xrgXUubGkBw+G9uj14e2do74lx11rTbNpGxHohSxkPOwIDAQAB";
+
+/// Create a resource-bound approval request (KeyAdmin can, route is AUTHENTICATED).
+async fn create_approval(
+    client: &reqwest::Client,
+    base: &str,
+    operation: &str,
+    resource_id: &str,
+    tenant: &str,
+) -> String {
+    let resp = client
+        .post(format!("{base}/v1/approvals"))
+        .header(ADMIN_HEADER, ADMIN_SECRET)
+        .json(&json!({
+            "operation": operation,
+            "resource_id": resource_id,
+            "resource_type": "key",
+            "tenant_id": tenant,
+            "requestor_id": "requestor-user",
+            "justification": "integration test",
+        }))
+        .send()
+        .await
+        .expect("create_approval send");
+    let status = resp.status();
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .unwrap_or_else(|_| json!({ "__nonjson": true }));
+    assert!(
+        status.is_success(),
+        "create_approval failed: {status} body={body}"
+    );
+    body["id"].as_str().expect("approval id").to_string()
+}
+
+/// Approve with `n` distinct approvers via the SecurityOfficer key (APPROVE_ACTION).
+async fn approve_n(client: &reqwest::Client, base: &str, approval_id: &str, n: usize) {
+    for i in 0..n {
+        let resp = client
+            .post(format!("{base}/v1/approvals/{approval_id}/approve"))
+            .header(ADMIN_HEADER, OFFICER_SECRET)
+            .json(&json!({
+                "approver_id": format!("approver-{i}"),
+                "approver_role": "manager",
+                "comment": null,
+            }))
+            .send()
+            .await
+            .expect("approve send");
+        let status = resp.status();
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .unwrap_or_else(|_| json!({ "__nonjson": true }));
+        assert!(
+            status.is_success(),
+            "approve[{i}] failed: {status} body={body}"
+        );
+    }
+}
+
+/// REST export; returns (status, body).
+async fn export_key(
+    client: &reqwest::Client,
+    base: &str,
+    key_id: &str,
+    tenant: &str,
+    approval_id: Option<&str>,
+) -> (u16, serde_json::Value) {
+    let mut body = json!({
+        "target_system": "integration",
+        "target_public_key": RSA_PUB_PKCS1_B64,
+        "purpose": "migration",
+    });
+    body["approval_id"] = match approval_id {
+        Some(id) => json!(id),
+        None => json!(null),
+    };
+    let resp = client
+        .post(format!("{base}/v1/keys/export/{key_id}?tenant_id={tenant}"))
+        .header(ADMIN_HEADER, ADMIN_SECRET)
+        .json(&body)
+        .send()
+        .await
+        .expect("export send");
+    let status = resp.status().as_u16();
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .unwrap_or_else(|_| json!({ "__nonjson": true }));
+    (status, body)
+}
+
+/// REST rotate; returns (status, body).
+async fn rotate_key(
+    client: &reqwest::Client,
+    base: &str,
+    key_id: &str,
+    tenant: &str,
+    approval_id: Option<&str>,
+) -> (u16, serde_json::Value) {
+    let url = match approval_id {
+        Some(id) => format!("{base}/v1/keys/{key_id}/rotate?tenant_id={tenant}&approval_id={id}"),
+        None => format!("{base}/v1/keys/{key_id}/rotate?tenant_id={tenant}"),
+    };
+    let resp = client
+        .post(url)
+        .header(ADMIN_HEADER, ADMIN_SECRET)
+        .send()
+        .await
+        .expect("rotate send");
+    let status = resp.status().as_u16();
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .unwrap_or_else(|_| json!({ "__nonjson": true }));
+    (status, body)
+}
+
+/// P1-1: a properly approved, resource-bound export with the real tenant now succeeds
+/// (previously the handler hardcoded `""` and every REST export returned 404).
+#[tokio::test]
+async fn export_key_rest_requires_bound_approval() {
+    let (base, client, handle) = spawn_rest_server().await;
+    let tenant = "tenant-a";
+    let key_id = create_key(&client, &base, "export-ok", "sm4", tenant).await;
+
+    let approval_id = create_approval(&client, &base, "key_export", &key_id, tenant).await;
+    approve_n(&client, &base, &approval_id, 3).await; // Triple
+
+    let (status, body) = export_key(&client, &base, &key_id, tenant, Some(&approval_id)).await;
+    handle.abort();
+
+    assert_eq!(
+        status, 200,
+        "export should succeed with bound approval: body={body}"
+    );
+    assert!(
+        body["wrapped_key"].as_str().is_some_and(|s| !s.is_empty()),
+        "export response must carry wrapped_key: body={body}"
+    );
+}
+
+/// P1-2: an approval bound to key A cannot unlock an export of key B.
+#[tokio::test]
+async fn export_key_rest_rejects_unbound_resource() {
+    let (base, client, handle) = spawn_rest_server().await;
+    let tenant = "tenant-a";
+    let key_a = create_key(&client, &base, "key-a", "sm4", tenant).await;
+    let key_b = create_key(&client, &base, "key-b", "sm4", tenant).await;
+
+    // Approval bound to key_a, fully approved for KeyExport.
+    let approval_id = create_approval(&client, &base, "key_export", &key_a, tenant).await;
+    approve_n(&client, &base, &approval_id, 3).await;
+
+    // Using that approval to export key_b must be rejected at the interface gate.
+    let (status, body) = export_key(&client, &base, &key_b, tenant, Some(&approval_id)).await;
+    handle.abort();
+
+    assert!(
+        !(200..300).contains(&status) && status != 404,
+        "cross-resource export must be rejected by the approval gate (got {status}): body={body}"
+    );
+}
+
+/// P1-1 defense-in-depth: correct bound approval but wrong tenant => 404 (service-layer
+// ownership check rejects cross-tenant).
+#[tokio::test]
+async fn export_key_rest_rejects_cross_tenant() {
+    let (base, client, handle) = spawn_rest_server().await;
+    let tenant = "tenant-a";
+    let key_id = create_key(&client, &base, "xtenant", "sm4", tenant).await;
+
+    let approval_id = create_approval(&client, &base, "key_export", &key_id, tenant).await;
+    approve_n(&client, &base, &approval_id, 3).await;
+
+    // Request export under a DIFFERENT tenant: gate passes (resource matches), then
+    // the service-layer tenant-ownership check returns 404.
+    let (status, body) = export_key(&client, &base, &key_id, "tenant-b", Some(&approval_id)).await;
+    handle.abort();
+
+    assert_eq!(status, 404, "cross-tenant export must be 404: body={body}");
+}
+
+/// P2-4: rotation now requires a resource-bound KeyRotate (Double) approval.
+#[tokio::test]
+async fn rotate_key_requires_approval() {
+    let (base, client, handle) = spawn_rest_server().await;
+    let tenant = "tenant-a";
+    let key_id = create_key(&client, &base, "rotate-me", "sm4", tenant).await;
+
+    // Without approval => rejected.
+    let (no_appr_status, body1) = rotate_key(&client, &base, &key_id, tenant, None).await;
+    assert!(
+        !(200..300).contains(&no_appr_status),
+        "rotate without approval must be rejected: body={body1}"
+    );
+
+    // With a bound, fully approved KeyRotate (Double => 2 approvers) => success.
+    let approval_id = create_approval(&client, &base, "key_rotate", &key_id, tenant).await;
+    approve_n(&client, &base, &approval_id, 2).await;
+    let (ok_status, body2) = rotate_key(&client, &base, &key_id, tenant, Some(&approval_id)).await;
+    handle.abort();
+
+    assert_eq!(
+        ok_status, 200,
+        "rotate with bound approval should succeed: body={body2}"
+    );
 }

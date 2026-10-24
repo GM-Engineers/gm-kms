@@ -410,14 +410,27 @@ impl ApprovalEngine {
             .ok_or(ApprovalError::RequestNotFound)
     }
 
-    /// Check if an approval request exists, is for the specified operation, and is fully approved.
+    /// Check if an approval request exists, is for the specified operation **and
+    /// resource**, is fully approved, and has not expired.
     ///
-    /// This is the primary gate for sensitive operations like key export.
-    pub fn is_approved(&self, request_id: Uuid, operation: OperationType) -> bool {
+    /// This is the primary gate for sensitive operations like key export/delete.
+    /// Security invariants (audit P1-2 / P2-8):
+    /// - `resource_id` must match the resource the request was raised for, so one
+    ///   approved export cannot be replayed against a different key.
+    /// - An `Approved` request is only valid until `expires_at`; a fully approved
+    ///   request that has since expired no longer grants access.
+    pub fn is_approved(
+        &self,
+        request_id: Uuid,
+        operation: OperationType,
+        resource_id: &str,
+    ) -> bool {
         match self.get_request(request_id) {
             Ok(req) => {
                 req.operation == operation
+                    && req.resource_id == resource_id
                     && req.status == ApprovalStatus::Approved
+                    && Utc::now() <= req.expires_at
                     && Self::check_approval_complete(&req)
             }
             Err(_) => false,
@@ -838,6 +851,61 @@ mod tests {
 
         assert_eq!(approved.status, ApprovalStatus::Approved);
         assert_eq!(approved.approvals.len(), 2);
+    }
+
+    #[test]
+    fn test_is_approved_requires_resource_match() {
+        // P1-2: an approved request must be bound to the exact resource being acted on.
+        let mut engine = ApprovalEngine::new();
+        let request = engine
+            .create_request(
+                OperationType::KeyExport,
+                "key-123",
+                "key",
+                "tenant-1",
+                "user-1",
+                None,
+                ApprovalLevel::Single,
+            )
+            .unwrap();
+        engine
+            .approve(request.id, "approver-1", Role::Manager, None)
+            .unwrap();
+
+        // Correct resource → approved.
+        assert!(engine.is_approved(request.id, OperationType::KeyExport, "key-123"));
+        // Different resource → denied (cannot replay one key's approval on another).
+        assert!(!engine.is_approved(request.id, OperationType::KeyExport, "key-999"));
+        // Wrong operation → denied.
+        assert!(!engine.is_approved(request.id, OperationType::KeyDelete, "key-123"));
+    }
+
+    #[test]
+    fn test_is_approved_rejects_expired() {
+        // P2-8: a fully approved request stops granting access once expired.
+        let mut engine = ApprovalEngine::new();
+        let request = engine
+            .create_request(
+                OperationType::KeyExport,
+                "key-123",
+                "key",
+                "tenant-1",
+                "user-1",
+                None,
+                ApprovalLevel::Single,
+            )
+            .unwrap();
+        engine
+            .approve(request.id, "approver-1", Role::Manager, None)
+            .unwrap();
+        assert!(engine.is_approved(request.id, OperationType::KeyExport, "key-123"));
+
+        // Force the (already-approved) request into the past.
+        {
+            let stored = engine.pending_requests.get_mut(&request.id).unwrap();
+            stored.expires_at = Utc::now() - chrono::Duration::hours(1);
+        }
+        assert!(!engine.is_approved(request.id, OperationType::KeyExport, "key-123"));
     }
 
     #[test]

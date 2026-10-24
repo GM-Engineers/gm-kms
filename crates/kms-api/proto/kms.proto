@@ -83,6 +83,8 @@ message DecryptResponse {
 message RotateKeyRequest {
     string id = 1;
     string tenant_id = 2;
+    // Approval request ID (KeyRotate is a dual-approval operation; audit P2-4).
+    string approval_id = 3;
 }
 
 message RotateKeyResponse {

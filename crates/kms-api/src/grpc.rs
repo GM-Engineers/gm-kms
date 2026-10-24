@@ -50,6 +50,44 @@ impl KmsGrpcService {
             }
         }
     }
+
+    /// Shared approval gate for sensitive key-lifecycle operations (delete/export/rotate).
+    /// Mirrors the REST `require_approved` helper so both channels enforce the same
+    /// invariants (audit P1-2 resource binding, P2-8 expiry, P2-4 uniform
+    /// `OperationType`-driven gate): the `approval_id` must reference a fully-approved,
+    /// non-expired request of `operation` bound to `resource_id`.
+    fn require_approved(
+        &self,
+        approval_id: &str,
+        operation: OperationType,
+        resource_id: &str,
+        action: &str,
+    ) -> Result<(), Status> {
+        if approval_id.is_empty() {
+            tracing::warn!(%resource_id, %action, "{action} rejected: no approval_id");
+            return Err(Status::failed_precondition(format!(
+                "{action} requires an approved request. Create one via the approvals API first"
+            )));
+        }
+        let approval_uuid = uuid::Uuid::parse_str(approval_id)
+            .map_err(|_| Status::invalid_argument("invalid approval_id format"))?;
+        let approval_ok = {
+            let guard = self.state.approval_manager.read();
+            guard.is_approved(approval_uuid, operation, resource_id)
+        };
+        if !approval_ok {
+            tracing::warn!(
+                %resource_id,
+                %approval_id,
+                %action,
+                "{action} rejected: approval not found, not bound to this resource/operation, not fully approved, or expired"
+            );
+            return Err(Status::permission_denied(format!(
+                "{action} requires a fully approved request bound to this resource"
+            )));
+        }
+        Ok(())
+    }
 }
 
 // ── gRPC Authentication Interceptor ──────────────────────────────────
@@ -412,6 +450,17 @@ impl KmsService for KmsGrpcService {
         self.check_pbac(&caller_id, "rotate_key", &id.to_string())
             .await?;
 
+        // Security: KeyRotate is a dual-approval operation (workflow.rs:
+        // KeyRotate => ApprovalLevel::Double). Enforce it here too, bound to THIS
+        // key, so the enum-declared level is actually required at the interface
+        // (audit P2-4).
+        self.require_approved(
+            &req.approval_id,
+            OperationType::KeyRotate,
+            &id.to_string(),
+            "key rotation",
+        )?;
+
         let tenant_id = if req.tenant_id.is_empty() {
             tracing::warn!(
                 "SECURITY: gRPC request with empty tenant_id — defaulting to default. \
@@ -456,34 +505,14 @@ impl KmsService for KmsGrpcService {
         self.check_pbac(&caller_id, "delete_key", &id.to_string())
             .await?;
 
-        // Security: enforce dual-control approval for key deletion
+        // Security: enforce dual-control approval bound to THIS key for deletion
         // GM/T 0028-2014 requires multi-party approval for destructive operations
-        if req.approval_id.is_empty() {
-            tracing::warn!(
-                key_id = %id,
-                caller = %caller_id,
-                "key deletion rejected: no approval_id"
-            );
-            return Err(Status::permission_denied(
-                "key deletion requires an approved DeleteKey request. \
-                 Create an approval via CreateApprovalRequest first",
-            ));
-        }
-        let approval_uuid = uuid::Uuid::parse_str(&req.approval_id)
-            .map_err(|_| Status::invalid_argument("invalid approval_id format"))?;
-        {
-            let guard = self.state.approval_manager.read();
-            if !guard.is_approved(approval_uuid, OperationType::KeyDelete) {
-                tracing::warn!(
-                    key_id = %id,
-                    approval_id = %req.approval_id,
-                    "key deletion rejected: approval not found or not fully approved"
-                );
-                return Err(Status::permission_denied(
-                    "key deletion requires a fully approved DeleteKey request",
-                ));
-            }
-        }
+        self.require_approved(
+            &req.approval_id,
+            OperationType::KeyDelete,
+            &id.to_string(),
+            "key deletion",
+        )?;
 
         let tenant_id = if req.tenant_id.is_empty() {
             tracing::warn!(
@@ -1023,34 +1052,14 @@ impl KmsService for KmsGrpcService {
         self.check_pbac(&caller_id, "export_key", &key_id.to_string())
             .await?;
 
-        // Enforce approval gate: key export requires an approved KeyExport request.
-        // This mirrors the REST API behaviour (see rest.rs export_key).
-        let approval_id = if req.approval_id.is_empty() {
-            tracing::warn!(key_id = %key_id, "key export rejected: no approval_id provided");
-            return Err(Status::failed_precondition(
-                "key export requires an approved KeyExport request. Create one via the approvals API first",
-            ));
-        } else {
-            &req.approval_id
-        };
-
-        let approval_uuid = uuid::Uuid::parse_str(approval_id)
-            .map_err(|_| Status::invalid_argument("invalid approval_id format"))?;
-
-        let approval_ok = {
-            let guard = self.state.approval_manager.read();
-            guard.is_approved(approval_uuid, OperationType::KeyExport)
-        };
-        if !approval_ok {
-            tracing::warn!(
-                key_id = %key_id,
-                approval_id = %approval_id,
-                "key export rejected: approval not found, not for KeyExport, or not fully approved"
-            );
-            return Err(Status::permission_denied(
-                "key export requires a fully approved KeyExport request",
-            ));
-        }
+        // Enforce approval gate: an approved, un-expired KeyExport request bound to
+        // THIS key. Mirrors the REST API behaviour (see rest.rs export_key).
+        self.require_approved(
+            &req.approval_id,
+            OperationType::KeyExport,
+            &key_id.to_string(),
+            "key export",
+        )?;
 
         let tenant_id = if req.tenant_id.is_empty() {
             tracing::warn!(
