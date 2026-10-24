@@ -1008,17 +1008,20 @@ impl KmsService for KmsGrpcService {
         let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
         let tenant_id: &str = &tenant_id_owned;
 
-        let key_material = self
-            .state
-            .keystore
-            .export_key_material(&key_id, tenant_id)
+        // Wrapped-export semantics (audit P2-5): converge gRPC onto the SAME service-layer
+        // method REST uses, so raw key material is never returned over the wire. The caller
+        // supplies its public key; the server returns wrapped_key + encrypted_transport_key.
+        let key_svc = self.state.key_service();
+        let exported = key_svc
+            .export_key(
+                &key_id,
+                &req.target_public_key,
+                &req.purpose,
+                tenant_id,
+                &caller_id,
+            )
             .await
-            .map_err(|e| match e {
-                kms_core::Error::KeyNotFound(_) => {
-                    Status::not_found(format!("key {key_id} not found"))
-                }
-                _ => Status::internal(e.to_string()),
-            })?;
+            .map_err(api_error_to_status)?;
 
         let event = kms_core::event::Event::new(
             kms_core::event::EventType::KeyAccessed,
@@ -1032,8 +1035,9 @@ impl KmsService for KmsGrpcService {
         self.state.audit_logger.log_event(&event).await;
 
         Ok(Response::new(pb::ExportKeyResponse {
-            key_material,
-            version: 1,
+            wrapped_key: exported.wrapped_key,
+            encrypted_transport_key: exported.encrypted_transport_key,
+            key_fingerprint: exported.key_fingerprint,
         }))
     }
 

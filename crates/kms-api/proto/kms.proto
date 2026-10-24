@@ -243,11 +243,21 @@ message ExportKeyRequest {
     // POST /v1/approvals, obtain the required quorum approvals, then
     // supply the approved request ID here.
     string approval_id = 3;
+    // Wrapped-export semantics (audit P2-5): the caller supplies its public key so the
+    // server can return an encrypted transport key + wrapped material instead of raw
+    // plaintext. For the RSA-OAEP path this is a PKCS#1 DER RSA public key.
+    bytes target_public_key = 4;
+    // Purpose of the export (migration, backup, ...) for audit.
+    string purpose = 5;
 }
 
 message ExportKeyResponse {
-    bytes key_material = 1;
-    uint32 version = 2;
+    // Key material encrypted with an ephemeral transport key (never raw plaintext).
+    string wrapped_key = 1;
+    // Transport key encrypted with the caller's target_public_key.
+    string encrypted_transport_key = 2;
+    // SHA-256 fingerprint of the exported material, for integrity verification.
+    string key_fingerprint = 3;
 }
 
 // Audit query messages
