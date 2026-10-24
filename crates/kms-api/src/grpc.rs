@@ -90,6 +90,34 @@ impl KmsGrpcService {
     }
 }
 
+/// Resolve the effective request tenant from the authenticated identity (audit P1-3).
+///
+/// - Bound key (`Some(b)`) => the bound tenant is AUTHORITATIVE; the request-reported
+///   tenant is ignored (a mismatch is logged so spoofing attempts are observable).
+/// - Unbound key + non-empty request tenant => honour the request tenant (compat).
+/// - Unbound key + empty request tenant => FAIL explicitly. This removes the previous
+///   silent `"default"` fallback, which masked misconfiguration and pooled untensored
+///   requests into a shared bucket.
+fn resolve_tenant(bound: Option<&str>, req_tenant: &str) -> Result<String, Status> {
+    if let Some(b) = bound {
+        if !req_tenant.is_empty() && req_tenant != b {
+            tracing::warn!(
+                bound_tenant = %b,
+                reported_tenant = %req_tenant,
+                "ignoring self-reported tenant: authenticated API key is bound to its own tenant"
+            );
+        }
+        return Ok(b.to_string());
+    }
+    if req_tenant.is_empty() {
+        tracing::warn!("gRPC request denied: unbound API key with empty tenant_id");
+        return Err(Status::invalid_argument(
+            "tenant_id is required: set it in the request or bind it to the API key",
+        ));
+    }
+    Ok(req_tenant.to_string())
+}
+
 // ── gRPC Authentication Interceptor ──────────────────────────────────
 
 /// gRPC interceptor that enforces API Key authentication.
@@ -139,10 +167,15 @@ impl Interceptor for GrpcAuthInterceptor {
             Some(key) => {
                 if let Some((permission, key_id)) = self.api_key_config.validate_with_identity(key)
                 {
+                    // Server-side tenant binding (audit P1-3): derive the authoritative
+                    // tenant from the authenticated key. Computed before the mutable
+                    // borrow of `request` below to keep the `key` borrow region tight.
+                    let tenant_id = self.api_key_config.lookup_tenant(key);
                     // Attach the caller's role + identity to request extensions for handler-level checks
                     request.extensions_mut().insert(GrpcCaller {
                         role: permission,
                         key_id,
+                        tenant_id,
                     });
                     Ok(request)
                 } else {
@@ -166,18 +199,21 @@ pub struct GrpcCaller {
     pub role: ApiKeyPermission,
     /// API key ID for audit trail (satisfies 等保三级 traceability requirement).
     pub key_id: String,
+    /// Tenant bound to the authenticated API key (audit P1-3). `None` means unbound,
+    /// so the handler falls back to the request-self-reported tenant.
+    pub tenant_id: Option<String>,
 }
 
 /// Check that the caller has the required Permission.
-/// Returns the caller's identity (role + key_id) on success, or a Status error.
+/// Returns the caller's identity (role + key_id + bound tenant) on success, or a Status error.
 fn check_permission<T>(
     request: &Request<T>,
     required: Permission,
-) -> Result<(ApiKeyPermission, String), Status> {
+) -> Result<(ApiKeyPermission, String, Option<String>), Status> {
     match request.extensions().get::<GrpcCaller>() {
         Some(caller) => {
             if caller.role.satisfies(required) {
-                Ok((caller.role, caller.key_id.clone()))
+                Ok((caller.role, caller.key_id.clone(), caller.tenant_id.clone()))
             } else {
                 tracing::warn!(
                     role = %caller.role,
@@ -227,7 +263,7 @@ impl KmsService for KmsGrpcService {
         &self,
         request: Request<pb::CreateKeyRequest>,
     ) -> Result<Response<CreateKeyResponse>, Status> {
-        let (_, caller_id) = check_permission(&request, Permission::CREATE_KEY)?;
+        let (_, caller_id, caller_tenant) = check_permission(&request, Permission::CREATE_KEY)?;
         let req = request.into_inner();
 
         // PBAC: evaluate policy for key creation
@@ -236,15 +272,7 @@ impl KmsService for KmsGrpcService {
         let spec =
             crate::service::KeyService::parse_spec(&req.spec).map_err(api_error_to_status)?;
 
-        let tenant_id = if req.tenant_id.is_empty() {
-            tracing::warn!(
-                "SECURITY: gRPC request with empty tenant_id — defaulting to 'default'. \
-                 Configure tenant binding in API key or set tenant_id explicitly"
-            );
-            "default".to_string()
-        } else {
-            req.tenant_id
-        };
+        let tenant_id = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
 
         let key_svc = self.state.key_service();
         let meta = key_svc
@@ -298,22 +326,15 @@ impl KmsService for KmsGrpcService {
         &self,
         request: Request<pb::GetKeyRequest>,
     ) -> Result<Response<GetKeyResponse>, Status> {
-        let (_, caller_id) = check_permission(&request, Permission::GET_KEY)?;
+        let (_, caller_id, caller_tenant) = check_permission(&request, Permission::GET_KEY)?;
         let req = request.into_inner();
         let id = uuid::Uuid::parse_str(&req.id)
             .map_err(|_| Status::invalid_argument("invalid key id"))?;
         self.check_pbac(&caller_id, "get_key", &id.to_string())
             .await?;
 
-        let tenant_id = if req.tenant_id.is_empty() {
-            tracing::warn!(
-                "SECURITY: gRPC request with empty tenant_id — defaulting to default. \
-                 Configure tenant binding in API key or set tenant_id explicitly"
-            );
-            "default"
-        } else {
-            &req.tenant_id
-        };
+        let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
+        let tenant_id: &str = &tenant_id_owned;
 
         let key_svc = self.state.key_service();
         let meta = key_svc
@@ -342,7 +363,7 @@ impl KmsService for KmsGrpcService {
         &self,
         request: Request<pb::EncryptRequest>,
     ) -> Result<Response<EncryptResponse>, Status> {
-        let (_, caller_id) = check_permission(&request, Permission::ENCRYPT)?;
+        let (_, caller_id, caller_tenant) = check_permission(&request, Permission::ENCRYPT)?;
         let req = request.into_inner();
         let id = uuid::Uuid::parse_str(&req.key_id)
             .map_err(|_| Status::invalid_argument("invalid key id"))?;
@@ -352,15 +373,8 @@ impl KmsService for KmsGrpcService {
         // plaintext is now bytes type in proto (not base64 encoded string)
         let plaintext = req.plaintext;
 
-        let tenant_id = if req.tenant_id.is_empty() {
-            tracing::warn!(
-                "SECURITY: gRPC request with empty tenant_id — defaulting to default. \
-                 Configure tenant binding in API key or set tenant_id explicitly"
-            );
-            "default"
-        } else {
-            &req.tenant_id
-        };
+        let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
+        let tenant_id: &str = &tenant_id_owned;
 
         let crypto = self.state.crypto_service();
         let ciphertext = crypto
@@ -386,7 +400,7 @@ impl KmsService for KmsGrpcService {
         &self,
         request: Request<pb::DecryptRequest>,
     ) -> Result<Response<pb::DecryptResponse>, Status> {
-        let (_, caller_id) = check_permission(&request, Permission::DECRYPT)?;
+        let (_, caller_id, caller_tenant) = check_permission(&request, Permission::DECRYPT)?;
         let req = request.into_inner();
         let id = uuid::Uuid::parse_str(&req.key_id)
             .map_err(|_| Status::invalid_argument("invalid key id"))?;
@@ -414,15 +428,8 @@ impl KmsService for KmsGrpcService {
                 .map_err(|_| Status::invalid_argument("invalid base64 tag"))?,
         };
 
-        let tenant_id = if req.tenant_id.is_empty() {
-            tracing::warn!(
-                "SECURITY: gRPC request with empty tenant_id — defaulting to default. \
-                 Configure tenant binding in API key or set tenant_id explicitly"
-            );
-            "default"
-        } else {
-            &req.tenant_id
-        };
+        let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
+        let tenant_id: &str = &tenant_id_owned;
 
         let crypto = self.state.crypto_service();
         let plaintext = crypto
@@ -443,7 +450,7 @@ impl KmsService for KmsGrpcService {
         &self,
         request: Request<pb::RotateKeyRequest>,
     ) -> Result<Response<RotateKeyResponse>, Status> {
-        let (_, caller_id) = check_permission(&request, Permission::ROTATE_KEY)?;
+        let (_, caller_id, caller_tenant) = check_permission(&request, Permission::ROTATE_KEY)?;
         let req = request.into_inner();
         let id = uuid::Uuid::parse_str(&req.id)
             .map_err(|_| Status::invalid_argument("invalid key id"))?;
@@ -461,15 +468,8 @@ impl KmsService for KmsGrpcService {
             "key rotation",
         )?;
 
-        let tenant_id = if req.tenant_id.is_empty() {
-            tracing::warn!(
-                "SECURITY: gRPC request with empty tenant_id — defaulting to default. \
-                 Configure tenant binding in API key or set tenant_id explicitly"
-            );
-            "default"
-        } else {
-            &req.tenant_id
-        };
+        let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
+        let tenant_id: &str = &tenant_id_owned;
 
         let key_svc = self.state.key_service();
         let meta = key_svc
@@ -498,7 +498,7 @@ impl KmsService for KmsGrpcService {
         &self,
         request: Request<pb::DeleteKeyRequest>,
     ) -> Result<Response<DeleteKeyResponse>, Status> {
-        let (_, caller_id) = check_permission(&request, Permission::DELETE_KEY)?;
+        let (_, caller_id, caller_tenant) = check_permission(&request, Permission::DELETE_KEY)?;
         let req = request.into_inner();
         let id = uuid::Uuid::parse_str(&req.id)
             .map_err(|_| Status::invalid_argument("invalid key id"))?;
@@ -514,15 +514,8 @@ impl KmsService for KmsGrpcService {
             "key deletion",
         )?;
 
-        let tenant_id = if req.tenant_id.is_empty() {
-            tracing::warn!(
-                "SECURITY: gRPC request with empty tenant_id — defaulting to default. \
-                 Configure tenant binding in API key or set tenant_id explicitly"
-            );
-            "default"
-        } else {
-            &req.tenant_id
-        };
+        let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
+        let tenant_id: &str = &tenant_id_owned;
 
         let key_svc = self.state.key_service();
         key_svc
@@ -541,19 +534,12 @@ impl KmsService for KmsGrpcService {
         &self,
         request: Request<pb::ListKeysRequest>,
     ) -> Result<Response<ListKeysResponse>, Status> {
-        let (_, caller_id) = check_permission(&request, Permission::LIST_KEYS)?;
+        let (_, caller_id, caller_tenant) = check_permission(&request, Permission::LIST_KEYS)?;
         let req = request.into_inner();
         self.check_pbac(&caller_id, "list_keys", "keys").await?;
 
-        let tenant_id = if req.tenant_id.is_empty() {
-            tracing::warn!(
-                "SECURITY: gRPC request with empty tenant_id — defaulting to default. \
-                 Configure tenant binding in API key or set tenant_id explicitly"
-            );
-            "default"
-        } else {
-            &req.tenant_id
-        };
+        let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
+        let tenant_id: &str = &tenant_id_owned;
 
         let key_svc = self.state.key_service();
         let keys = key_svc
@@ -593,7 +579,7 @@ impl KmsService for KmsGrpcService {
         &self,
         request: Request<pb::SignRequest>,
     ) -> Result<Response<SignResponse>, Status> {
-        let (_, caller_id) = check_permission(&request, Permission::SIGN)?;
+        let (_, caller_id, caller_tenant) = check_permission(&request, Permission::SIGN)?;
         let req = request.into_inner();
         let id = uuid::Uuid::parse_str(&req.key_id)
             .map_err(|_| Status::invalid_argument("invalid key id"))?;
@@ -605,15 +591,8 @@ impl KmsService for KmsGrpcService {
             .decode(&req.data)
             .map_err(|_| Status::invalid_argument("invalid base64 data"))?;
 
-        let tenant_id = if req.tenant_id.is_empty() {
-            tracing::warn!(
-                "SECURITY: gRPC request with empty tenant_id — defaulting to default. \
-                 Configure tenant binding in API key or set tenant_id explicitly"
-            );
-            "default"
-        } else {
-            &req.tenant_id
-        };
+        let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
+        let tenant_id: &str = &tenant_id_owned;
 
         let crypto = self.state.crypto_service();
         let signature = crypto
@@ -635,7 +614,7 @@ impl KmsService for KmsGrpcService {
         &self,
         request: Request<pb::VerifyRequest>,
     ) -> Result<Response<VerifyResponse>, Status> {
-        let (_, caller_id) = check_permission(&request, Permission::VERIFY)?;
+        let (_, caller_id, caller_tenant) = check_permission(&request, Permission::VERIFY)?;
         let req = request.into_inner();
         let id = uuid::Uuid::parse_str(&req.key_id)
             .map_err(|_| Status::invalid_argument("invalid key id"))?;
@@ -658,15 +637,8 @@ impl KmsService for KmsGrpcService {
             signature: signature_bytes,
         };
 
-        let tenant_id = if req.tenant_id.is_empty() {
-            tracing::warn!(
-                "SECURITY: gRPC request with empty tenant_id — defaulting to default. \
-                 Configure tenant binding in API key or set tenant_id explicitly"
-            );
-            "default"
-        } else {
-            &req.tenant_id
-        };
+        let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
+        let tenant_id: &str = &tenant_id_owned;
 
         let crypto = self.state.crypto_service();
         let valid = crypto
@@ -685,7 +657,7 @@ impl KmsService for KmsGrpcService {
         &self,
         request: Request<pb::Sm9SignRequest>,
     ) -> Result<Response<Sm9SignResponse>, Status> {
-        let (_, caller_id) = check_permission(&request, Permission::SIGN)?;
+        let (_, caller_id, _caller_tenant) = check_permission(&request, Permission::SIGN)?;
         let req = request.into_inner();
         self.check_pbac(&caller_id, "sm9_sign", &req.identity)
             .await?;
@@ -731,7 +703,7 @@ impl KmsService for KmsGrpcService {
         &self,
         request: Request<pb::Sm9VerifyRequest>,
     ) -> Result<Response<Sm9VerifyResponse>, Status> {
-        let (_, caller_id) = check_permission(&request, Permission::VERIFY)?;
+        let (_, caller_id, _caller_tenant) = check_permission(&request, Permission::VERIFY)?;
         let req = request.into_inner();
         self.check_pbac(&caller_id, "sm9_verify", &req.identity)
             .await?;
@@ -777,7 +749,7 @@ impl KmsService for KmsGrpcService {
         &self,
         request: Request<pb::Sm9EncryptRequest>,
     ) -> Result<Response<Sm9EncryptResponse>, Status> {
-        let (_, caller_id) = check_permission(&request, Permission::ENCRYPT)?;
+        let (_, caller_id, _caller_tenant) = check_permission(&request, Permission::ENCRYPT)?;
         let req = request.into_inner();
         self.check_pbac(&caller_id, "sm9_encrypt", &req.identity)
             .await?;
@@ -818,7 +790,7 @@ impl KmsService for KmsGrpcService {
         &self,
         request: Request<pb::Sm9DecryptRequest>,
     ) -> Result<Response<Sm9DecryptResponse>, Status> {
-        let (_, caller_id) = check_permission(&request, Permission::DECRYPT)?;
+        let (_, caller_id, _caller_tenant) = check_permission(&request, Permission::DECRYPT)?;
         let req = request.into_inner();
         self.check_pbac(&caller_id, "sm9_decrypt", &req.identity)
             .await?;
@@ -864,7 +836,7 @@ impl KmsService for KmsGrpcService {
         &self,
         request: Request<pb::EnvelopeEncryptRequest>,
     ) -> Result<Response<pb::EnvelopeEncryptResponse>, Status> {
-        let (_, caller_id) = check_permission(&request, Permission::ENCRYPT)?;
+        let (_, caller_id, caller_tenant) = check_permission(&request, Permission::ENCRYPT)?;
         let req = request.into_inner();
 
         let kek_id = uuid::Uuid::parse_str(&req.kek_id)
@@ -872,15 +844,8 @@ impl KmsService for KmsGrpcService {
         self.check_pbac(&caller_id, "envelope_encrypt", &kek_id.to_string())
             .await?;
 
-        let tenant_id = if req.tenant_id.is_empty() {
-            tracing::warn!(
-                "SECURITY: gRPC request with empty tenant_id — defaulting to default. \
-                 Configure tenant binding in API key or set tenant_id explicitly"
-            );
-            "default"
-        } else {
-            &req.tenant_id
-        };
+        let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
+        let tenant_id: &str = &tenant_id_owned;
 
         let envelope_svc = crate::service::EnvelopeService::new(&self.state);
         let result = envelope_svc
@@ -905,7 +870,7 @@ impl KmsService for KmsGrpcService {
         &self,
         request: Request<pb::EnvelopeDecryptRequest>,
     ) -> Result<Response<pb::EnvelopeDecryptResponse>, Status> {
-        let (_, caller_id) = check_permission(&request, Permission::DECRYPT)?;
+        let (_, caller_id, caller_tenant) = check_permission(&request, Permission::DECRYPT)?;
         let req = request.into_inner();
 
         let kek_id = uuid::Uuid::parse_str(&req.kek_id)
@@ -913,15 +878,8 @@ impl KmsService for KmsGrpcService {
         self.check_pbac(&caller_id, "envelope_decrypt", &kek_id.to_string())
             .await?;
 
-        let tenant_id = if req.tenant_id.is_empty() {
-            tracing::warn!(
-                "SECURITY: gRPC request with empty tenant_id — defaulting to default. \
-                 Configure tenant binding in API key or set tenant_id explicitly"
-            );
-            "default"
-        } else {
-            &req.tenant_id
-        };
+        let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
+        let tenant_id: &str = &tenant_id_owned;
 
         let envelope_svc = crate::service::EnvelopeService::new(&self.state);
         let plaintext = envelope_svc
@@ -952,7 +910,7 @@ impl KmsService for KmsGrpcService {
         &self,
         request: Request<pb::EnvelopeRewrapRequest>,
     ) -> Result<Response<pb::EnvelopeRewrapResponse>, Status> {
-        let (_, caller_id) = check_permission(&request, Permission::ENCRYPT)?;
+        let (_, caller_id, caller_tenant) = check_permission(&request, Permission::ENCRYPT)?;
         let req = request.into_inner();
 
         let kek_id = uuid::Uuid::parse_str(&req.kek_id)
@@ -960,15 +918,8 @@ impl KmsService for KmsGrpcService {
         self.check_pbac(&caller_id, "envelope_rewrap", &kek_id.to_string())
             .await?;
 
-        let tenant_id = if req.tenant_id.is_empty() {
-            tracing::warn!(
-                "SECURITY: gRPC request with empty tenant_id — defaulting to default. \
-                 Configure tenant binding in API key or set tenant_id explicitly"
-            );
-            "default"
-        } else {
-            &req.tenant_id
-        };
+        let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
+        let tenant_id: &str = &tenant_id_owned;
 
         let envelope_svc = crate::service::EnvelopeService::new(&self.state);
         let result = envelope_svc
@@ -997,22 +948,15 @@ impl KmsService for KmsGrpcService {
         &self,
         request: Request<pb::ImportKeyRequest>,
     ) -> Result<Response<pb::ImportKeyResponse>, Status> {
-        let (_, caller_id) = check_permission(&request, Permission::IMPORT_KEY)?;
+        let (_, caller_id, caller_tenant) = check_permission(&request, Permission::IMPORT_KEY)?;
         let req = request.into_inner();
         self.check_pbac(&caller_id, "import_key", &req.name).await?;
 
         let spec =
             crate::service::KeyService::parse_spec(&req.spec).map_err(api_error_to_status)?;
 
-        let tenant_id = if req.tenant_id.is_empty() {
-            tracing::warn!(
-                "SECURITY: gRPC request with empty tenant_id — defaulting to default. \
-                 Configure tenant binding in API key or set tenant_id explicitly"
-            );
-            "default"
-        } else {
-            &req.tenant_id
-        };
+        let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
+        let tenant_id: &str = &tenant_id_owned;
 
         let meta = self
             .state
@@ -1044,7 +988,7 @@ impl KmsService for KmsGrpcService {
         &self,
         request: Request<pb::ExportKeyRequest>,
     ) -> Result<Response<pb::ExportKeyResponse>, Status> {
-        let (_, caller_id) = check_permission(&request, Permission::EXPORT_KEY)?;
+        let (_, caller_id, caller_tenant) = check_permission(&request, Permission::EXPORT_KEY)?;
         let req = request.into_inner();
 
         let key_id = uuid::Uuid::parse_str(&req.id)
@@ -1061,15 +1005,8 @@ impl KmsService for KmsGrpcService {
             "key export",
         )?;
 
-        let tenant_id = if req.tenant_id.is_empty() {
-            tracing::warn!(
-                "SECURITY: gRPC request with empty tenant_id — defaulting to default. \
-                 Configure tenant binding in API key or set tenant_id explicitly"
-            );
-            "default"
-        } else {
-            &req.tenant_id
-        };
+        let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
+        let tenant_id: &str = &tenant_id_owned;
 
         let key_material = self
             .state
@@ -1104,7 +1041,7 @@ impl KmsService for KmsGrpcService {
         &self,
         request: Request<pb::HashRequest>,
     ) -> Result<Response<pb::HashResponse>, Status> {
-        let (_, caller_id) = check_permission(&request, Permission::HASH)?;
+        let (_, caller_id, _caller_tenant) = check_permission(&request, Permission::HASH)?;
         let req = request.into_inner();
         self.check_pbac(&caller_id, "hash", "hash").await?;
 
@@ -1134,7 +1071,7 @@ impl KmsService for KmsGrpcService {
         &self,
         request: Request<pb::DhDeriveRequest>,
     ) -> Result<Response<pb::DhDeriveResponse>, Status> {
-        let (_, caller_id) = check_permission(&request, Permission::ENCRYPT)?;
+        let (_, caller_id, _caller_tenant) = check_permission(&request, Permission::ENCRYPT)?;
         let req = request.into_inner();
 
         let key_id = uuid::Uuid::parse_str(&req.key_id)
@@ -1178,7 +1115,7 @@ impl KmsService for KmsGrpcService {
         &self,
         request: Request<pb::QueryAuditEventsRequest>,
     ) -> Result<Response<pb::QueryAuditEventsResponse>, Status> {
-        let (_, caller_id) = check_permission(&request, Permission::VIEW_AUDIT)?;
+        let (_, caller_id, _caller_tenant) = check_permission(&request, Permission::VIEW_AUDIT)?;
         let req = request.into_inner();
         self.check_pbac(&caller_id, "query_audit_events", "audit")
             .await?;
@@ -1336,6 +1273,7 @@ mod tests {
         req.extensions_mut().insert(GrpcCaller {
             role: ApiKeyPermission::ReadOnly,
             key_id: "test-key".to_string(),
+            tenant_id: None,
         });
 
         let result = check_permission(&req, Permission::CREATE_KEY);
@@ -1350,9 +1288,64 @@ mod tests {
         req.extensions_mut().insert(GrpcCaller {
             role: ApiKeyPermission::Operator,
             key_id: "test-key".to_string(),
+            tenant_id: None,
         });
 
         let result = check_permission(&req, Permission::SIGN);
         assert!(result.is_ok());
+    }
+
+    // ── resolve_tenant (audit P1-3) ──────────────────────────────────
+
+    #[test]
+    fn test_resolve_tenant_bound_overrides_reported() {
+        // bound tenant wins; self-reported value ignored (even on mismatch)
+        assert_eq!(resolve_tenant(Some("acme"), "evil").unwrap(), "acme");
+        assert_eq!(resolve_tenant(Some("acme"), "").unwrap(), "acme");
+        assert_eq!(resolve_tenant(Some("acme"), "acme").unwrap(), "acme");
+    }
+
+    #[test]
+    fn test_resolve_tenant_unbound_honours_reported() {
+        assert_eq!(resolve_tenant(None, "tenant-a").unwrap(), "tenant-a");
+    }
+
+    #[test]
+    fn test_resolve_tenant_unbound_empty_fails_explicitly() {
+        // silent "default" fallback removed: unbound + empty must fail with InvalidArgument
+        let err = resolve_tenant(None, "").unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[test]
+    fn test_interceptor_propagates_bound_tenant() {
+        let bound_key = ApiKey::operator("bound-key".to_string()).with_tenant("acme".to_string());
+        let unbound_key = ApiKey::operator("unbound-key".to_string());
+        let config = Arc::new(ApiKeyConfig::with_keys(vec![bound_key, unbound_key]));
+        let mut interceptor = GrpcAuthInterceptor::new(config);
+
+        let mut req = Request::new(());
+        req.metadata_mut()
+            .insert("x-api-key", MetadataValue::from_static("bound-key"));
+        let caller = interceptor
+            .call(req)
+            .unwrap()
+            .extensions()
+            .get::<GrpcCaller>()
+            .unwrap()
+            .clone();
+        assert_eq!(caller.tenant_id.as_deref(), Some("acme"));
+
+        let mut req2 = Request::new(());
+        req2.metadata_mut()
+            .insert("x-api-key", MetadataValue::from_static("unbound-key"));
+        let caller2 = interceptor
+            .call(req2)
+            .unwrap()
+            .extensions()
+            .get::<GrpcCaller>()
+            .unwrap()
+            .clone();
+        assert_eq!(caller2.tenant_id, None);
     }
 }
