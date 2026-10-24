@@ -84,6 +84,10 @@ pub struct PostgresKeystore {
     /// honor it at startup without holding a reference to the
     /// cache itself.
     in_memory_cap: Option<usize>,
+    /// Audit P1-4: flips to `true` once the initial key preload finishes
+    /// successfully. `health()` reports not-yet-ready until then, so `/readyz`
+    /// withholds traffic until the keystore has actually loaded its keys.
+    keys_ready: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl PostgresKeystore {
@@ -95,6 +99,7 @@ impl PostgresKeystore {
             repo,
             kek,
             in_memory_cap: None,
+            keys_ready: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
         // Run migrations
         store
@@ -382,6 +387,8 @@ impl PostgresKeystore {
             }
         }
         tracing::info!("Preload complete: {loaded} keys inserted into cache");
+        self.keys_ready
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         Ok(())
     }
 
@@ -410,6 +417,9 @@ impl PostgresKeystore {
     pub fn spawn_load_keys(&self) -> tokio::task::JoinHandle<Result<usize>> {
         let keys = Arc::clone(&self.keys);
         let repo = self.repo.clone();
+        // Audit P1-4: shared readiness flag; flipped true only when the preload
+        // reaches completion without a hard DB error.
+        let keys_ready = Arc::clone(&self.keys_ready);
         // We can't move `self.kek` out (it's a `Zeroizing`
         // owned field, not `Copy`). Instead, copy the
         // 32-byte KEK into a fresh `Zeroizing` for the
@@ -452,6 +462,7 @@ impl PostgresKeystore {
                 loaded += 1;
             }
             tracing::info!("Background preload complete: {loaded} keys inserted into cache");
+            keys_ready.store(true, std::sync::atomic::Ordering::SeqCst);
             Ok(loaded)
         })
     }
@@ -1144,9 +1155,18 @@ impl super::KeystoreBackend for PostgresKeystore {
     }
 
     async fn health(&self) -> Result<kms_core::types::HealthStatus> {
-        // Use internal sentinel; health only needs to verify DB reachability.
+        // Audit P1-4: health reflects both DB reachability AND whether the initial
+        // key preload has completed, so /readyz withholds traffic until the keystore
+        // can actually serve its keys (not merely until the DB answers).
         match self.repo.list_all_tenants(Some(1), None).await {
-            Ok(_) => Ok(kms_core::types::HealthStatus::Healthy),
+            Ok(_) => {
+                if self.keys_ready.load(std::sync::atomic::Ordering::SeqCst) {
+                    Ok(kms_core::types::HealthStatus::Healthy)
+                } else {
+                    // DB reachable but preload not finished → not ready.
+                    Ok(kms_core::types::HealthStatus::Unknown)
+                }
+            }
             Err(_) => Ok(kms_core::types::HealthStatus::Degraded),
         }
     }

@@ -240,6 +240,15 @@ pub struct BackendConfig {
     /// TPM backend: "simulated" (default) or "tpm2-tss" (requires hardware + feature flag)
     #[serde(default = "default_tpm_backend")]
     pub tpm_backend: String,
+
+    /// Audit P1-4 (fail-closed): allow running with an in-memory keystore when no
+    /// persistent (PostgreSQL) backend is available or keystore init fails.
+    ///
+    /// Defaults to **false**: a production KMS must not silently lose keys on restart,
+    /// so startup fails if there is no persistent backend. Set to `true` (or env
+    /// `KMS_ALLOW_IN_MEMORY=1`) only for development / demos.
+    #[serde(default)]
+    pub allow_in_memory: bool,
 }
 
 fn default_backend() -> String {
@@ -768,6 +777,7 @@ impl Default for BackendConfig {
         Self {
             backend_type: default_backend(),
             tpm_backend: default_tpm_backend(),
+            allow_in_memory: false,
         }
     }
 }
@@ -983,6 +993,23 @@ mod tests {
             "KDF iterations should be >= 100k, got {}",
             config.backup.kdf_iterations
         );
+    }
+
+    #[test]
+    fn test_backend_fail_closed_by_default() {
+        // audit P1-4: in-memory fallback must be opt-in; the default is fail-closed
+        // so a production KMS never silently loses keys by booting in-memory.
+        assert!(!Config::default().backend.allow_in_memory);
+        assert!(!BackendConfig::default().allow_in_memory);
+
+        // TOML omitting the field => false (secure default).
+        let cfg: Config = toml::from_str("").expect("empty toml should deserialize with defaults");
+        assert!(!cfg.backend.allow_in_memory);
+
+        // Explicit opt-in for development is honored.
+        let cfg: Config =
+            toml::from_str("[backend]\nallow_in_memory = true\n").expect("parse backend table");
+        assert!(cfg.backend.allow_in_memory);
     }
 
     #[test]

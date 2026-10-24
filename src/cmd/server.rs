@@ -139,6 +139,29 @@ async fn maybe_create_quota_tracker(
     }
 }
 
+/// Decide whether an in-memory keystore fallback is permitted (audit P1-4).
+///
+/// A production KMS must not silently boot in-memory (keys lost on restart), so
+/// this returns `Err` (fail-closed) unless the operator explicitly opted in via
+/// `backend.allow_in_memory=true` or the shared `KMS_DEV_MODE` / `KMS_ALLOW_INSECURE`
+/// env flags (mirrors the PR-4.1 TLS fail-fast opt-in in this module).
+fn in_memory_fallback_permitted(allow_in_memory: bool, reason: &str) -> Result<()> {
+    if allow_in_memory || production_safety::is_insecure_opted_in() {
+        tracing::warn!(
+            "In-memory keystore fallback permitted (allow_in_memory / dev opt-in): {reason}. \
+             Keys WILL be lost on restart — development/demo use only."
+        );
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!(
+            "refusing to start without a persistent keystore ({reason}). \
+             Configure PostgreSQL, or set backend.allow_in_memory=true \
+             (or KMS_DEV_MODE=1 / KMS_ALLOW_INSECURE=1) for development only \
+             (audit P1-4 fail-closed)."
+        ))
+    }
+}
+
 /// Create a PgPool from the database configuration if available.
 /// Returns None if the database is not configured or connection fails.
 async fn maybe_create_mfa_pool(
@@ -568,10 +591,16 @@ pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()
     let rate_limit_enabled = config.redis.enabled && config.rate_limit.enabled;
     let quota_enabled = config.redis.enabled && config.quota.enabled;
 
+    // Audit P1-4: fail-closed startup. In-memory fallback (keys lost on restart) is
+    // only permitted when explicitly opted in via config, or the shared
+    // KMS_DEV_MODE / KMS_ALLOW_INSECURE env flags (checked inside the helper).
+    let allow_in_memory = config.backend.allow_in_memory;
+
     /// Helper: create a software keystore with PostgreSQL persistence if available
     async fn create_software_keystore(
         mfa_pool: &Option<kms_api::sqlx::PgPool>,
-    ) -> Arc<dyn KeystoreBackend + Send + Sync> {
+        allow_in_memory: bool,
+    ) -> Result<Arc<dyn KeystoreBackend + Send + Sync>> {
         if let Some(pool) = mfa_pool {
             tracing::info!("Using PostgreSQL-backed software keystore (keys survive restarts)");
             let repo = PostgresKeyRepository::new(pool.clone());
@@ -599,33 +628,31 @@ pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()
                             }
                         }
                     });
-                    Arc::new(pg_keystore)
+                    Ok(Arc::new(pg_keystore))
                 }
                 Err(e) => {
-                    tracing::error!(
-                        "PostgreSQL keystore init failed: {}. Falling back to in-memory keystore (keys WILL be lost on restart!)",
-                        e
-                    );
-                    Arc::new(SoftwareKeystore::new())
+                    in_memory_fallback_permitted(
+                        allow_in_memory,
+                        &format!("PostgreSQL keystore init failed: {e}"),
+                    )?;
+                    Ok(Arc::new(SoftwareKeystore::new()))
                 }
             }
         } else {
-            tracing::warn!(
-                "No PostgreSQL configured — using in-memory keystore. \
-                 Keys WILL be lost on restart! Set database config for persistence."
-            );
-            Arc::new(SoftwareKeystore::new())
+            in_memory_fallback_permitted(allow_in_memory, "no PostgreSQL configured")?;
+            Ok(Arc::new(SoftwareKeystore::new()))
         }
     }
 
     // Build state: wrap with Redis cache if available, otherwise use keystore directly
 
     /// Helper: create software keystore wrapped with Redis cache if PG is available.
-    /// Falls back to in-memory SoftwareKeystore (F-2).
+    /// In-memory fallback only when `allow_in_memory` is set (audit P1-4 fail-closed).
     async fn create_software_keystore_inner(
         mfa_pool: &Option<kms_api::sqlx::PgPool>,
         redis_conn: redis::aio::ConnectionManager,
-    ) -> Arc<dyn KeystoreBackend + Send + Sync> {
+        allow_in_memory: bool,
+    ) -> Result<Arc<dyn KeystoreBackend + Send + Sync>> {
         if let Some(pool) = mfa_pool {
             let repo = PostgresKeyRepository::new(pool.clone());
             match PostgresKeystore::new(repo).await {
@@ -647,29 +674,25 @@ pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()
                     tracing::info!(
                         "PostgreSQL-backed keystore with Redis cache (keys survive restarts)"
                     );
-                    Arc::new(RedisCachedKeystore::new(pg_keystore, redis_conn))
+                    Ok(Arc::new(RedisCachedKeystore::new(pg_keystore, redis_conn)))
                 }
                 Err(e) => {
-                    tracing::error!(
-                        "PostgreSQL keystore init failed: {} — using Redis-cached in-memory \
-                         keystore (keys WILL be lost on restart!)",
-                        e
-                    );
-                    Arc::new(RedisCachedKeystore::new(
+                    in_memory_fallback_permitted(
+                        allow_in_memory,
+                        &format!("PostgreSQL keystore init failed: {e}"),
+                    )?;
+                    Ok(Arc::new(RedisCachedKeystore::new(
                         SoftwareKeystore::new(),
                         redis_conn,
-                    ))
+                    )))
                 }
             }
         } else {
-            tracing::warn!(
-                "No PostgreSQL — using Redis-cached in-memory keystore. \
-                 Keys WILL be lost on restart!"
-            );
-            Arc::new(RedisCachedKeystore::new(
+            in_memory_fallback_permitted(allow_in_memory, "no PostgreSQL configured")?;
+            Ok(Arc::new(RedisCachedKeystore::new(
                 SoftwareKeystore::new(),
                 redis_conn,
-            ))
+            )))
         }
     }
 
@@ -728,8 +751,12 @@ pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()
 
                     match backend_type {
                         BackendType::Software => {
-                            let keystore =
-                                create_software_keystore_inner(&mfa_pool, redis_conn).await;
+                            let keystore = create_software_keystore_inner(
+                                &mfa_pool,
+                                redis_conn,
+                                allow_in_memory,
+                            )
+                            .await?;
                             build_kms_state(
                                 keystore,
                                 policy_engine,
@@ -787,7 +814,7 @@ pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()
                     .await;
 
                     build_kms_state(
-                        create_software_keystore(&mfa_pool).await,
+                        create_software_keystore(&mfa_pool, allow_in_memory).await?,
                         policy_engine,
                         audit_logger,
                         sm9_state.clone(),
@@ -825,7 +852,7 @@ pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()
                 .await;
 
                 build_kms_state(
-                    create_software_keystore(&mfa_pool).await,
+                    create_software_keystore(&mfa_pool, allow_in_memory).await?,
                     policy_engine,
                     audit_logger,
                     sm9_state.clone(),
@@ -861,7 +888,7 @@ pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()
         .await;
 
         build_kms_state(
-            create_software_keystore(&mfa_pool).await,
+            create_software_keystore(&mfa_pool, allow_in_memory).await?,
             policy_engine,
             audit_logger,
             sm9_state.clone(),
@@ -1581,6 +1608,29 @@ mod pr41_failfast_tests {
             let a = rest_tls_failfast_message(true).unwrap().to_string();
             let b = rest_tls_failfast_message(false).unwrap().to_string();
             assert_ne!(a, b, "REST fail-fast messages must be distinct");
+        });
+    }
+
+    // audit P1-4: fail-closed in-memory fallback decision.
+    #[test]
+    fn p14_in_memory_failclosed_without_opt_in() {
+        with_env(&[("KMS_ALLOW_INSECURE", ""), ("KMS_DEV_MODE", "")], || {
+            let err = in_memory_fallback_permitted(false, "no pg").unwrap_err();
+            assert!(err.to_string().contains("refusing to start"));
+        });
+    }
+
+    #[test]
+    fn p14_in_memory_allowed_by_config_flag() {
+        with_env(&[("KMS_ALLOW_INSECURE", ""), ("KMS_DEV_MODE", "")], || {
+            assert!(in_memory_fallback_permitted(true, "no pg").is_ok());
+        });
+    }
+
+    #[test]
+    fn p14_in_memory_allowed_by_dev_mode_env() {
+        with_env(&[("KMS_ALLOW_INSECURE", ""), ("KMS_DEV_MODE", "1")], || {
+            assert!(in_memory_fallback_permitted(false, "no pg").is_ok());
         });
     }
 }
