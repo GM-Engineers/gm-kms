@@ -411,7 +411,12 @@ impl KmsService for KmsGrpcService {
 
         let ciphertext = kms_core::key::Ciphertext {
             key_id: id,
-            version: req.version,
+            // The key version the ciphertext was produced with. proto3 cannot
+            // distinguish "unset" from 0, so an unset field is normalised to
+            // the same default the REST channel uses (version 1); a caller
+            // must echo the version returned by `Encrypt` for ciphertexts
+            // produced after a rotation (audit B7-d).
+            version: if req.version == 0 { 1 } else { req.version },
             // Echo the caller-supplied format so the keystore reproduces the
             // exact AAD used at encryption (format 2 binds AAD to
             // key_id/tenant/version); unset defaults to 2 (current production

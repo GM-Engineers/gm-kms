@@ -1532,3 +1532,47 @@ async fn b7b_dh_derive_bound_key_confined_to_its_tenant() {
         "a tenant-bound key must not derive with another tenant's key"
     );
 }
+
+// =============================================================================
+// Batch 7 / B7-d: the gRPC `version` default must match the REST one
+//
+// proto3 cannot distinguish "unset" from 0, so an unset `DecryptRequest.version`
+// arrived as 0, which the keystore could not resolve ("key version 0 not
+// found"). The REST channel defaults to version 1; the gRPC handler now
+// normalises 0 to the same value.
+// =============================================================================
+
+#[tokio::test]
+async fn b7d_grpc_decrypt_without_version_uses_the_same_default_as_rest() {
+    let mut stack = spawn_dual_stack().await;
+    let tenant = "tenant-a";
+    let plaintext = b"version default across channels";
+    let key_id = create_key(&stack.client, &stack.base, "key-b7d", "sm4", tenant).await;
+
+    // Seal on REST.
+    let (ct, nonce, tag) = encrypt(&stack.client, &stack.base, &key_id, tenant, plaintext).await;
+
+    // Open on gRPC with the version field left unset (proto3 default 0).
+    let got = grpc_decrypt(&mut stack.grpc, &key_id, tenant, &ct, &nonce, &tag, 0)
+        .await
+        .expect("gRPC decrypt with an unset version must use the same default as REST");
+    assert_eq!(got, plaintext, "plaintext mismatch");
+
+    // The same ciphertext decrypts on REST (its default is version 1).
+    let (ok, got2, body) = decrypt(
+        &stack.client,
+        &stack.base,
+        &key_id,
+        tenant,
+        &ct,
+        &nonce,
+        &tag,
+    )
+    .await;
+    assert!(ok, "REST decrypt must succeed: body={body}");
+    assert_eq!(
+        got2.expect("plaintext"),
+        plaintext,
+        "REST plaintext mismatch"
+    );
+}

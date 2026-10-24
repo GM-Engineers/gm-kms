@@ -78,13 +78,20 @@
   + `key_fingerprint`（材料 SHA-256 指纹，供完整性校验）。
 - 传输密钥保护：`rsa-oaep` 走 RSA-OAEP；`sm2` 走 SM2 加密（国密合规路径）。
 
-## 5. 版本与 format_version（audit P0 / P2-3）
+## 5. 版本与 format_version（audit P0 / P2-3 / B7-d）
 
-- `Encrypt` 响应回显 `format_version`（REST `u8`、gRPC `uint32`）。当前生产格式为 **2**，
-  其 AAD 绑定 `(key_id, tenant_id, version)`。
+- `Encrypt` 响应回显 `format_version`（REST `u8`、gRPC `uint32`）与 `version`（密钥版本号）。
+  当前生产格式为 **2**，其 AAD 绑定 `(key_id, tenant_id, version)`。
 - `Decrypt` 接受 `format_version`（缺省按 **2** 重算绑定 AAD）；`format_version` 0/1 为遗留空 AAD 密文，
-  需显式回传以解密历史密文。两通道此语义一致。
-- `DecryptRequest.version`：用于在 format 2 下重建正确 AAD（对接历史/指定版本解密）。
+  需显式回传以解密历史密文。
+- **缺省 `version` 的语义**（audit B7-d 更正）：
+  - REST：`version` 缺省为 **1**（`default_decrypt_version()`）。
+  - gRPC：proto3 无法区分“未设置”与 0，因此服务端将 `version == 0` 归一为 **1**，
+    与 REST 一致（`grpc.rs::decrypt`）。
+  - 两通道的缺省值相同，但**均不代表“当前版本”**：密钥轮换后（当前版本 > 1），
+    解密历史密文必须回显 `Encrypt` 返回的 `version`；不回显会按版本 1 选材，
+    从而解密失败（fail-closed，不会静默使用错误密钥）。
+  - 例外：`version` 缺省仅对“密钥当前版本就是 1”的密文成立。
 
 ## 6. 托管 HMAC-SM3（audit P2-1）
 
