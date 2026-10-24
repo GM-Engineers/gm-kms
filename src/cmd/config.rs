@@ -76,6 +76,13 @@ pub struct BackupConfig {
     /// KDF iterations for master key passphrase encryption
     #[serde(default = "default_backup_kdf_iterations")]
     pub kdf_iterations: u32,
+
+    /// Passphrase that encrypts the backup master key at rest (audit P2-7).
+    /// Typically supplied via the `BACKUP_MASTER_KEY_PASSPHRASE` env var. When
+    /// `None`, the backup service falls back to an ephemeral per-process master
+    /// key (backups will NOT survive a restart) with a loud warning.
+    #[serde(default)]
+    pub master_key_passphrase: Option<String>,
 }
 
 fn default_backup_enabled() -> bool {
@@ -102,6 +109,7 @@ impl Default for BackupConfig {
             retention_count: default_backup_retention_count(),
             retention_days: default_backup_retention_days(),
             kdf_iterations: default_backup_kdf_iterations(),
+            master_key_passphrase: None,
         }
     }
 }
@@ -746,6 +754,9 @@ impl Config {
             && let Ok(kdf_iter) = kdf_iter.parse()
         {
             self.backup.kdf_iterations = kdf_iter;
+        }
+        if let Ok(passphrase) = std::env::var("BACKUP_MASTER_KEY_PASSPHRASE") {
+            self.backup.master_key_passphrase = Some(passphrase);
         }
     }
 }

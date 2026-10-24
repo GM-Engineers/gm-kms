@@ -696,28 +696,64 @@ pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()
         }
     }
 
-    // Backup service — needs config and metrics, no state dependency
+    // Backup service — needs config and metrics, no state dependency.
+    // Audit P2-7: the backup master key is persisted (passphrase-encrypted) so
+    // backups stay recoverable across restarts. With a passphrase configured we
+    // load-or-create it and fail closed if an already-persisted key cannot be
+    // opened (regenerating would orphan existing backups). Without one we only
+    // boot an ephemeral key under an explicit dev/insecure opt-in.
     let backup_service: Option<Arc<kms_core::KeyBackupService>> = if config.backup.enabled {
-        match kms_core::MasterKey::generate() {
-            Ok(master_key) => {
-                let backup_config = kms_core::BackupConfig {
-                    enabled: config.backup.enabled,
-                    backup_path: config.backup.backup_path.clone(),
-                    retention_count: config.backup.retention_count,
-                    retention_days: config.backup.retention_days,
-                    kdf_iterations: config.backup.kdf_iterations,
-                };
-                let svc = Arc::new(kms_core::KeyBackupService::new(backup_config, master_key));
-                tracing::info!(
-                    "Backup service enabled: path={}, retention={}d",
-                    config.backup.backup_path,
-                    config.backup.retention_days
-                );
-                Some(svc)
+        let backup_config = kms_core::BackupConfig {
+            enabled: config.backup.enabled,
+            backup_path: config.backup.backup_path.clone(),
+            retention_count: config.backup.retention_count,
+            retention_days: config.backup.retention_days,
+            kdf_iterations: config.backup.kdf_iterations,
+        };
+        match config
+            .backup
+            .master_key_passphrase
+            .as_deref()
+            .filter(|p| !p.is_empty())
+        {
+            Some(passphrase) => {
+                match kms_core::KeyBackupService::load_or_create(&backup_config, passphrase) {
+                    Ok(svc) => {
+                        tracing::info!(
+                            "Backup service enabled with persisted master key: path={}, retention={}d",
+                            config.backup.backup_path,
+                            config.backup.retention_days
+                        );
+                        Some(Arc::new(svc))
+                    }
+                    Err(e) => {
+                        // A persisted master key we cannot open would silently orphan every
+                        // prior backup — never regenerate it. Fail closed (audit P2-7).
+                        return Err(anyhow::anyhow!(
+                            "backup service init failed (audit P2-7): {e}"
+                        ));
+                    }
+                }
             }
-            Err(e) => {
-                tracing::warn!("Failed to initialize backup service: {}", e);
-                None
+            None => {
+                in_memory_fallback_permitted(
+                    allow_in_memory,
+                    "backup enabled but BACKUP_MASTER_KEY_PASSPHRASE is not set",
+                )?;
+                match kms_core::KeyBackupService::with_random_master_key(backup_config) {
+                    Ok(svc) => {
+                        tracing::warn!(
+                            "Backup service running with an EPHEMERAL master key: backups will NOT \
+                             be recoverable after a restart. Set BACKUP_MASTER_KEY_PASSPHRASE for \
+                             durable backups (audit P2-7)."
+                        );
+                        Some(Arc::new(svc))
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to initialize backup service: {}", e);
+                        None
+                    }
+                }
             }
         }
     } else {

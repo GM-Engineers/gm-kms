@@ -20,6 +20,10 @@ use uuid::Uuid;
 /// Backup format version (v2: SM4-GCM + SM3-HMAC signing)
 const BACKUP_VERSION: u32 = 2;
 
+/// File name (within `backup_path`) holding the passphrase-encrypted backup
+/// master key, so backups stay recoverable across process restarts (audit P2-7).
+pub const MASTER_KEY_FILE: &str = "master_key.enc";
+
 /// SM4 key size in bytes (128 bits per GM/T 0002-2012)
 const SM4_KEY_SIZE: usize = 16;
 
@@ -259,6 +263,44 @@ impl MasterKey {
             material: sb,
         })
     }
+
+    /// Persist this master key passphrase-encrypted to `path` (audit P2-7).
+    ///
+    /// Writes an [`EncryptedMasterKey`] JSON envelope with owner-only (0o600)
+    /// permissions, creating the parent directory if needed.
+    pub fn save_encrypted(
+        &self,
+        path: &std::path::Path,
+        passphrase: &str,
+        kdf_iterations: u32,
+    ) -> Result<()> {
+        let encrypted = self.export_encrypted(passphrase, kdf_iterations)?;
+        let json = serde_json::to_string_pretty(&encrypted)
+            .context("Failed to serialize encrypted master key")?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).context("Failed to create master key directory")?;
+        }
+        std::fs::write(path, json).context("Failed to write encrypted master key")?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+                .context("Failed to set master key file permissions")?;
+        }
+        Ok(())
+    }
+
+    /// Load a master key previously saved with [`MasterKey::save_encrypted`].
+    ///
+    /// The SM4-GCM tag is validated on decrypt, so a wrong passphrase or a
+    /// corrupted file yields an error rather than a silently-wrong key.
+    pub fn load_encrypted(path: &std::path::Path, passphrase: &str) -> Result<Self> {
+        let json =
+            std::fs::read_to_string(path).context("Failed to read encrypted master key file")?;
+        let encrypted: EncryptedMasterKey =
+            serde_json::from_str(&json).context("Failed to parse encrypted master key file")?;
+        Self::import_encrypted(&encrypted, passphrase)
+    }
 }
 
 // ============================================================================
@@ -329,6 +371,62 @@ impl KeyBackupService {
     pub fn with_random_master_key(config: BackupConfig) -> Result<Self> {
         let master_key = MasterKey::generate()?;
         Ok(Self::new(config, master_key))
+    }
+
+    /// Load the backup master key from `backup_path`/[`MASTER_KEY_FILE`],
+    /// generating and persisting it on first use (audit P2-7).
+    ///
+    /// This is the restart-safe replacement for [`KeyBackupService::with_random_master_key`]:
+    /// the same master key is reloaded after a process restart, so backups taken
+    /// by a previous run remain decryptable. The passphrase encrypts the master key
+    /// at rest; a wrong passphrase or corrupted file fails loudly (never a silent
+    /// regeneration, which would orphan existing backups). Runs a [`self_check`]
+    /// (`MasterKey::self_check`) on the resulting service.
+    ///
+    /// [`self_check`]: KeyBackupService::self_check
+    pub fn load_or_create(config: &BackupConfig, passphrase: &str) -> Result<Self> {
+        anyhow::ensure!(
+            !passphrase.is_empty(),
+            "backup master key passphrase must not be empty"
+        );
+        let path = std::path::Path::new(&config.backup_path).join(MASTER_KEY_FILE);
+        let master_key = if path.exists() {
+            MasterKey::load_encrypted(&path, passphrase).with_context(|| {
+                format!(
+                    "failed to load backup master key from {} (wrong passphrase or corrupted file)",
+                    path.display()
+                )
+            })?
+        } else {
+            let mk = MasterKey::generate()?;
+            mk.save_encrypted(&path, passphrase, config.kdf_iterations)?;
+            tracing::info!(
+                "Generated and persisted backup master key at {}",
+                path.display()
+            );
+            mk
+        };
+        let svc = Self::new(config.clone(), master_key);
+        svc.self_check()?;
+        Ok(svc)
+    }
+
+    /// Verify the master key is usable: an SM4-GCM encrypt/decrypt round-trip and
+    /// an SM3-HMAC compute both succeed. Called at startup so a corrupted or
+    /// wrong-passphrase master key fails fast rather than silently producing
+    /// backups that can never be restored (audit P2-7).
+    pub fn self_check(&self) -> Result<()> {
+        let probe = b"kms-backup-masterkey-self-check";
+        let mut nonce = [0u8; SM4_NONCE_SIZE];
+        rand::Rng::fill_bytes(&mut rand::rng(), &mut nonce);
+        let ct = self.encrypt_with_master(probe, &nonce)?;
+        let back = self.decrypt_with_master(&ct, &nonce)?;
+        if back != probe {
+            anyhow::bail!("backup master key self-check failed: SM4-GCM round-trip mismatch");
+        }
+        // Computing the HMAC exercises the signing portion of the master key.
+        let _ = self.compute_hmac(probe)?;
+        Ok(())
     }
 
     /// Backup a key with SM4-GCM encryption and SM3-HMAC signing.
@@ -531,6 +629,12 @@ impl KeyBackupService {
         }
 
         Ok(())
+    }
+
+    /// Identifier of the backup master key (non-secret; usable to assert that a
+    /// reload yielded the same persisted key without exposing material).
+    pub fn master_key_id(&self) -> Uuid {
+        self.master_key.id
     }
 
     /// List backups for a key from the in-memory registry.
@@ -879,6 +983,135 @@ mod tests {
             result.is_err(),
             "Wrong salt should produce wrong key and fail"
         );
+    }
+
+    // -- Master key persistence (audit P2-7) --
+
+    #[test]
+    fn test_master_key_save_load_roundtrip() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join(MASTER_KEY_FILE);
+        let passphrase = "persist-me";
+
+        let mk = MasterKey::generate().unwrap();
+        mk.save_encrypted(&path, passphrase, 1000).unwrap();
+        assert!(path.exists(), "master key file should be written");
+
+        let loaded = MasterKey::load_encrypted(&path, passphrase).unwrap();
+        assert_eq!(loaded.id, mk.id);
+        assert_eq!(loaded.sm4_key(), mk.sm4_key());
+        assert_eq!(loaded.hmac_key(), mk.hmac_key());
+    }
+
+    #[test]
+    fn test_master_key_load_wrong_passphrase_fails() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join(MASTER_KEY_FILE);
+
+        let mk = MasterKey::generate().unwrap();
+        mk.save_encrypted(&path, "right", 1000).unwrap();
+
+        let result = MasterKey::load_encrypted(&path, "wrong");
+        assert!(
+            result.is_err(),
+            "loading with a wrong passphrase must fail (GCM tag)"
+        );
+    }
+
+    /// The core P2-7 scenario: a backup taken by one run must be restorable by a
+    /// later run that reloads the SAME persisted master key.
+    #[test]
+    fn test_backup_survives_restart_via_load_or_create() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = BackupConfig {
+            backup_path: temp_dir.path().to_string_lossy().to_string(),
+            kdf_iterations: 1000,
+            ..Default::default()
+        };
+        let passphrase = "restart-passphrase";
+
+        // Run 1: creates + persists the master key, then backs up a key.
+        let svc1 = KeyBackupService::load_or_create(&config, passphrase).unwrap();
+        let key_meta = create_test_key_meta();
+        let material = b"persisted-across-restart-material";
+        svc1.backup_key(&key_meta, material, None).unwrap();
+        let mk1_id = svc1.master_key_id();
+
+        let files: Vec<_> = std::fs::read_dir(temp_dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("json"))
+            .collect();
+        let backup_file = files[0].path();
+
+        // Run 2 (simulated restart): reload from the same directory + passphrase.
+        let svc2 = KeyBackupService::load_or_create(&config, passphrase).unwrap();
+        assert_eq!(
+            svc2.master_key_id(),
+            mk1_id,
+            "reload must yield the same persisted master key"
+        );
+
+        let (_, restored) = svc2.restore_from_file(&backup_file).unwrap();
+        assert_eq!(
+            restored, material,
+            "run 2 must restore a backup created by run 1"
+        );
+    }
+
+    /// Without persistence (the pre-fix `with_random_master_key`), a second service
+    /// gets a fresh random master key and can no longer restore run 1's backup.
+    #[test]
+    fn test_random_master_key_cannot_restore_prior_backup() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = BackupConfig {
+            backup_path: temp_dir.path().to_string_lossy().to_string(),
+            ..Default::default()
+        };
+
+        let svc1 = KeyBackupService::with_random_master_key(config.clone()).unwrap();
+        let key_meta = create_test_key_meta();
+        svc1.backup_key(&key_meta, b"orphaned-material", None)
+            .unwrap();
+        let backup_file = std::fs::read_dir(temp_dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .find(|p| p.extension().and_then(|s| s.to_str()) == Some("json"))
+            .unwrap();
+
+        let svc2 = KeyBackupService::with_random_master_key(config).unwrap();
+        assert!(
+            svc2.restore_from_file(&backup_file).is_err(),
+            "a fresh random master key must NOT decrypt the previous backup"
+        );
+    }
+
+    #[test]
+    fn test_load_or_create_wrong_passphrase_fails_closed() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = BackupConfig {
+            backup_path: temp_dir.path().to_string_lossy().to_string(),
+            kdf_iterations: 1000,
+            ..Default::default()
+        };
+
+        KeyBackupService::load_or_create(&config, "right").unwrap();
+
+        // A second startup with the wrong passphrase must fail loudly rather than
+        // silently regenerating a new master key (which would orphan backups).
+        let result = KeyBackupService::load_or_create(&config, "wrong");
+        assert!(result.is_err(), "wrong passphrase must fail closed");
+    }
+
+    #[test]
+    fn test_load_or_create_empty_passphrase_rejected() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = BackupConfig {
+            backup_path: temp_dir.path().to_string_lossy().to_string(),
+            ..Default::default()
+        };
+        assert!(KeyBackupService::load_or_create(&config, "").is_err());
     }
 
     // -- Listing & cleanup --
