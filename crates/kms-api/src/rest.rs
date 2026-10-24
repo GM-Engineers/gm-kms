@@ -1,6 +1,6 @@
 //! REST API implementation using Axum
 
-use crate::auth::{ApiKeyConfig, CallerId};
+use crate::auth::{ApiKeyConfig, BoundTenant, CallerId};
 use crate::mfa::{MAX_BACKUP_CODE_USES, MAX_TOTP_ATTEMPTS, MfaStatusResponse, TOTP_LOCKOUT_SECS};
 use crate::validation::{
     validate_create_key_request, validate_decrypt_request, validate_encrypt_request,
@@ -80,6 +80,28 @@ fn default_tenant_id() -> String {
         );
     });
     "default".to_string()
+}
+
+/// Resolve the effective request tenant from the authenticated identity (audit P1-3).
+///
+/// When the API key carries a tenant binding, that bound tenant is AUTHORITATIVE and the
+/// caller-self-reported value is ignored (a mismatch is logged so client-side tenant
+/// spoofing attempts are observable). When the key is unbound (`None`), the self-reported
+/// tenant is used unchanged — preserving behaviour for existing deployments and tests.
+fn resolve_tenant(bound: Option<&str>, self_reported: &str) -> String {
+    match bound {
+        Some(b) => {
+            if !self_reported.is_empty() && self_reported != b {
+                tracing::warn!(
+                    bound_tenant = %b,
+                    reported_tenant = %self_reported,
+                    "ignoring self-reported tenant: authenticated API key is bound to its own tenant"
+                );
+            }
+            b.to_string()
+        }
+        None => self_reported.to_string(),
+    }
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -701,10 +723,15 @@ pub fn create_routes(state: Arc<KmsState>, api_key_config: ApiKeyConfig) -> Rout
 async fn create_key(
     CallerId { key_id: caller_id }: CallerId,
     State(state): State<Arc<KmsState>>,
+    BoundTenant(bound): BoundTenant,
     Json(req): Json<CreateKeyRequest>,
 ) -> Result<(StatusCode, Json<KeyResponse>)> {
+    // Tenant is derived from the authenticated identity when the key is bound
+    // (audit P1-3); otherwise the caller-self-reported tenant is honoured.
+    let tenant = resolve_tenant(bound.as_deref(), &req.tenant_id);
+
     // Validate input
-    if let Err(e) = validate_create_key_request(&req.name, &req.spec, &req.tenant_id) {
+    if let Err(e) = validate_create_key_request(&req.name, &req.spec, &tenant) {
         return Err(ApiError::InvalidRequest(e.message()));
     }
 
@@ -718,18 +745,14 @@ async fn create_key(
 
     let key_svc = state.key_service();
     let meta = key_svc
-        .create_key(spec, &req.name, &req.tenant_id, &caller_id)
+        .create_key(spec, &req.name, &tenant, &caller_id)
         .await?;
 
     state.metrics.record_key_created();
 
     // Backup key material (best-effort, failure is logged but not returned)
     if let Some(ref bs) = state.backup_service {
-        match state
-            .keystore
-            .get_key_material(&meta.id, &req.tenant_id)
-            .await
-        {
+        match state.keystore.get_key_material(&meta.id, &tenant).await {
             Ok(material) => {
                 if let Err(e) = bs.backup_key(&meta, &material, Some(req.name.clone())) {
                     tracing::error!("Failed to backup key {}: {}", meta.id, e);
@@ -758,8 +781,10 @@ async fn get_key(
     State(state): State<Arc<KmsState>>,
     Path(id): Path<Uuid>,
     Query(tenant_query): Query<TenantQuery>,
+    BoundTenant(bound): BoundTenant,
 ) -> Result<Json<KeyResponse>> {
-    let tenant_id = &tenant_query.tenant_id;
+    let tenant_id_owned = resolve_tenant(bound.as_deref(), &tenant_query.tenant_id);
+    let tenant_id: &str = &tenant_id_owned;
     let key_svc = state.key_service();
     let meta = key_svc.get_key(&id, tenant_id).await?;
 
@@ -770,13 +795,15 @@ async fn list_keys(
     CallerId { key_id: caller_id }: CallerId,
     State(state): State<Arc<KmsState>>,
     Query(tenant_query): Query<TenantQuery>,
+    BoundTenant(bound): BoundTenant,
 ) -> Result<Json<Vec<KeyResponse>>> {
     // PBAC evaluation
     use crate::auth::check_rest_pbac;
     check_rest_pbac(&state.policy_engine, &caller_id, "list_keys", "keys")
         .await
         .map_err(|_| ApiError::PermissionDenied)?;
-    let tenant_id = &tenant_query.tenant_id;
+    let tenant_id_owned = resolve_tenant(bound.as_deref(), &tenant_query.tenant_id);
+    let tenant_id: &str = &tenant_id_owned;
     let key_svc = state.key_service();
     let keys = key_svc.list_keys(KeyFilter::default(), tenant_id).await?;
 
@@ -789,6 +816,7 @@ async fn encrypt(
     State(state): State<Arc<KmsState>>,
     Path(id): Path<Uuid>,
     Query(tenant_query): Query<TenantQuery>,
+    BoundTenant(bound): BoundTenant,
     Json(req): Json<EncryptRequest>,
 ) -> Result<Json<EncryptResponse>> {
     use base64::{Engine, engine::general_purpose::STANDARD};
@@ -799,7 +827,8 @@ async fn encrypt(
         .await
         .map_err(|_| ApiError::PermissionDenied)?;
 
-    let tenant_id = &tenant_query.tenant_id;
+    let tenant_id_owned = resolve_tenant(bound.as_deref(), &tenant_query.tenant_id);
+    let tenant_id: &str = &tenant_id_owned;
 
     // Validate input
     if let Err(e) = validate_encrypt_request(&req.plaintext, &req.aad) {
@@ -839,6 +868,7 @@ async fn decrypt(
     State(state): State<Arc<KmsState>>,
     Path(id): Path<Uuid>,
     Query(tenant_query): Query<TenantQuery>,
+    BoundTenant(bound): BoundTenant,
     Json(req): Json<DecryptRequest>,
 ) -> Result<Json<DecryptResponse>> {
     use base64::{Engine, engine::general_purpose::STANDARD};
@@ -849,7 +879,8 @@ async fn decrypt(
         .await
         .map_err(|_| ApiError::PermissionDenied)?;
 
-    let tenant_id = &tenant_query.tenant_id;
+    let tenant_id_owned = resolve_tenant(bound.as_deref(), &tenant_query.tenant_id);
+    let tenant_id: &str = &tenant_id_owned;
 
     // Validate input
     if let Err(e) = validate_decrypt_request(&req.ciphertext, &req.nonce, &req.tag, &req.aad) {
@@ -947,6 +978,7 @@ async fn rotate_key(
     State(state): State<Arc<KmsState>>,
     Path(id): Path<Uuid>,
     Query(tenant_query): Query<TenantQuery>,
+    BoundTenant(bound): BoundTenant,
 ) -> Result<Json<KeyResponse>> {
     // PBAC evaluation
     use crate::auth::check_rest_pbac;
@@ -970,7 +1002,8 @@ async fn rotate_key(
         "key rotation",
     )?;
 
-    let tenant_id = &tenant_query.tenant_id;
+    let tenant_id_owned = resolve_tenant(bound.as_deref(), &tenant_query.tenant_id);
+    let tenant_id: &str = &tenant_id_owned;
 
     let key_svc = state.key_service();
     let meta = key_svc.rotate_key(&id, tenant_id, &caller_id).await?;
@@ -989,6 +1022,7 @@ async fn delete_key(
     State(state): State<Arc<KmsState>>,
     Path(id): Path<Uuid>,
     Query(tenant_query): Query<TenantQuery>,
+    BoundTenant(bound): BoundTenant,
 ) -> Result<StatusCode> {
     // PBAC evaluation
     use crate::auth::check_rest_pbac;
@@ -1011,7 +1045,8 @@ async fn delete_key(
         "key deletion",
     )?;
 
-    let tenant_id = &tenant_query.tenant_id;
+    let tenant_id_owned = resolve_tenant(bound.as_deref(), &tenant_query.tenant_id);
+    let tenant_id: &str = &tenant_id_owned;
 
     let key_svc = state.key_service();
     key_svc.delete_key(&id, tenant_id, &caller_id).await?;
@@ -1030,11 +1065,13 @@ async fn sign(
     State(state): State<Arc<KmsState>>,
     Path(id): Path<Uuid>,
     Query(tenant_query): Query<TenantQuery>,
+    BoundTenant(bound): BoundTenant,
     Json(req): Json<SignRequest>,
 ) -> Result<Json<SignResponse>> {
     use base64::{Engine, engine::general_purpose::STANDARD};
 
-    let tenant_id = &tenant_query.tenant_id;
+    let tenant_id_owned = resolve_tenant(bound.as_deref(), &tenant_query.tenant_id);
+    let tenant_id: &str = &tenant_id_owned;
 
     let data = STANDARD
         .decode(&req.data)
@@ -1058,11 +1095,13 @@ async fn verify(
     State(state): State<Arc<KmsState>>,
     Path(id): Path<Uuid>,
     Query(tenant_query): Query<TenantQuery>,
+    BoundTenant(bound): BoundTenant,
     Json(req): Json<VerifyRequest>,
 ) -> Result<Json<VerifyResponse>> {
     use base64::{Engine, engine::general_purpose::STANDARD};
 
-    let tenant_id = &tenant_query.tenant_id;
+    let tenant_id_owned = resolve_tenant(bound.as_deref(), &tenant_query.tenant_id);
+    let tenant_id: &str = &tenant_id_owned;
 
     let data = STANDARD
         .decode(&req.data)
@@ -2039,6 +2078,7 @@ async fn cancel_request(
 async fn envelope_encrypt(
     CallerId { key_id: caller_id }: CallerId,
     State(state): State<Arc<KmsState>>,
+    BoundTenant(bound): BoundTenant,
     Json(req): Json<EnvelopeEncryptRequest>,
 ) -> Result<Json<EnvelopeEncryptResponse>> {
     use base64::{Engine, engine::general_purpose::STANDARD};
@@ -2050,7 +2090,11 @@ async fn envelope_encrypt(
         .decode(&req.plaintext)
         .map_err(|_| ApiError::InvalidRequest("invalid base64 plaintext".to_string()))?;
 
-    let tenant_id = req.tenant_id.as_deref().unwrap_or("default");
+    let tenant_id_owned = resolve_tenant(
+        bound.as_deref(),
+        req.tenant_id.as_deref().unwrap_or("default"),
+    );
+    let tenant_id: &str = &tenant_id_owned;
 
     let envelope_svc = crate::service::EnvelopeService::new(&state);
     let result = envelope_svc
@@ -2075,6 +2119,7 @@ async fn envelope_encrypt(
 async fn envelope_decrypt(
     CallerId { key_id: caller_id }: CallerId,
     State(state): State<Arc<KmsState>>,
+    BoundTenant(bound): BoundTenant,
     Json(req): Json<EnvelopeDecryptRequest>,
 ) -> Result<Json<EnvelopeDecryptResponse>> {
     use base64::{Engine, engine::general_purpose::STANDARD};
@@ -2085,7 +2130,11 @@ async fn envelope_decrypt(
     // Use KEK version from request for version-aware decryption.
     // This allows decrypting data encrypted with an older KEK version after rotation.
     let kek_version = req.kek_version;
-    let tenant_id = req.tenant_id.as_deref().unwrap_or("default");
+    let tenant_id_owned = resolve_tenant(
+        bound.as_deref(),
+        req.tenant_id.as_deref().unwrap_or("default"),
+    );
+    let tenant_id: &str = &tenant_id_owned;
 
     // Decode request fields
     let wrapped_dek = STANDARD
@@ -2137,6 +2186,7 @@ async fn envelope_decrypt(
 async fn envelope_rewrap(
     CallerId { key_id: caller_id }: CallerId,
     State(state): State<Arc<KmsState>>,
+    BoundTenant(bound): BoundTenant,
     Json(req): Json<EnvelopeRewrapRequest>,
 ) -> Result<Json<EnvelopeRewrapResponse>> {
     use base64::{Engine, engine::general_purpose::STANDARD};
@@ -2151,7 +2201,11 @@ async fn envelope_rewrap(
         .decode(&req.dek_nonce)
         .map_err(|_| ApiError::InvalidRequest("invalid base64 dek_nonce".to_string()))?;
 
-    let tenant_id = req.tenant_id.as_deref().unwrap_or("default");
+    let tenant_id_owned = resolve_tenant(
+        bound.as_deref(),
+        req.tenant_id.as_deref().unwrap_or("default"),
+    );
+    let tenant_id: &str = &tenant_id_owned;
 
     let envelope_svc = crate::service::EnvelopeService::new(&state);
     let result = envelope_svc
@@ -2245,6 +2299,7 @@ async fn dh_derive(
 async fn import_key(
     CallerId { key_id: caller_id }: CallerId,
     State(state): State<Arc<KmsState>>,
+    BoundTenant(bound): BoundTenant,
     Json(req): Json<ImportKeyRequest>,
 ) -> Result<(StatusCode, Json<ImportKeyResponse>)> {
     use base64::{Engine, engine::general_purpose::STANDARD};
@@ -2269,6 +2324,9 @@ async fn import_key(
         })?;
 
     let key_svc = state.key_service();
+    // Tenant is derived from the authenticated identity when the key is bound
+    // (audit P1-3); otherwise the caller-self-reported tenant is honoured.
+    let tenant = resolve_tenant(bound.as_deref(), &req.tenant_id);
     let meta = key_svc
         .import_key(
             spec,
@@ -2277,7 +2335,7 @@ async fn import_key(
             &wrapped_key_bytes,
             &encrypted_transport_key_bytes,
             &req.source_fingerprint,
-            &req.tenant_id,
+            &tenant,
             &caller_id,
         )
         .await?;
@@ -2308,6 +2366,7 @@ async fn export_key(
     State(state): State<Arc<KmsState>>,
     Path(key_id): Path<Uuid>,
     Query(tenant_query): Query<TenantQuery>,
+    BoundTenant(bound): BoundTenant,
     Json(req): Json<ExportKeyRequest>,
 ) -> Result<Json<ExportKeyResponse>> {
     use base64::{Engine, engine::general_purpose::STANDARD};
@@ -2338,17 +2397,18 @@ async fn export_key(
         .map_err(|_| ApiError::InvalidRequest("invalid base64 target_public_key".to_string()))?;
 
     let key_svc = state.key_service();
-    // Pass the caller-supplied tenant through to the service layer, which enforces
-    // `meta.tenant_id == tenant_id` (cross-tenant/missing => 404). This replaces the
-    // previous hardcoded "" that made every REST export fail (audit P1-1). Batch 3
-    // will derive the tenant from the authenticated identity instead of trusting the
-    // request.
+    // Tenant is derived from the authenticated identity when the key is bound
+    // (audit P1-3); otherwise the caller-supplied tenant is honoured. The service
+    // layer enforces `meta.tenant_id == tenant_id` (cross-tenant/missing => 404),
+    // so a bound key can no longer export another tenant's material by spoofing
+    // `tenant_id` (replaces the previous reliance on the self-reported request value).
+    let tenant_id = resolve_tenant(bound.as_deref(), &tenant_query.tenant_id);
     let exported = key_svc
         .export_key(
             &key_id,
             &target_pubkey,
             &req.purpose,
-            &tenant_query.tenant_id,
+            &tenant_id,
             &caller_id,
         )
         .await?;
@@ -2702,6 +2762,22 @@ async fn sm9_decrypt(
 mod tests {
     use super::*;
     use kms_core::key::KeySpec;
+
+    // resolve_tenant (audit P1-3): bound identity is authoritative and overrides
+    // the self-reported tenant; an unbound key keeps the self-reported value.
+    #[test]
+    fn test_resolve_tenant_bound_overrides_self_reported() {
+        assert_eq!(resolve_tenant(Some("acme"), "evil"), "acme");
+        assert_eq!(resolve_tenant(Some("acme"), "acme"), "acme");
+        // bound wins even when self-reported is empty/default
+        assert_eq!(resolve_tenant(Some("acme"), "default"), "acme");
+    }
+
+    #[test]
+    fn test_resolve_tenant_unbound_keeps_self_reported() {
+        assert_eq!(resolve_tenant(None, "tenant-a"), "tenant-a");
+        assert_eq!(resolve_tenant(None, "default"), "default");
+    }
 
     // Test request/response type conversions
     #[test]

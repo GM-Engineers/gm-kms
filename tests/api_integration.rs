@@ -28,6 +28,7 @@ use tokio::net::TcpListener;
 
 const ADMIN_SECRET: &str = "integration-admin-key-secret";
 const OFFICER_SECRET: &str = "integration-officer-key-secret";
+const ACME_SECRET: &str = "integration-acme-key-secret";
 const ADMIN_HEADER: &str = "x-api-key";
 
 /// 起一个绑定随机 loopback 端口的 REST 服务器，返回 `http://addr` base URL 与
@@ -60,6 +61,11 @@ async fn spawn_rest_server() -> (String, reqwest::Client, tokio::task::JoinHandl
     let api_key_config = ApiKeyConfig::with_keys(vec![
         ApiKey::key_admin(ADMIN_SECRET.to_string()).with_key_id("admin".to_string()),
         ApiKey::security_officer(OFFICER_SECRET.to_string()).with_key_id("officer".to_string()),
+        // Tenant-bound admin key (audit P1-3): server derives tenant="acme" from this
+        // identity and ignores any self-reported tenant.
+        ApiKey::key_admin(ACME_SECRET.to_string())
+            .with_key_id("acme".to_string())
+            .with_tenant("acme".to_string()),
     ]);
 
     let app = create_routes(state, api_key_config);
@@ -441,5 +447,77 @@ async fn rotate_key_requires_approval() {
     assert_eq!(
         ok_status, 200,
         "rotate with bound approval should succeed: body={body2}"
+    );
+}
+
+// =============================================================================
+// Batch 3: multi-tenant identity binding (audit P1-3)
+// =============================================================================
+
+/// A key bound to tenant "acme" ignores the tenant self-reported in the request body:
+/// the created key lands under the bound tenant, not the spoofed one.
+#[tokio::test]
+async fn bound_key_overrides_self_reported_body_tenant() {
+    let (base, client, handle) = spawn_rest_server().await;
+
+    let resp = client
+        .post(format!("{base}/v1/keys"))
+        .header(ADMIN_HEADER, ACME_SECRET)
+        .json(&json!({ "name": "acme-key", "spec": "sm4", "tenant_id": "evil" }))
+        .send()
+        .await
+        .expect("create send");
+    let status = resp.status();
+    let body: serde_json::Value = resp.json().await.expect("json");
+    handle.abort();
+
+    assert!(
+        status.is_success(),
+        "create should succeed: {status} body={body}"
+    );
+    assert_eq!(
+        body["tenant_id"].as_str(),
+        Some("acme"),
+        "bound key must be created under its own tenant, ignoring the spoofed body value: body={body}"
+    );
+}
+
+/// A key bound to "acme" cannot read another tenant's key even when it reports that
+/// tenant in the query: resolution forces "acme", so the foreign key is not found (404),
+/// while the owning (unbound) admin key can still read it.
+#[tokio::test]
+async fn bound_key_confined_to_its_tenant() {
+    let (base, client, handle) = spawn_rest_server().await;
+
+    // Unbound admin creates a key under tenant "victim".
+    let victim_key = create_key(&client, &base, "victim-key", "sm4", "victim").await;
+
+    // Bound "acme" key reports tenant=victim => forced to "acme" => foreign key 404.
+    let as_acme = client
+        .get(format!("{base}/v1/keys/{victim_key}?tenant_id=victim"))
+        .header(ADMIN_HEADER, ACME_SECRET)
+        .send()
+        .await
+        .expect("acme get send");
+    let acme_status = as_acme.status().as_u16();
+
+    // Sanity: the owning (unbound) admin key reading the same tenant IS authorized.
+    let as_admin = client
+        .get(format!("{base}/v1/keys/{victim_key}?tenant_id=victim"))
+        .header(ADMIN_HEADER, ADMIN_SECRET)
+        .send()
+        .await
+        .expect("admin get send");
+    let admin_status = as_admin.status().as_u16();
+
+    handle.abort();
+
+    assert_eq!(
+        admin_status, 200,
+        "unbound owner should read its own tenant key"
+    );
+    assert_eq!(
+        acme_status, 404,
+        "bound key must not reach another tenant's key by reporting that tenant"
     );
 }

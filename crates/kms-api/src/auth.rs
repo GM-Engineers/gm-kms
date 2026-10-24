@@ -31,6 +31,28 @@ pub struct CallerId {
     pub key_id: String,
 }
 
+/// Tenant bound to the authenticated API key, derived server-side from identity
+/// (audit P1-3). Injected by the auth middleware alongside [`CallerId`].
+///
+/// `None` means the key carries no tenant binding, so handlers fall back to the
+/// caller-self-reported tenant (existing behaviour). When `Some`, the bound tenant
+/// is authoritative and the self-reported value is ignored.
+#[derive(Debug, Clone)]
+pub struct BoundTenant(pub Option<String>);
+
+impl<S: Send + Sync> FromRequestParts<S> for BoundTenant {
+    type Rejection = StatusCode;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        // Absent (e.g. route without auth) => no binding => self-reported wins.
+        Ok(parts
+            .extensions
+            .get::<BoundTenant>()
+            .cloned()
+            .unwrap_or(BoundTenant(None)))
+    }
+}
+
 impl CallerId {
     /// Fallback value used when no API key is attached (e.g., health endpoint).
     pub const UNKNOWN: &'static str = "anonymous";
@@ -201,6 +223,9 @@ pub struct ApiKey {
     pub revoked: bool,
     /// Key ID for rotation tracking
     pub key_id: String,
+    /// Tenant bound to this key (server-side authoritative tenant; audit P1-3).
+    /// `None` means unbound: handlers fall back to the self-reported tenant.
+    pub tenant_id: Option<String>,
     /// Failed login attempt counter
     failed_attempts: u32,
     /// When the key was locked due to too many failures
@@ -216,6 +241,7 @@ impl Clone for ApiKey {
             expires_at: self.expires_at,
             revoked: self.revoked,
             key_id: self.key_id.clone(),
+            tenant_id: self.tenant_id.clone(),
             failed_attempts: self.failed_attempts,
             locked_until: self.locked_until,
         }
@@ -232,6 +258,7 @@ impl ApiKey {
             expires_at: None,
             revoked: false,
             key_id: uuid::Uuid::new_v4().to_string(),
+            tenant_id: None,
             failed_attempts: 0,
             locked_until: None,
         }
@@ -271,6 +298,13 @@ impl ApiKey {
     /// Create a new API key with a specific key ID
     pub fn with_key_id(mut self, key_id: String) -> Self {
         self.key_id = key_id;
+        self
+    }
+
+    /// Bind this key to a tenant (audit P1-3). Once bound, the server derives the
+    /// request tenant from the key and ignores any caller-self-reported tenant.
+    pub fn with_tenant(mut self, tenant_id: String) -> Self {
+        self.tenant_id = Some(tenant_id);
         self
     }
 
@@ -575,6 +609,18 @@ impl ApiKeyConfig {
             .map(|k| k.key_id.clone())
     }
 
+    /// Look up the tenant bound to a given key (audit P1-3).
+    /// Returns `Some(tenant)` only when the key carries an explicit tenant binding;
+    /// `None` for an unknown key or a key with no binding (fall back to self-reported).
+    pub fn lookup_tenant(&self, key: &str) -> Option<String> {
+        let key_bytes = key.as_bytes();
+        self.valid_keys
+            .lock()
+            .iter()
+            .find(|k| k.secret.as_bytes().ct_eq(key_bytes).into())
+            .and_then(|k| k.tenant_id.clone())
+    }
+
     /// Add a new API key to the config
     pub fn add_key(&self, key: ApiKey) {
         self.valid_keys.lock().push(key);
@@ -702,11 +748,16 @@ async fn auth_middleware_with_permission(
                 Some(key) => {
                     // Extract identity for audit trail (P2-1 fix)
                     let key_id = config.lookup_key_id(key);
+                    // Server-side tenant binding (audit P1-3): derive the authoritative
+                    // tenant from the authenticated key, independent of what the caller
+                    // self-reports in query/body.
+                    let bound_tenant = config.lookup_tenant(key);
                     if config.has_permission(key, required) {
                         let mut request = request;
                         request.extensions_mut().insert(CallerId {
                             key_id: key_id.unwrap_or_else(|| "unknown".to_string()),
                         });
+                        request.extensions_mut().insert(BoundTenant(bound_tenant));
                         Ok(next.run(request).await)
                     } else {
                         Err(StatusCode::FORBIDDEN)
