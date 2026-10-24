@@ -284,12 +284,19 @@ message ExportKeyRequest {
 }
 
 message ExportKeyResponse {
+    // Fields 1 and 2 belonged to an earlier, unreleased shape
+    // (`bytes key_material`, `uint32 version`). Reusing those field numbers
+    // for a different wire type would make an old client mis-parse the
+    // response instead of failing cleanly (audit B7-f), so they are reserved
+    // and the new fields start at 4.
+    reserved 1, 2;
+
     // Key material encrypted with an ephemeral transport key (never raw plaintext).
-    string wrapped_key = 1;
+    string wrapped_key = 4;
     // Transport key encrypted with the caller's target_public_key.
-    string encrypted_transport_key = 2;
+    string encrypted_transport_key = 5;
     // SHA-256 fingerprint of the exported material, for integrity verification.
-    string key_fingerprint = 3;
+    string key_fingerprint = 6;
 }
 
 // Audit query messages

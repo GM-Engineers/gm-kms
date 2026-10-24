@@ -162,6 +162,15 @@ fn in_memory_fallback_permitted(allow_in_memory: bool, reason: &str) -> Result<(
     }
 }
 
+/// Whether the selected TPM backend keeps the keys in process memory.
+///
+/// Only the real `tpm2-tss` backend is persistent; the simulated one stores
+/// the keys in a process-local map, so it needs the same fail-closed gate as
+/// the in-memory software fallback (audit B7-f).
+fn tpm_backend_is_in_memory(tpm_backend: &str) -> bool {
+    tpm_backend != "tpm2-tss"
+}
+
 /// Create a PgPool from the database configuration if available.
 /// Returns None if the database is not configured or connection fails.
 async fn maybe_create_mfa_pool(
@@ -685,7 +694,17 @@ pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()
                                 );
                             }
                             Ok(Err(e)) => {
-                                tracing::warn!("Failed to load keys from PostgreSQL: {e}");
+                                // audit B7-f: the readiness flag is only set when
+                                // the preload succeeds, so `/readyz` keeps
+                                // answering 503 and traffic is withheld. The
+                                // keys themselves stay correct because the
+                                // Postgres backend loads them lazily on a cache
+                                // miss, so this is a performance degradation, not
+                                // a data loss.
+                                tracing::error!(
+                                    "Failed to load keys from PostgreSQL: {e}; \
+                                     /readyz will keep reporting not-ready"
+                                );
                             }
                             Err(join_err) => {
                                 tracing::error!("Preload task panicked: {join_err}");
@@ -732,7 +751,12 @@ pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()
                                 "preload task panicked".into(),
                             ))
                         }) {
-                            tracing::warn!("Failed to load keys from PostgreSQL: {e}");
+                            // audit B7-f: see the note above — the readiness
+                            // flag stays unset, so traffic is withheld.
+                            tracing::error!(
+                                "Failed to load keys from PostgreSQL: {e}; \
+                                 /readyz will keep reporting not-ready"
+                            );
                         }
                     });
                     tracing::info!(
@@ -873,6 +897,17 @@ pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()
                             tracing::warn!(
                                 "Redis caching not supported for TPM backend, using keystore directly"
                             );
+                            // The simulated TPM keeps the keys in process memory
+                            // (audit B7-f): it must pass the same fail-closed gate
+                            // as the in-memory software fallback, otherwise a
+                            // production deployment silently loses every key on
+                            // restart while believing it uses a TPM.
+                            if tpm_backend_is_in_memory(&config.backend.tpm_backend) {
+                                in_memory_fallback_permitted(
+                                    allow_in_memory,
+                                    "the simulated TPM keystore stores keys in process memory only",
+                                )?;
+                            }
                             let tpm_keystore = create_tpm_keystore(&config.backend.tpm_backend)
                                 .map_err(|e| {
                                     anyhow::anyhow!("Failed to create TPM keystore: {e}")
@@ -1733,6 +1768,26 @@ mod pr41_failfast_tests {
     fn p14_in_memory_allowed_by_dev_mode_env() {
         with_env(&[("KMS_ALLOW_INSECURE", ""), ("KMS_DEV_MODE", "1")], || {
             assert!(in_memory_fallback_permitted(false, "no pg").is_ok());
+        });
+    }
+
+    /// audit B7-f: only the real hardware backend is persistent; the simulated
+    /// one must pass the same fail-closed gate.
+    #[test]
+    fn b7f_simulated_tpm_is_treated_as_in_memory() {
+        assert!(tpm_backend_is_in_memory("simulated"));
+        assert!(tpm_backend_is_in_memory(""));
+        assert!(!tpm_backend_is_in_memory("tpm2-tss"));
+    }
+
+    /// audit B7-f: a simulated TPM backend must not start in production
+    /// without an explicit opt-in.
+    #[test]
+    fn b7f_simulated_tpm_requires_opt_in() {
+        with_env(&[("KMS_ALLOW_INSECURE", ""), ("KMS_DEV_MODE", "")], || {
+            assert!(tpm_backend_is_in_memory("simulated"));
+            let err = in_memory_fallback_permitted(false, "simulated tpm").unwrap_err();
+            assert!(err.to_string().contains("refusing to start"));
         });
     }
 }

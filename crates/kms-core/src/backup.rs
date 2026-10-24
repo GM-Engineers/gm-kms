@@ -169,6 +169,37 @@ pub struct EncryptedMasterKey {
     pub kdf_iterations: u32,
 }
 
+/// Write `content` to `path` with owner-only permissions (audit B7-f).
+///
+/// The restrictive mode is applied **at creation time** on unix, so the file
+/// is never briefly world-readable. An existing file is tightened *before* the
+/// new content is written.
+#[cfg(unix)]
+fn write_owner_only(path: &std::path::Path, content: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    if path.exists() {
+        // Tighten an existing file first: `OpenOptions::mode` only applies
+        // when the file is created.
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(content)?;
+    file.sync_all()
+}
+
+#[cfg(not(unix))]
+fn write_owner_only(path: &std::path::Path, content: &[u8]) -> std::io::Result<()> {
+    std::fs::write(path, content)
+}
+
 /// Derive a 16-byte SM4 key from a passphrase + salt using SM3 iterated hashing.
 fn derive_key_from_passphrase(passphrase: &str, salt: &[u8], iterations: u32) -> Result<SecureBox> {
     let mut key = SecureBox::new(SM4_KEY_SIZE)?;
@@ -268,6 +299,11 @@ impl MasterKey {
     ///
     /// Writes an [`EncryptedMasterKey`] JSON envelope with owner-only (0o600)
     /// permissions, creating the parent directory if needed.
+    ///
+    /// audit B7-f: the file is created with the restrictive mode **atomically**
+    /// (via `OpenOptions::mode`), instead of being written with the default
+    /// umask and tightened afterwards. The old order left a window in which
+    /// another local user could read the passphrase-encrypted master key.
     pub fn save_encrypted(
         &self,
         path: &std::path::Path,
@@ -280,13 +316,7 @@ impl MasterKey {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).context("Failed to create master key directory")?;
         }
-        std::fs::write(path, json).context("Failed to write encrypted master key")?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-                .context("Failed to set master key file permissions")?;
-        }
+        write_owner_only(path, json.as_bytes()).context("Failed to write encrypted master key")?;
         Ok(())
     }
 
@@ -888,6 +918,57 @@ mod tests {
         // Verify the file is signed
         let loaded = service.verify_backup_file(&file_path).unwrap();
         assert_eq!(loaded.key_meta.id, key_meta.id);
+    }
+
+    /// audit B7-f: the encrypted master key file must be owner-only readable.
+    ///
+    /// The file used to be created with the default umask (typically 0644)
+    /// and only tightened afterwards, which left a window in which another
+    /// local user could read the passphrase-encrypted master key.
+    #[cfg(unix)]
+    #[test]
+    fn test_encrypted_master_key_file_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("master_key.enc");
+
+        let master_key = MasterKey::generate().unwrap();
+        master_key
+            .save_encrypted(&path, "test-passphrase", 1000)
+            .expect("save_encrypted");
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "the master key file must be owner-only, got {mode:o}"
+        );
+    }
+
+    /// audit B7-f: rewriting an existing file must not widen its permissions
+    /// before the new content is written.
+    #[cfg(unix)]
+    #[test]
+    fn test_encrypted_master_key_rewrite_keeps_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("master_key.enc");
+
+        // Pre-create the file with world-readable permissions.
+        std::fs::write(&path, b"stale").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let master_key = MasterKey::generate().unwrap();
+        master_key
+            .save_encrypted(&path, "test-passphrase", 1000)
+            .expect("save_encrypted");
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "rewriting the master key file must tighten its permissions, got {mode:o}"
+        );
     }
 
     #[test]

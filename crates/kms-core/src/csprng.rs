@@ -197,28 +197,31 @@ impl Default for GmRng {
     }
 }
 
-/// 从 OS CSPRNG (`getrandom`) 填充 `len` 字节。
+/// From OS CSPRNG (`getrandom`) fill `len` bytes.
 ///
 /// audit P3-2：关键密码材料（DEK/nonce/随机密钥字节）统一走经过充分审计的
 /// OS CSPRNG；自建 HMAC-SM3 DRBG（[`GmRng`]）限定于非密钥场景（测试/掩码等）。
-fn os_random(len: usize) -> Vec<u8> {
+///
+/// audit B7-f：失败时返回错误而不是 panic —— 请求路径上的 panic 会把一次
+/// 熵源故障放大成拒绝服务。
+fn os_random(len: usize) -> Result<Vec<u8>, CsprngError> {
     let mut buf = vec![0u8; len];
-    getrandom(&mut buf).expect("OS CSPRNG (getrandom) must be available for key material");
-    buf
+    getrandom(&mut buf).map_err(|e| CsprngError::EntropyError(e.to_string()))?;
+    Ok(buf)
 }
 
 /// 生成随机DEK（走 OS CSPRNG，audit P3-2）
-pub fn generate_dek(length: usize) -> Vec<u8> {
+pub fn generate_dek(length: usize) -> Result<Vec<u8>, CsprngError> {
     os_random(length)
 }
 
 /// 生成随机nonce（走 OS CSPRNG，audit P3-2）
-pub fn generate_nonce(length: usize) -> Vec<u8> {
+pub fn generate_nonce(length: usize) -> Result<Vec<u8>, CsprngError> {
     os_random(length)
 }
 
 /// 生成随机字节（走 OS CSPRNG，audit P3-2）
-pub fn random_bytes(len: usize) -> Vec<u8> {
+pub fn random_bytes(len: usize) -> Result<Vec<u8>, CsprngError> {
     os_random(len)
 }
 
@@ -251,8 +254,8 @@ pub fn verify() -> Result<(), CsprngError> {
     }
     // audit P3-2: run the DRBG instantiation known-answer self-test every time.
     self_test()?;
-    let bytes1 = random_bytes(32);
-    let bytes2 = random_bytes(32);
+    let bytes1 = random_bytes(32)?;
+    let bytes2 = random_bytes(32)?;
     if bytes1.ct_eq(&bytes2).into() {
         return Err(CsprngError::GenerationError(
             "CSPRNG not producing random values".to_string(),
@@ -319,8 +322,8 @@ mod tests {
 
     #[test]
     fn test_generate_dek() {
-        let dek1 = generate_dek(32);
-        let dek2 = generate_dek(32);
+        let dek1 = generate_dek(32).expect("generate_dek");
+        let dek2 = generate_dek(32).expect("generate_dek");
         assert_eq!(dek1.len(), 32);
         assert_eq!(dek2.len(), 32);
         assert_ne!(dek1.as_slice(), dek2.as_slice());
@@ -328,15 +331,16 @@ mod tests {
 
     #[test]
     fn test_generate_nonce() {
-        let nonce1 = generate_nonce(12);
-        let nonce2 = generate_nonce(12);
+        let nonce1 = generate_nonce(12).expect("generate_nonce");
+        let nonce2 = generate_nonce(12).expect("generate_nonce");
         assert_eq!(nonce1.len(), 12);
+        assert_eq!(nonce2.len(), 12);
         assert_ne!(nonce1.as_slice(), nonce2.as_slice());
     }
 
     #[test]
     fn test_random_bytes() {
-        let bytes = random_bytes(16);
+        let bytes = random_bytes(16).expect("random_bytes");
         assert_eq!(bytes.len(), 16);
         assert!(!bytes.iter().all(|&b| b == 0));
     }
@@ -384,13 +388,18 @@ mod tests {
     fn test_key_material_helpers_use_os_csprng() {
         // audit P3-2: DEK/nonce/random_bytes come from the OS CSPRNG — non-zero
         // and unique across calls.
-        let a = generate_dek(32);
-        let b = generate_dek(32);
+        let a = generate_dek(32).expect("generate_dek");
+        let b = generate_dek(32).expect("generate_dek");
         assert_eq!(a.len(), 32);
         assert!(!a.iter().all(|&x| x == 0));
         assert_ne!(a.as_slice(), b.as_slice());
-        assert!(!generate_nonce(12).iter().all(|&x| x == 0));
-        assert_eq!(random_bytes(16).len(), 16);
+        assert!(
+            !generate_nonce(12)
+                .expect("generate_nonce")
+                .iter()
+                .all(|&x| x == 0)
+        );
+        assert_eq!(random_bytes(16).expect("random_bytes").len(), 16);
     }
 
     #[test]

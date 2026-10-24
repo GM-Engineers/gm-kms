@@ -214,7 +214,8 @@ impl SecretRotationManager {
         }
 
         // Generate new secret
-        let new_secret = crate::csprng::random_bytes(32);
+        let new_secret = crate::csprng::random_bytes(32)
+            .map_err(|e| crate::Error::Internal(format!("CSPRNG failure: {e}")))?;
 
         let now = Utc::now();
         let expires_at = now + Duration::seconds(config.ttl_seconds as i64);

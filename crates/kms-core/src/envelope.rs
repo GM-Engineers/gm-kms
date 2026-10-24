@@ -83,15 +83,17 @@ impl Default for EnvelopeConfig {
 
 /// 生成随机DEK (Data Encryption Key)
 ///
-/// 使用 GM/SM3 HMAC_DRBG 符合国密标准
-pub fn generate_dek(length: usize) -> Vec<u8> {
+/// 使用经过审计的 OS CSPRNG (`getrandom`)；自建 HMAC-SM3 DRBG 仅限非密钥场景
+/// （audit P3-2）。熵源故障时返回错误而非 panic（audit B7-f）。
+pub fn generate_dek(length: usize) -> Result<Vec<u8>, crate::csprng::CsprngError> {
     gm_generate_dek(length)
 }
 
 /// 生成随机nonce
 ///
-/// 使用 GM/SM3 HMAC_DRBG 符合国密标准
-pub fn generate_nonce(length: usize) -> Vec<u8> {
+/// 使用经过审计的 OS CSPRNG (`getrandom`)；自建 HMAC-SM3 DRBG 仅限非密钥场景
+/// （audit P3-2）。熵源故障时返回错误而非 panic（audit B7-f）。
+pub fn generate_nonce(length: usize) -> Result<Vec<u8>, crate::csprng::CsprngError> {
     gm_generate_nonce(length)
 }
 
@@ -120,8 +122,8 @@ mod tests {
 
     #[test]
     fn test_generate_dek() {
-        let dek1 = generate_dek(32);
-        let dek2 = generate_dek(32);
+        let dek1 = generate_dek(32).expect("generate_dek");
+        let dek2 = generate_dek(32).expect("generate_dek");
         assert_eq!(dek1.len(), 32);
         assert_eq!(dek2.len(), 32);
         assert_ne!(dek1, dek2); // Should be random
@@ -129,7 +131,7 @@ mod tests {
 
     #[test]
     fn test_generate_nonce() {
-        let nonce = generate_nonce(12);
+        let nonce = generate_nonce(12).expect("generate_nonce");
         assert_eq!(nonce.len(), 12);
     }
 
@@ -186,7 +188,7 @@ mod tests {
     #[test]
     fn test_generate_dek_various_lengths() {
         for len in [16, 24, 32, 48, 64] {
-            let dek = generate_dek(len);
+            let dek = generate_dek(len).expect("generate_dek");
             assert_eq!(dek.len(), len);
         }
     }
@@ -195,7 +197,7 @@ mod tests {
     #[test]
     fn test_generate_nonce_various_lengths() {
         for len in [8, 12, 16, 24, 32] {
-            let nonce = generate_nonce(len);
+            let nonce = generate_nonce(len).expect("generate_nonce");
             assert_eq!(nonce.len(), len);
         }
     }
