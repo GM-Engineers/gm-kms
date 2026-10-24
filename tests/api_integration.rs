@@ -2174,3 +2174,47 @@ async fn b7g3_approval_request_is_not_readable_across_tenants() {
         "an approval request must not be readable across tenants: body={body}"
     );
 }
+
+// =============================================================================
+// Batch 7 / B7-g: the configuration surface
+//
+// A declared API key whose secret environment variable is set but empty used
+// to register an *empty* credential — an empty `x-api-key` header then
+// authenticated. Duplicate secrets and duplicate key ids were accepted
+// silently (audit follow-up B7-g).
+//
+// The corresponding startup validation lives in `src/cmd/server.rs`
+// (`build_api_key_config`) and is covered by unit tests there.
+// =============================================================================
+
+/// A key without the approve permission must not be able to approve, not even
+/// when it is the requestor of the request.
+#[tokio::test]
+async fn b7g4_operator_cannot_approve() {
+    let (base, client, handle) = spawn_rest_server().await;
+    let key_id = create_key(&client, &base, "operator-approve-key", "sm4", "tenant-a").await;
+
+    // The operator may raise a request (any authenticated key may)...
+    let (status, body) = create_approval_with(
+        &client,
+        &base,
+        OPERATOR_SECRET,
+        "key_export",
+        &key_id,
+        "key",
+        "tenant-a",
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, 201, "create request failed: body={body}");
+    let approval_id = body["id"].as_str().expect("approval id").to_string();
+
+    // ...but it holds no APPROVE_ACTION, so the approval is refused.
+    let (status, body) =
+        approve_with(&client, &base, &approval_id, OPERATOR_SECRET, json!({})).await;
+    handle.abort();
+    assert_eq!(
+        status, 403,
+        "a key without the approve permission must not be able to approve: body={body}"
+    );
+}

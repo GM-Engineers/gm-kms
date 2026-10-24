@@ -303,6 +303,16 @@ fn build_cors_layer(cors_config: &crate::cmd::config::CorsConfig) -> CorsLayer {
 /// `lookup_secret` resolves the secret of a key from its environment variable
 /// name; it is a parameter so the behaviour can be tested without touching the
 /// process environment.
+///
+/// The configuration is validated instead of being accepted as-is
+/// (audit follow-up B7-g):
+///
+/// * an empty secret is rejected — an empty secret is a valid credential, so
+///   anybody could authenticate with an empty `x-api-key` header;
+/// * a duplicate secret is rejected — the same secret would authenticate as
+///   whichever key happens to be validated first;
+/// * a duplicate key id is rejected — revoking one of them would only revoke
+///   the first match.
 fn build_api_key_config<F>(
     base: ApiKeyConfig,
     config: &Config,
@@ -313,6 +323,14 @@ where
 {
     let api_key_config = base;
 
+    // Secrets and key ids already in use (e.g. the key from the environment).
+    let mut seen_secrets: Vec<String> = Vec::new();
+    let mut seen_key_ids: Vec<String> = Vec::new();
+    for key in api_key_config.list_valid_keys() {
+        seen_secrets.push(key.secret.to_string());
+        seen_key_ids.push(key.key_id.clone());
+    }
+
     for entry in &config.api_keys {
         let secret = lookup_secret(&entry.secret_env).ok_or_else(|| {
             anyhow::anyhow!(
@@ -321,6 +339,13 @@ where
                 entry.secret_env
             )
         })?;
+        if secret.trim().is_empty() {
+            return Err(anyhow::anyhow!(
+                "api key '{}' has an empty secret: environment variable '{}' is set but empty",
+                entry.key_id,
+                entry.secret_env
+            ));
+        }
         let permission = ApiKeyPermission::from_role_name(&entry.role).ok_or_else(|| {
             anyhow::anyhow!(
                 "api key '{}' has an unknown role '{}' (expected read-only, operator, \
@@ -334,6 +359,21 @@ where
         } else {
             entry.key_id.clone()
         };
+        if seen_key_ids.contains(&key_id) {
+            return Err(anyhow::anyhow!(
+                "api key '{}' is declared more than once: key ids must be unique",
+                key_id
+            ));
+        }
+        if seen_secrets.contains(&secret) {
+            return Err(anyhow::anyhow!(
+                "api key '{}' reuses the secret of another key: secrets must be unique",
+                key_id
+            ));
+        }
+        seen_key_ids.push(key_id.clone());
+        seen_secrets.push(secret.clone());
+
         let mut key = ApiKey::new(secret, permission).with_key_id(key_id);
         if let Some(tenant) = &entry.tenant {
             key = key.with_tenant(tenant.clone());
@@ -1905,6 +1945,106 @@ mod tests {
             .expect_err("a missing secret must be rejected");
         assert!(
             err.to_string().contains("not set"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// An empty secret is a valid credential: anybody could authenticate with
+    /// an empty `x-api-key` header. The startup must fail instead
+    /// (audit follow-up B7-g).
+    #[test]
+    fn b7g4_declared_api_key_with_empty_secret_is_rejected() {
+        let config = Config {
+            api_keys: vec![entry(
+                "empty-secret",
+                "key-admin",
+                Some("acme"),
+                "KMS_API_KEY_EMPTY",
+            )],
+            ..Default::default()
+        };
+
+        let err = build_api_key_config(base_config(), &config, |_| Some(String::new()))
+            .expect_err("an empty secret must be rejected");
+        assert!(
+            err.to_string().contains("empty secret"),
+            "unexpected error: {err}"
+        );
+
+        // A blank (whitespace-only) secret is just as unusable.
+        let err = build_api_key_config(base_config(), &config, |_| Some("   \t".to_string()))
+            .expect_err("a blank secret must be rejected");
+        assert!(
+            err.to_string().contains("empty secret"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// Two keys with the same secret are ambiguous: the same credential would
+    /// authenticate as whichever key is validated first. The startup must fail
+    /// (audit follow-up B7-g).
+    #[test]
+    fn b7g4_declared_api_keys_with_duplicate_secret_are_rejected() {
+        let config = Config {
+            api_keys: vec![
+                entry("first", "key-admin", Some("acme"), "KMS_API_KEY_ONE"),
+                entry("second", "operator", Some("acme"), "KMS_API_KEY_TWO"),
+            ],
+            ..Default::default()
+        };
+
+        let err = build_api_key_config(base_config(), &config, |_| Some("same-secret".to_string()))
+            .expect_err("a duplicate secret must be rejected");
+        assert!(
+            err.to_string().contains("reuses the secret"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// Two keys with the same key id break the revocation: only the first
+    /// match is revoked. The startup must fail (audit follow-up B7-g).
+    #[test]
+    fn b7g4_declared_api_keys_with_duplicate_key_id_are_rejected() {
+        let config = Config {
+            api_keys: vec![
+                entry("same-id", "key-admin", Some("acme"), "KMS_API_KEY_ONE"),
+                entry("same-id", "operator", Some("acme"), "KMS_API_KEY_TWO"),
+            ],
+            ..Default::default()
+        };
+
+        let err = build_api_key_config(base_config(), &config, |name| {
+            if name == "KMS_API_KEY_ONE" {
+                Some("secret-one".to_string())
+            } else {
+                Some("secret-two".to_string())
+            }
+        })
+        .expect_err("a duplicate key id must be rejected");
+        assert!(
+            err.to_string().contains("more than once"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// A declared key must not reuse the secret of the key that came from the
+    /// environment (audit follow-up B7-g).
+    #[test]
+    fn b7g4_declared_api_key_must_not_reuse_the_environment_secret() {
+        let config = Config {
+            api_keys: vec![entry(
+                "acme-admin",
+                "key-admin",
+                Some("acme"),
+                "KMS_API_KEY_ACME",
+            )],
+            ..Default::default()
+        };
+
+        let err = build_api_key_config(base_config(), &config, |_| Some("base-secret".to_string()))
+            .expect_err("reusing the environment secret must be rejected");
+        assert!(
+            err.to_string().contains("reuses the secret"),
             "unexpected error: {err}"
         );
     }
