@@ -251,6 +251,9 @@ message ExportKeyRequest {
     string purpose = 5;
     // Transport-key protection scheme (audit P2-6): ""/"rsa-oaep" (default) or "sm2".
     string protection_scheme = 6;
+    // Key version to export (audit P2-2). 0 exports the current version; a
+    // non-zero value exports that historical version while the key is exportable.
+    uint32 version = 7;
 }
 
 message ExportKeyResponse {

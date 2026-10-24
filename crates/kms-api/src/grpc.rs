@@ -1023,7 +1023,10 @@ impl KmsService for KmsGrpcService {
                 &req.purpose,
                 tenant_id,
                 &caller_id,
-                crate::service::ExportOptions { protection },
+                crate::service::ExportOptions {
+                    protection,
+                    version: (req.version != 0).then_some(req.version),
+                },
             )
             .await
             .map_err(api_error_to_status)?;

@@ -521,3 +521,124 @@ async fn bound_key_confined_to_its_tenant() {
         "bound key must not reach another tenant's key by reporting that tenant"
     );
 }
+
+// =============================================================================
+// Batch 4: versioned export + interface decrypt version echo (audit P2-2/P2-3)
+// =============================================================================
+
+/// Encrypt via REST, returning (ciphertext, nonce, tag, format_version, key_version).
+async fn encrypt_with_meta(
+    client: &reqwest::Client,
+    base: &str,
+    key_id: &str,
+    tenant: &str,
+    plaintext: &[u8],
+) -> (String, String, String, u8, u32) {
+    let resp = client
+        .post(format!(
+            "{base}/v1/keys/{key_id}/encrypt?tenant_id={tenant}"
+        ))
+        .header(ADMIN_HEADER, ADMIN_SECRET)
+        .json(&json!({ "plaintext": STANDARD.encode(plaintext), "aad": null }))
+        .send()
+        .await
+        .expect("encrypt send");
+    let status = resp.status();
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .unwrap_or_else(|_| json!({"__nonjson": true}));
+    assert!(status.is_success(), "encrypt failed: {status} body={body}");
+    (
+        body["ciphertext"].as_str().unwrap().to_string(),
+        body["nonce"].as_str().unwrap().to_string(),
+        body["tag"].as_str().unwrap().to_string(),
+        body["format_version"].as_u64().unwrap_or(2) as u8,
+        body["version"].as_u64().unwrap_or(1) as u32,
+    )
+}
+
+/// Decrypt via REST echoing the exact `format_version`/`version` from encryption.
+#[allow(clippy::too_many_arguments)]
+async fn decrypt_with_version(
+    client: &reqwest::Client,
+    base: &str,
+    key_id: &str,
+    tenant: &str,
+    ct: &str,
+    nonce: &str,
+    tag: &str,
+    format_version: u8,
+    version: u32,
+) -> (bool, Option<Vec<u8>>, serde_json::Value) {
+    let resp = client
+        .post(format!(
+            "{base}/v1/keys/{key_id}/decrypt?tenant_id={tenant}"
+        ))
+        .header(ADMIN_HEADER, ADMIN_SECRET)
+        .json(&json!({
+            "ciphertext": ct,
+            "nonce": nonce,
+            "tag": tag,
+            "aad": null,
+            "format_version": format_version,
+            "version": version,
+        }))
+        .send()
+        .await
+        .expect("decrypt send");
+    let ok = resp.status().is_success();
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .unwrap_or_else(|_| json!({"__nonjson": true}));
+    let plaintext = if ok {
+        body["plaintext"]
+            .as_str()
+            .map(|s| STANDARD.decode(s).expect("decode b64 plaintext"))
+    } else {
+        None
+    };
+    (ok, plaintext, body)
+}
+
+/// After a rotation the active key version bumps to 2. A ciphertext produced
+/// post-rotation binds AAD to version 2; REST must echo that version to decrypt.
+/// Before the audit P2-3 fix the handler hardcoded `version: 1`, so this failed.
+#[tokio::test]
+async fn decrypt_after_rotation_echoes_version_rest() {
+    let (base, client, handle) = spawn_rest_server().await;
+    let tenant = "tenant-a";
+    let key_id = create_key(&client, &base, "rotate-decrypt", "aes-256-gcm", tenant).await;
+
+    // Encrypt -> rotate (bound KeyRotate approval, Double => 2) -> encrypt again.
+    let approval_id = create_approval(&client, &base, "key_rotate", &key_id, tenant).await;
+    approve_n(&client, &base, &approval_id, 2).await;
+    let (rot_status, rot_body) =
+        rotate_key(&client, &base, &key_id, tenant, Some(&approval_id)).await;
+    assert_eq!(
+        rot_status, 200,
+        "rotation should succeed with bound approval: body={rot_body}"
+    );
+
+    // New ciphertext now uses the bumped key version (2).
+    let secret = b"post-rotation ciphertext must decrypt with echoed version";
+    let (ct, nonce, tag, fmt, ver) =
+        encrypt_with_meta(&client, &base, &key_id, tenant, secret).await;
+    assert_eq!(fmt, 2, "AES-GCM should use format_version 2");
+    assert_eq!(ver, 2, "post-rotation encryption should use key version 2");
+
+    let (ok, got, body) =
+        decrypt_with_version(&client, &base, &key_id, tenant, &ct, &nonce, &tag, fmt, ver).await;
+    handle.abort();
+
+    assert!(
+        ok,
+        "decrypting a version-2 ciphertext with echoed version must succeed (P2-3): body={body}"
+    );
+    assert_eq!(
+        got.expect("plaintext"),
+        secret,
+        "round-trip plaintext mismatch"
+    );
+}

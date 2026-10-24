@@ -55,6 +55,11 @@ impl ExportProtection {
 pub struct ExportOptions {
     /// Transport-key protection scheme.
     pub protection: ExportProtection,
+    /// Key version to export (audit P2-2). `None` (or `Some(0)`) exports the
+    /// current/active version; `Some(v)` with `v != current` exports a historical
+    /// version from the key's rotation history, provided the key is still
+    /// exportable (export-policy is validated against the current key).
+    pub version: Option<u32>,
 }
 
 /// Service for key lifecycle management
@@ -350,8 +355,10 @@ impl KeyService {
             }
         }
 
-        // Export raw key material (validates key exists and is active)
-        let key_material = self
+        // Export raw key material (validates key exists, is active and exportable).
+        // Export-policy + tenant checks are enforced here against the current key,
+        // so making a key non-exportable also blocks historical-version export.
+        let current_material = self
             .keystore
             .export_key_material(key_id, tenant_id)
             .await
@@ -364,6 +371,22 @@ impl KeyService {
                 }
                 _ => ServiceError::from(e).into_api_error(),
             })?;
+
+        // Select the requested version (audit P2-2): `None`/0/current exports the
+        // active material; a different version is pulled from rotation history.
+        let key_material = match opts.version.filter(|v| *v != 0) {
+            Some(v) if v != meta.version => self
+                .keystore
+                .get_key_material_version(key_id, v, tenant_id)
+                .await
+                .map_err(|e| match e {
+                    kms_core::Error::KeyNotFound(_) => {
+                        ApiError::NotFound(format!("key {key_id} version {v} not found"))
+                    }
+                    _ => ServiceError::from(e).into_api_error(),
+                })?,
+            _ => current_material,
+        };
 
         // Compute fingerprint from actual key material (SHA-256)
         use ring::digest::{Context, SHA256 as RingSHA256};
@@ -950,6 +973,7 @@ mod tests {
                 "user-1",
                 ExportOptions {
                     protection: ExportProtection::Sm2,
+                    version: None,
                 },
             )
             .await
@@ -999,12 +1023,94 @@ mod tests {
                 "user-1",
                 ExportOptions {
                     protection: ExportProtection::Sm2,
+                    version: None,
                 },
             )
             .await;
         assert!(
             matches!(result, Err(ApiError::InvalidRequest(_))),
             "bad SM2 pubkey must be rejected with InvalidRequest"
+        );
+    }
+
+    // ── B4-c: versioned export (audit P2-2) ──
+
+    #[tokio::test]
+    async fn export_specific_version_pulls_rotation_history() {
+        let state = create_test_state();
+        let svc = KeyService::new(&state);
+        let key_id = create_aes_key(&svc, "ver-exp", "tenant-ver").await;
+
+        let keypair = gm_crypto::sm2::Sm2KeyPair::generate().unwrap();
+        let target_pub = keypair.public_key_bytes_uncompressed();
+        let opts = |version| ExportOptions {
+            protection: ExportProtection::Sm2,
+            version,
+        };
+
+        // Baseline: current version (1).
+        let v1 = svc
+            .export_key(
+                &key_id,
+                &target_pub,
+                "migration",
+                "tenant-ver",
+                "user-1",
+                opts(None),
+            )
+            .await
+            .unwrap();
+
+        // Rotate -> active becomes version 2, history keeps version 1.
+        svc.rotate_key(&key_id, "tenant-ver", "user-1")
+            .await
+            .unwrap();
+        let after = svc.get_key(&key_id, "tenant-ver").await.unwrap();
+        assert_eq!(after.version, 2);
+
+        let v2 = svc
+            .export_key(
+                &key_id,
+                &target_pub,
+                "migration",
+                "tenant-ver",
+                "user-1",
+                opts(None),
+            )
+            .await
+            .unwrap();
+        let old = svc
+            .export_key(
+                &key_id,
+                &target_pub,
+                "migration",
+                "tenant-ver",
+                "user-1",
+                opts(Some(1)),
+            )
+            .await
+            .unwrap();
+
+        // Current (v2) differs from the original v1; explicit version 1 reproduces
+        // the pre-rotation fingerprint from history.
+        assert_ne!(v1.key_fingerprint, v2.key_fingerprint);
+        assert_eq!(old.key_fingerprint, v1.key_fingerprint);
+
+        // Requesting a version that never existed must fail (it must NOT silently
+        // fall back to the current material).
+        let missing = svc
+            .export_key(
+                &key_id,
+                &target_pub,
+                "migration",
+                "tenant-ver",
+                "user-1",
+                opts(Some(99)),
+            )
+            .await;
+        assert!(
+            missing.is_err(),
+            "unknown export version must not silently export the current key"
         );
     }
 }

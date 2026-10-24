@@ -159,6 +159,10 @@ pub struct EncryptResponse {
     /// so the server can reproduce the exact AAD used at encryption (AEAD keys
     /// bind AAD to `(key_id, tenant_id, version)` at format 2).
     pub format_version: u8,
+    /// Key version used for the encryption. Echo back in `DecryptRequest.version`
+    /// so the server selects the matching material and reproduces the bound AAD
+    /// (format 2 binds AAD to `key_id/tenant_id/version`) (audit P2-3).
+    pub version: u32,
 }
 
 /// Decrypt ciphertext using a key
@@ -179,6 +183,16 @@ pub struct DecryptRequest {
     /// echoing the value returned from `Encrypt`.
     #[serde(default = "default_format_version")]
     pub format_version: u8,
+    /// Key version returned by `Encrypt`. Defaults to 1 for backward compatibility
+    /// with ciphertexts produced before the version was echoed. At `format_version`
+    /// 2 the AAD binds this version, so a ciphertext produced after a key rotation
+    /// must echo the returned version to decrypt correctly (audit P2-3).
+    #[serde(default = "default_decrypt_version")]
+    pub version: u32,
+}
+
+fn default_decrypt_version() -> u32 {
+    1
 }
 
 fn default_format_version() -> u8 {
@@ -576,6 +590,10 @@ pub struct ExportKeyRequest {
     /// `"sm2"` (audit P2-6). Selects how the ephemeral transport key is protected.
     #[serde(default)]
     pub protection_scheme: Option<String>,
+    /// Key version to export (audit P2-2). Omitted/0 exports the current version;
+    /// a specific historical version can be exported while the key is exportable.
+    #[serde(default)]
+    pub version: Option<u32>,
 }
 
 /// Response containing wrapped key for secure export
@@ -864,6 +882,7 @@ async fn encrypt(
         nonce: STANDARD.encode(&ciphertext.nonce),
         tag: STANDARD.encode(&ciphertext.tag),
         format_version: ciphertext.format_version,
+        version: ciphertext.version,
     }))
 }
 
@@ -893,7 +912,11 @@ async fn decrypt(
 
     let ciphertext = kms_core::key::Ciphertext {
         key_id: id,
-        version: 1,
+        // Echo the key version returned by `Encrypt`. At `format_version` 2 the
+        // AAD binds (key_id, tenant_id, version) and the keystore selects material
+        // by version, so decrypting a ciphertext produced after a rotation requires
+        // the real version rather than a hardcoded 1 (audit P2-3).
+        version: req.version,
         // Echo the caller-supplied format so the keystore reproduces the exact
         // AAD used at encryption (format 2 binds AAD to key_id/tenant/version);
         // defaults to 2 for current ciphertexts, legacy 0/1 via explicit echo.
@@ -2417,7 +2440,10 @@ async fn export_key(
             &req.purpose,
             &tenant_id,
             &caller_id,
-            crate::service::ExportOptions { protection },
+            crate::service::ExportOptions {
+                protection,
+                version: req.version,
+            },
         )
         .await?;
 
