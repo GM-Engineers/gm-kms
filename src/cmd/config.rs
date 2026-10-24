@@ -52,6 +52,36 @@ pub struct Config {
     /// Kafka authentication credentials
     #[serde(default)]
     pub kafka_auth: KafkaAuthConfig,
+
+    /// API keys with optional tenant bindings (audit B7-e).
+    ///
+    /// The server derives the tenant from the authenticated key, so a key
+    /// declared here with a `tenant` cannot be used to reach another
+    /// tenant's keys. Secrets are read from the environment variable named by
+    /// `secret_env`, never from the configuration file itself.
+    #[serde(default)]
+    pub api_keys: Vec<ApiKeyEntry>,
+}
+
+/// One declared API key.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ApiKeyEntry {
+    /// Identifier of the key; appears in audit trails. Defaults to the
+    /// `secret_env` name when omitted.
+    #[serde(default)]
+    pub key_id: String,
+
+    /// Role of the key: `read-only`, `operator`, `key-admin`,
+    /// `security-officer` or `audit-admin`.
+    pub role: String,
+
+    /// Tenant the key is bound to. When set, the server derives the tenant
+    /// from the key and ignores any tenant the caller self-reports.
+    #[serde(default)]
+    pub tenant: Option<String>,
+
+    /// Name of the environment variable that holds the key secret.
+    pub secret_env: String,
 }
 
 /// Key backup configuration
@@ -1125,6 +1155,46 @@ mod tests {
             "flush interval should be positive"
         );
         assert!(config.buffer_size > 0, "buffer size should be positive");
+    }
+
+    /// audit B7-e: the declared API keys must be parseable from the config
+    /// file, including the tenant binding.
+    #[test]
+    fn test_config_api_keys_parse_with_tenant_binding() {
+        let toml = r#"
+            [[api_keys]]
+            key_id = "acme-admin"
+            role = "key-admin"
+            tenant = "acme"
+            secret_env = "KMS_API_KEY_ACME"
+
+            [[api_keys]]
+            key_id = "auditor"
+            role = "audit-admin"
+            secret_env = "KMS_API_KEY_AUDIT"
+        "#;
+
+        let config: Config = toml::from_str(toml).expect("config must parse");
+        assert_eq!(config.api_keys.len(), 2);
+
+        let acme = &config.api_keys[0];
+        assert_eq!(acme.key_id, "acme-admin");
+        assert_eq!(acme.role, "key-admin");
+        assert_eq!(acme.tenant.as_deref(), Some("acme"));
+        assert_eq!(acme.secret_env, "KMS_API_KEY_ACME");
+
+        // A key without a tenant is allowed (it falls back to the tenant the
+        // caller self-reports), but it must be explicit in the file.
+        let auditor = &config.api_keys[1];
+        assert!(auditor.tenant.is_none());
+        assert_eq!(auditor.role, "audit-admin");
+    }
+
+    /// audit B7-e: a config without the section must still parse.
+    #[test]
+    fn test_config_api_keys_default_empty() {
+        let config: Config = toml::from_str("").expect("config must parse");
+        assert!(config.api_keys.is_empty());
     }
 
     #[test]

@@ -168,6 +168,27 @@ pub enum ApiKeyPermission {
 }
 
 impl ApiKeyPermission {
+    /// Parse a role name into a permission.
+    ///
+    /// Accepted names (case-insensitive, `-` and `_` interchangeable):
+    /// `read-only`, `operator`, `key-admin`, `security-officer`, `audit-admin`.
+    ///
+    /// Used by the server configuration to map a declarative role name onto a
+    /// permission (audit B7-e).
+    pub fn from_role_name(name: &str) -> Option<Self> {
+        let normalized = name.trim().to_lowercase().replace('_', "-");
+        match normalized.as_str() {
+            "read-only" | "readonly" | "reader" => Some(Self::ReadOnly),
+            "operator" => Some(Self::Operator),
+            "key-admin" | "keyadmin" => Some(Self::KeyAdmin),
+            "security-officer" | "securityofficer" | "officer" => Some(Self::SecurityOfficer),
+            "audit-admin" | "auditadmin" | "auditor" => Some(Self::AuditAdmin),
+            _ => None,
+        }
+    }
+}
+
+impl ApiKeyPermission {
     /// Get the Permission bitmask for this role.
     pub fn permissions(&self) -> Permission {
         match self {
@@ -1275,6 +1296,40 @@ mod tests {
             config.validate("new-secret"),
             Some(ApiKeyPermission::Operator)
         );
+    }
+
+    /// audit B7-e: the role names used in the server configuration must map
+    /// onto the documented permissions, and an unknown name must not resolve.
+    #[test]
+    fn test_permission_from_role_name() {
+        assert_eq!(
+            ApiKeyPermission::from_role_name("read-only"),
+            Some(ApiKeyPermission::ReadOnly)
+        );
+        assert_eq!(
+            ApiKeyPermission::from_role_name("operator"),
+            Some(ApiKeyPermission::Operator)
+        );
+        assert_eq!(
+            ApiKeyPermission::from_role_name("key-admin"),
+            Some(ApiKeyPermission::KeyAdmin)
+        );
+        assert_eq!(
+            ApiKeyPermission::from_role_name("security-officer"),
+            Some(ApiKeyPermission::SecurityOfficer)
+        );
+        assert_eq!(
+            ApiKeyPermission::from_role_name("audit-admin"),
+            Some(ApiKeyPermission::AuditAdmin)
+        );
+        // Underscores and casing are accepted.
+        assert_eq!(
+            ApiKeyPermission::from_role_name("KEY_ADMIN"),
+            Some(ApiKeyPermission::KeyAdmin)
+        );
+        // An unknown name must not resolve to a permission.
+        assert_eq!(ApiKeyPermission::from_role_name("superuser"), None);
+        assert_eq!(ApiKeyPermission::from_role_name(""), None);
     }
 
     /// Permission boundaries: AuditAdmin has no operational permissions

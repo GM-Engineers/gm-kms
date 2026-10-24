@@ -4,7 +4,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use kms_api::{
     KmsMetrics, KmsState, Sm9State,
-    auth::{ApiKeyConfig, AuthError},
+    auth::{ApiKey, ApiKeyConfig, ApiKeyPermission, AuthError},
     grpc::pb::kms_service_server::KmsServiceServer,
     grpc::{GrpcAuthInterceptor, KmsGrpcService},
     health::HealthChecker,
@@ -28,7 +28,7 @@ use tonic_health::{ServingStatus, server as health_server};
 use tower_http::cors::{Any, CorsLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use crate::cmd::config::TlsConfig;
+use crate::cmd::config::{Config, TlsConfig};
 
 // TLS imports for REST (using axum_server for TLS support)
 use axum_server::tls_rustls::RustlsConfig;
@@ -282,6 +282,70 @@ fn build_cors_layer(cors_config: &crate::cmd::config::CorsConfig) -> CorsLayer {
         .allow_methods(Any)
         .allow_headers(Any)
         .allow_credentials(cors_config.allow_credentials)
+}
+
+/// Build the API key configuration from the environment and the declared keys.
+///
+/// The declared keys (audit B7-e) are the only way to bind a key to a tenant:
+/// without that surface the tenant binding existed in the code but was
+/// unreachable in production, so every request trusted the caller's
+/// self-reported tenant.
+///
+/// `lookup_secret` resolves the secret of a key from its environment variable
+/// name; it is a parameter so the behaviour can be tested without touching the
+/// process environment.
+fn build_api_key_config<F>(
+    base: ApiKeyConfig,
+    config: &Config,
+    mut lookup_secret: F,
+) -> anyhow::Result<ApiKeyConfig>
+where
+    F: FnMut(&str) -> Option<String>,
+{
+    let api_key_config = base;
+
+    for entry in &config.api_keys {
+        let secret = lookup_secret(&entry.secret_env).ok_or_else(|| {
+            anyhow::anyhow!(
+                "api key '{}' references environment variable '{}' which is not set",
+                entry.key_id,
+                entry.secret_env
+            )
+        })?;
+        let permission = ApiKeyPermission::from_role_name(&entry.role).ok_or_else(|| {
+            anyhow::anyhow!(
+                "api key '{}' has an unknown role '{}' (expected read-only, operator, \
+                 key-admin, security-officer or audit-admin)",
+                entry.key_id,
+                entry.role
+            )
+        })?;
+        let key_id = if entry.key_id.is_empty() {
+            entry.secret_env.clone()
+        } else {
+            entry.key_id.clone()
+        };
+        let mut key = ApiKey::new(secret, permission).with_key_id(key_id);
+        if let Some(tenant) = &entry.tenant {
+            key = key.with_tenant(tenant.clone());
+        }
+        api_key_config.add_key(key);
+    }
+
+    // Warn about keys that are not bound to a tenant: such a key falls back to
+    // the tenant the caller self-reports, which is not tenant isolation.
+    for key in api_key_config.list_valid_keys() {
+        if key.tenant_id.is_none() {
+            tracing::warn!(
+                key_id = %key.key_id,
+                "API key is not bound to a tenant; requests will use the tenant the \
+                 caller self-reports. Declare it under [[api_keys]] with a tenant to \
+                 enforce tenant isolation."
+            );
+        }
+    }
+
+    Ok(api_key_config)
 }
 
 pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()> {
@@ -1123,8 +1187,9 @@ pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()
     }
 
     // Load API key configuration for REST
-    let api_key_config = ApiKeyConfig::from_env("X-API-Key", "KMS_API_KEY")
+    let base_keys = ApiKeyConfig::from_env("X-API-Key", "KMS_API_KEY")
         .map_err(|e: AuthError| anyhow::anyhow!("{e}"))?;
+    let api_key_config = build_api_key_config(base_keys, &config, |name| std::env::var(name).ok())?;
     let api_key_config_arc = std::sync::Arc::new(api_key_config.clone());
     tracing::info!("REST API authentication: API Key configured");
 
@@ -1669,5 +1734,123 @@ mod pr41_failfast_tests {
         with_env(&[("KMS_ALLOW_INSECURE", ""), ("KMS_DEV_MODE", "1")], || {
             assert!(in_memory_fallback_permitted(false, "no pg").is_ok());
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cmd::config::{ApiKeyEntry, Config};
+
+    fn base_config() -> ApiKeyConfig {
+        ApiKeyConfig::with_keys(vec![ApiKey::key_admin("base-secret".to_string())])
+    }
+
+    fn entry(key_id: &str, role: &str, tenant: Option<&str>, secret_env: &str) -> ApiKeyEntry {
+        ApiKeyEntry {
+            key_id: key_id.to_string(),
+            role: role.to_string(),
+            tenant: tenant.map(|t| t.to_string()),
+            secret_env: secret_env.to_string(),
+        }
+    }
+
+    /// audit B7-e: a declared key must end up bound to its tenant, so the
+    /// server derives the tenant from the credential.
+    #[test]
+    fn b7e_declared_api_key_is_bound_to_its_tenant() {
+        let config = Config {
+            api_keys: vec![entry(
+                "acme-admin",
+                "key-admin",
+                Some("acme"),
+                "KMS_API_KEY_ACME",
+            )],
+            ..Default::default()
+        };
+
+        let built = build_api_key_config(base_config(), &config, |name| {
+            if name == "KMS_API_KEY_ACME" {
+                Some("acme-secret".to_string())
+            } else {
+                None
+            }
+        })
+        .expect("the declared key must be accepted");
+
+        assert_eq!(
+            built.lookup_tenant("acme-secret"),
+            Some("acme".to_string()),
+            "the declared key must be bound to its tenant"
+        );
+        assert_eq!(
+            built.lookup_key_id("acme-secret"),
+            Some("acme-admin".to_string())
+        );
+    }
+
+    /// A declared key without a tenant stays unbound (the caller-reported
+    /// tenant is used), but it is accepted.
+    #[test]
+    fn b7e_declared_api_key_without_tenant_is_unbound() {
+        let config = Config {
+            api_keys: vec![entry("auditor", "audit-admin", None, "KMS_API_KEY_AUDIT")],
+            ..Default::default()
+        };
+
+        let built = build_api_key_config(base_config(), &config, |name| {
+            if name == "KMS_API_KEY_AUDIT" {
+                Some("audit-secret".to_string())
+            } else {
+                None
+            }
+        })
+        .expect("the declared key must be accepted");
+
+        assert_eq!(built.lookup_tenant("audit-secret"), None);
+    }
+
+    /// An unknown role must fail the startup rather than silently downgrade
+    /// the key.
+    #[test]
+    fn b7e_declared_api_key_with_unknown_role_is_rejected() {
+        let config = Config {
+            api_keys: vec![entry(
+                "weird",
+                "superuser",
+                Some("acme"),
+                "KMS_API_KEY_WEIRD",
+            )],
+            ..Default::default()
+        };
+
+        let err = build_api_key_config(base_config(), &config, |_| Some("secret".to_string()))
+            .expect_err("an unknown role must be rejected");
+        assert!(
+            err.to_string().contains("unknown role"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// A declared key whose secret environment variable is missing must fail
+    /// the startup instead of running with an unusable key.
+    #[test]
+    fn b7e_declared_api_key_with_missing_secret_is_rejected() {
+        let config = Config {
+            api_keys: vec![entry(
+                "acme-admin",
+                "key-admin",
+                Some("acme"),
+                "KMS_API_KEY_MISSING",
+            )],
+            ..Default::default()
+        };
+
+        let err = build_api_key_config(base_config(), &config, |_| None)
+            .expect_err("a missing secret must be rejected");
+        assert!(
+            err.to_string().contains("not set"),
+            "unexpected error: {err}"
+        );
     }
 }

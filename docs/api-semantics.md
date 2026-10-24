@@ -43,7 +43,20 @@
 | Key 未绑定 + 请求租户为空 | **缺省 `"default"`** 并打印 SECURITY WARN | **显式失败** `INVALID_ARGUMENT`（"tenant_id is required"） |
 
 > 差异说明：REST 保留 `"default"` 缺省以兼容既有部署/测试；gRPC 自 Batch 3 起对空租户
-> fail-closed，移除静默放行。生产应始终为 API Key 绑定租户以消除该分叉。
+> fail-closed，移除静默放行。
+>
+> **如何在生产中消除该分叉**（audit B7-e）：在服务端配置里声明**绑定租户**的 API Key，
+> 此时两条通道都使用绑定租户，忽略调用方自报值：
+>
+> ```toml
+> [[api_keys]]
+> key_id = "acme-admin"
+> role = "key-admin"          # read-only | operator | key-admin | security-officer | audit-admin
+> tenant = "acme"             # 绑定租户：服务端据此推导租户
+> secret_env = "KMS_API_KEY_ACME"   # 密钥存放于环境变量，不写入配置文件
+> ```
+>
+> 未绑定租户的 Key 启动时会打印 `warn` 日志（因为它仍依赖调用方自报租户）。
 
 ## 3. 错误映射
 

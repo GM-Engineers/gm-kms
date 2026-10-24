@@ -320,6 +320,41 @@ buffer_size = 100
 
 API key is configured via `KMS_API_KEY` environment variable. Using `dev-api-key` triggers a security warning; set a strong key for production.
 
+#### Multi-tenant API keys (recommended for production)
+
+A key declared without a tenant falls back to the tenant the **caller** self-reports, which is
+not tenant isolation. Declare keys in the server configuration file to bind them to a tenant;
+the server then derives the tenant from the credential and ignores any self-reported value.
+
+```toml
+[[api_keys]]
+key_id = "acme-admin"                    # identifier used in audit trails
+role = "key-admin"                       # read-only | operator | key-admin | security-officer | audit-admin
+tenant = "acme"                          # bound tenant: the authoritative one
+secret_env = "KMS_API_KEY_ACME"          # secret lives in the environment, not in the file
+
+[[api_keys]]
+key_id = "auditor"
+role = "audit-admin"
+secret_env = "KMS_API_KEY_AUDIT"         # no tenant -> unbound (caller-reported tenant)
+```
+
+Then export the secrets before starting the server:
+
+```bash
+export KMS_API_KEY_ACME="$(openssl rand -hex 32)"
+export KMS_API_KEY_AUDIT="$(openssl rand -hex 32)"
+```
+
+Notes:
+
+- The secret is only read from `secret_env`; it is never stored in the configuration file.
+- A missing environment variable or an unknown role makes the **startup fail** rather than
+  silently running with a weaker key.
+- Keys without a `tenant` produce a `warn` log line at startup, because they still rely on the
+  tenant the caller reports.
+- `KMS_API_KEY` keeps working as the primary (unbound) key.
+
 ## Troubleshooting
 
 ### Common Issues
