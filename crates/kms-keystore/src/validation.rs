@@ -41,10 +41,16 @@ pub fn validate_key_material(
             validate_symmetric_key(material, 32)
         }
         KeySpec::Sm4 => validate_symmetric_key(material, 16),
-        // SM9 uses identity-based crypto, skip format validation
+        // SM9 is NOT importable (audit P3-1): it is identity-based, its
+        // material comes from a KGC master-key ceremony, and imported bytes
+        // could not be used by any keystore operation anyway. Reject with an
+        // explicit message instead of the previous no-op `valid: true`.
         KeySpec::Sm9Signing | KeySpec::Sm9Encryption => Ok(KeyValidationResult {
-            valid: true,
-            error: None,
+            valid: false,
+            error: Some(format!(
+                "{} is not importable; SM9 requires KMS-SM9 master-key management (not yet supported)",
+                spec.algorithm_name()
+            )),
             metadata: KeyMetadata::default(),
         }),
         // Ed448 usescurve25519
@@ -272,13 +278,23 @@ fn validate_sm2_key(material: &[u8]) -> Result<KeyValidationResult, Error> {
 
 /// Validate RSA private key (PKCS#1 or PKCS#8)
 fn validate_rsa_key(material: &[u8]) -> Result<KeyValidationResult, Error> {
-    // RSA-4096 private key in PKCS#8 format should be 360+ bytes minimum
-    // Simplified validation - check minimum size and structure
-    if material.len() < 256 {
+    // audit P3-1: the previous check only required `len >= 256`, which would
+    // happily accept a 2048-bit key (or anything else ≥ 256 bytes) and pass it
+    // off as RSA-4096. An RSA-4096 private key in DER (PKCS#1 ~2348B, PKCS#8
+    // ~2374B) never fits under ~2300 bytes, while absurdly large blobs are
+    // rejected too. A 4096-bit modulus is 512 bytes; its full CRT private key
+    // is ~2.3-2.4KB, so this interval is a per-algorithm sanity bound (still
+    // not a substitute for a full ASN.1 modulus parse).
+    const RSA_4096_MIN: usize = 2300;
+    const RSA_4096_MAX: usize = 5000;
+
+    if !(RSA_4096_MIN..=RSA_4096_MAX).contains(&material.len()) {
         return Ok(KeyValidationResult {
             valid: false,
             error: Some(format!(
-                "RSA-4096 private key must be at least 256 bytes (PKCS#8), got {} bytes",
+                "RSA-4096 private key (DER PKCS#1/PKCS#8) must be {}-{} bytes, got {} bytes",
+                RSA_4096_MIN,
+                RSA_4096_MAX,
                 material.len()
             )),
             metadata: KeyMetadata::default(),
@@ -440,31 +456,39 @@ mod tests {
 
     #[test]
     fn test_validate_rsa_key() {
-        // Minimum valid size for RSA-4096
-        let key = vec![0x30u8; 300]; // SEQUENCE tag followed by enough bytes
+        // audit P3-1: RSA-4096 must fall inside the per-algorithm interval.
+        // A realistic 4096-bit DER private key length (SEQUENCE tag + size).
+        let key = vec![0x30u8; 2400];
         let result = validate_key_material(&KeySpec::Rsa4096, &key).unwrap();
         assert!(result.valid);
 
-        // Too short
-        let key = vec![0x30u8; 100];
+        // Too short (e.g. a 2048-bit key or the old >=256 threshold) is now rejected
+        let key = vec![0x30u8; 300];
         let result = validate_key_material(&KeySpec::Rsa4096, &key).unwrap();
         assert!(!result.valid);
 
-        // Wrong tag (not SEQUENCE)
-        let key = vec![0x31u8; 300];
+        // Absurdly large is rejected
+        let key = vec![0x30u8; 6000];
+        let result = validate_key_material(&KeySpec::Rsa4096, &key).unwrap();
+        assert!(!result.valid);
+
+        // Wrong tag (not SEQUENCE), even at valid length
+        let key = vec![0x31u8; 2400];
         let result = validate_key_material(&KeySpec::Rsa4096, &key).unwrap();
         assert!(!result.valid);
     }
 
     #[test]
     fn test_validate_sm9_keys() {
-        // SM9 uses identity-based crypto, so format varies
+        // audit P3-1: SM9 is not importable — the format-validation no-op that
+        // previously returned `valid: true` is replaced with an explicit reject.
         let key = vec![0xFFu8; 64];
         let result = validate_key_material(&KeySpec::Sm9Signing, &key).unwrap();
-        assert!(result.valid);
+        assert!(!result.valid);
+        assert!(result.error.unwrap().contains("not importable"));
 
         let result = validate_key_material(&KeySpec::Sm9Encryption, &key).unwrap();
-        assert!(result.valid);
+        assert!(!result.valid);
     }
 
     // --- Additional edge case tests ---

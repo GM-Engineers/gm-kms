@@ -111,6 +111,47 @@ impl KeySpec {
         )
     }
 
+    /// Whether the keystore can **generate** fresh key material for this spec
+    /// (audit P3-1: explicit "generatable" list).
+    ///
+    /// Specs outside this set are still *declarable* (they parse and can be
+    /// stored as metadata) and some are *importable*, but the software keystore
+    /// has no working generator for them and must reject generation loudly
+    /// rather than silently produce mislabeled material.
+    pub fn is_generatable(&self) -> bool {
+        matches!(
+            self,
+            KeySpec::Aes256Gcm
+                | KeySpec::HmacSha256
+                | KeySpec::Sm3Hmac
+                | KeySpec::Sm4
+                | KeySpec::Sm2
+                | KeySpec::Ed25519
+        )
+    }
+
+    /// Whether raw key material can be **imported** and format-validated for
+    /// this spec (audit P3-1: explicit "importable" list).
+    ///
+    /// SM9 is deliberately excluded: its `validate_key_material` branch was a
+    /// no-op that accepted anything, yet imported SM9 material cannot be used
+    /// for any operation — so it is reported as "not yet supported".
+    pub fn is_importable(&self) -> bool {
+        matches!(
+            self,
+            KeySpec::Aes256Gcm
+                | KeySpec::HmacSha256
+                | KeySpec::Sm3Hmac
+                | KeySpec::Sm4
+                | KeySpec::Sm2
+                | KeySpec::Ed25519
+                | KeySpec::EcdsaP256
+                | KeySpec::EcdsaP384
+                | KeySpec::Ed448
+                | KeySpec::Rsa4096
+        )
+    }
+
     /// Get the default purpose for a key spec
     pub fn default_purpose(&self) -> KeyPurpose {
         match self {

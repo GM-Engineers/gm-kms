@@ -85,6 +85,18 @@ impl KeyService {
         tenant_id: &str,
         _user_id: &str,
     ) -> Result<KeyMeta> {
+        // audit P3-1: reject non-generatable specs at the service boundary so
+        // both REST and gRPC get a clear, actionable error instead of a deeper
+        // 500 from the keystore (or, previously, a silently mislabeled key).
+        if !spec.is_generatable() {
+            return Err(ApiError::InvalidRequest(format!(
+                "{} cannot be generated; generatable specs are AES-256-GCM, SM4, SM2, \
+                 Ed25519, HMAC-SHA256, HMAC-SM3. Importable-only specs (ECDSA/Ed448/RSA) \
+                 must use the import endpoint.",
+                spec.algorithm_name()
+            )));
+        }
+
         // Check quota before creation
         if let Some(ref tracker) = self.quota_tracker
             && tracker.can_create_key(tenant_id).await.is_err()
@@ -243,6 +255,16 @@ impl KeyService {
         tenant_id: &str,
         _user_id: &str,
     ) -> Result<KeyMeta> {
+        // audit P3-1: SM9 (and any future non-importable spec) is rejected here
+        // with a clear message; the keystore validator also refuses SM9 now.
+        if !spec.is_importable() {
+            return Err(ApiError::InvalidRequest(format!(
+                "{} cannot be imported; SM9 material is issued via KMS-SM9 master-key \
+                 management and is not supported for import.",
+                spec.algorithm_name()
+            )));
+        }
+
         // Validate encrypted_transport_key is non-empty (Phase 1 verification step)
         if encrypted_transport_key.is_empty() {
             return Err(ApiError::InvalidRequest(
@@ -660,6 +682,28 @@ mod tests {
         assert_eq!(meta.name, "test-key");
         assert_eq!(meta.tenant_id, "test-tenant");
         assert_eq!(meta.spec, KeySpec::Aes256Gcm);
+    }
+
+    #[tokio::test]
+    async fn test_key_service_create_key_rejects_non_generatable() {
+        // audit P3-1: the service boundary must reject non-generatable specs
+        // (ECDSA/Ed448/RSA/SM9) with a clear request error for both channels.
+        let state = create_test_state();
+        let key_service = KeyService::new(&state);
+
+        let err = key_service
+            .create_key(KeySpec::EcdsaP256, "ecdsa-key", "test-tenant", "user-1")
+            .await
+            .expect_err("ECDSA-P256 is not generatable and must be rejected");
+        match err {
+            ApiError::InvalidRequest(msg) => {
+                assert!(
+                    msg.contains("generated"),
+                    "message should mention generation; got: {msg}"
+                );
+            }
+            other => panic!("expected InvalidRequest, got: {other:?}"),
+        }
     }
 
     #[tokio::test]
