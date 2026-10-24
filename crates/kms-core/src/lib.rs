@@ -61,8 +61,8 @@ pub use secret_rotation::{
     RotationConfig, RotationState, SecretRotation, SecretRotationManager, SecretType, SecretVersion,
 };
 pub use self_test::{
-    Aes256GcmSelfTest, AlgorithmSelfTest, AlgorithmTestResult, SelfTestResults, SelfTester,
-    Sm3SelfTest, Sm4SelfTest,
+    Aes256GcmSelfTest, AlgorithmSelfTest, AlgorithmTestResult, GmDrbgSelfTest, SelfTestResults,
+    SelfTester, Sm3SelfTest, Sm4SelfTest,
 };
 pub use shamir::{
     Commitment, ReconstructionResult, ShamirSecretSharing, Share, ShareVerification, Shares,

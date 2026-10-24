@@ -603,6 +603,50 @@ impl AlgorithmSelfTest for Sm9SelfTest {
 }
 
 // ============================================================================
+// GM DRBG Known Answer Test
+// ============================================================================
+
+/// HMAC-SM3 DRBG instantiation Known-Answer Test (audit P3-2).
+///
+/// Verifies the custom CSPRNG reproduces a frozen reference vector for a fixed
+/// seed, guarding against accidental drift in the DRBG core.
+pub struct GmDrbgSelfTest;
+
+impl GmDrbgSelfTest {
+    pub fn new() -> Self {
+        Self
+    }
+
+    pub async fn run(&self) -> AlgorithmTestResult {
+        match crate::csprng::self_test() {
+            Ok(()) => AlgorithmTestResult {
+                algorithm: "GM-DRBG".to_string(),
+                passed: true,
+                error_message: None,
+            },
+            Err(e) => AlgorithmTestResult {
+                algorithm: "GM-DRBG".to_string(),
+                passed: false,
+                error_message: Some(format!("GM DRBG KAT failed: {e}")),
+            },
+        }
+    }
+}
+
+impl Default for GmDrbgSelfTest {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl AlgorithmSelfTest for GmDrbgSelfTest {
+    async fn run_self_test(&self) -> AlgorithmTestResult {
+        self.run().await
+    }
+}
+
+// ============================================================================
 // Self-Test Runner
 // ============================================================================
 
@@ -620,6 +664,7 @@ impl SelfTester {
             Box::new(Aes256GcmSelfTest::new()),
             Box::new(Sm2SelfTest::new()),
             Box::new(Sm9SelfTest::new()),
+            Box::new(GmDrbgSelfTest::new()),
         ];
         Self { tests }
     }

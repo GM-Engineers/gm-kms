@@ -117,19 +117,49 @@ fn increment_counter(counter: &mut [u8; 32]) {
 #[derive(Clone)]
 pub struct GmRng {
     state: State,
+    /// 自动周期性重播种间隔（generate 调用次数）。`0` 表示关闭自动重播种，
+    /// 用于 `from_seed()` 产生的确定性实例（KAT 自检依赖其稳定输出）。
+    reseed_interval: u64,
+    reseed_countdown: u64,
 }
+
+/// 熵实例（`new()`）在两次 OS 重播种之间的默认 generate 调用次数
+/// （audit P3-2：周期重播种）。
+const DEFAULT_RESEED_INTERVAL: u64 = 1024;
 
 impl GmRng {
     pub fn new() -> Result<Self, CsprngError> {
         Ok(Self {
             state: State::new()?,
+            reseed_interval: DEFAULT_RESEED_INTERVAL,
+            reseed_countdown: DEFAULT_RESEED_INTERVAL,
         })
     }
 
     pub fn from_seed(seed: &[u8]) -> Self {
         Self {
             state: State::from_seed(seed),
+            // 确定性实例：永不自动重播种，使固定种子始终产生同一流
+            // （DRBG 实例化 KAT 自检依赖此性质）。
+            reseed_interval: 0,
+            reseed_countdown: 0,
         }
+    }
+
+    /// 达到配置的间隔时从 OS 拉取新熵并混入状态（audit P3-2：周期重播种）。
+    /// `reseed_interval == 0` 时为空操作，保证种子实例的确定性。
+    fn maybe_periodic_reseed(&mut self) -> Result<(), CsprngError> {
+        if self.reseed_interval == 0 {
+            return Ok(());
+        }
+        self.reseed_countdown = self.reseed_countdown.saturating_sub(1);
+        if self.reseed_countdown == 0 {
+            let mut entropy = [0u8; 32];
+            getrandom(&mut entropy).map_err(|e| CsprngError::EntropyError(e.to_string()))?;
+            self.state.reseed(&entropy);
+            self.reseed_countdown = self.reseed_interval;
+        }
+        Ok(())
     }
 
     pub fn reseed(&mut self, entropy: &[u8]) {
@@ -137,6 +167,7 @@ impl GmRng {
     }
 
     pub fn random_bytes(&mut self, len: usize) -> Result<Vec<u8>, CsprngError> {
+        self.maybe_periodic_reseed()?;
         let mut output = vec![0u8; len];
         self.state.generate(&mut output, None);
         Ok(output)
@@ -146,12 +177,15 @@ impl GmRng {
         let mut entropy = [0u8; 32];
         getrandom(&mut entropy).map_err(|e| CsprngError::EntropyError(e.to_string()))?;
         self.state.reseed(&entropy);
+        // 手动重播种后重置周期倒计时。
+        self.reseed_countdown = self.reseed_interval;
         let mut output = vec![0u8; len];
         self.state.generate(&mut output, None);
         Ok(output)
     }
 
     pub fn fill(&mut self, dest: &mut [u8]) -> Result<(), CsprngError> {
+        self.maybe_periodic_reseed()?;
         self.state.generate(dest, None);
         Ok(())
     }
@@ -163,23 +197,29 @@ impl Default for GmRng {
     }
 }
 
-/// 生成随机DEK
+/// 从 OS CSPRNG (`getrandom`) 填充 `len` 字节。
+///
+/// audit P3-2：关键密码材料（DEK/nonce/随机密钥字节）统一走经过充分审计的
+/// OS CSPRNG；自建 HMAC-SM3 DRBG（[`GmRng`]）限定于非密钥场景（测试/掩码等）。
+fn os_random(len: usize) -> Vec<u8> {
+    let mut buf = vec![0u8; len];
+    getrandom(&mut buf).expect("OS CSPRNG (getrandom) must be available for key material");
+    buf
+}
+
+/// 生成随机DEK（走 OS CSPRNG，audit P3-2）
 pub fn generate_dek(length: usize) -> Vec<u8> {
-    let mut rng = GmRng::new().expect("Failed to initialize GM CSPRNG for DEK generation");
-    rng.random_bytes(length).expect("DEK generation failed")
+    os_random(length)
 }
 
-/// 生成随机nonce
+/// 生成随机nonce（走 OS CSPRNG，audit P3-2）
 pub fn generate_nonce(length: usize) -> Vec<u8> {
-    let mut rng = GmRng::new().expect("Failed to initialize GM CSPRNG for nonce generation");
-    rng.random_bytes(length).expect("Nonce generation failed")
+    os_random(length)
 }
 
-/// 生成随机字节
+/// 生成随机字节（走 OS CSPRNG，audit P3-2）
 pub fn random_bytes(len: usize) -> Vec<u8> {
-    let mut rng = GmRng::new().expect("Failed to initialize GM CSPRNG");
-    rng.random_bytes(len)
-        .expect("Random bytes generation failed")
+    os_random(len)
 }
 
 /// CSPRNG诊断信息
@@ -209,6 +249,8 @@ pub fn verify() -> Result<(), CsprngError> {
             "OS entropy source unavailable".to_string(),
         ));
     }
+    // audit P3-2: run the DRBG instantiation known-answer self-test every time.
+    self_test()?;
     let bytes1 = random_bytes(32);
     let bytes2 = random_bytes(32);
     if bytes1.ct_eq(&bytes2).into() {
@@ -216,6 +258,58 @@ pub fn verify() -> Result<(), CsprngError> {
             "CSPRNG not producing random values".to_string(),
         ));
     }
+    Ok(())
+}
+
+// Frozen DRBG reference vector: first 32 bytes of
+// `GmRng::from_seed(&[0x01; 32]).random_bytes(32)` under the current
+// HMAC-SM3 instantiation. Captured once; self_test() then guards against any
+// accidental drift in the DRBG core (audit P3-2).
+const DRBG_KAT_EXPECTED: [u8; 32] = [
+    62, 47, 184, 75, 201, 248, 226, 119, 152, 15, 78, 78, 49, 128, 44, 151, 25, 193, 214, 24, 97,
+    121, 92, 173, 207, 139, 159, 86, 59, 103, 251, 220,
+];
+
+/// DRBG 实例化 Known-Answer 自检（audit P3-2）。
+///
+/// 从固定种子实例化 HMAC-SM3 DRBG，校验：
+/// 1. 输出与冻结的参考向量逐字节一致（防算法漂移）；
+/// 2. 同种子不同实例 → 相同输出（确定性）；
+/// 3. 不同种子 → 不同输出。
+///
+/// `from_seed` 实例关闭了自动周期重播种，故该向量稳定可复现。
+pub fn self_test() -> Result<(), CsprngError> {
+    use subtle::ConstantTimeEq;
+
+    const SEED: [u8; 32] = [0x01; 32];
+    // Frozen reference: first 32 bytes of `GmRng::from_seed(&[0x01; 32])`.
+    const EXPECTED: [u8; 32] = DRBG_KAT_EXPECTED;
+    let mut rng = GmRng::from_seed(&SEED);
+    let first = rng.random_bytes(32)?;
+    if !bool::from(first.as_slice().ct_eq(&EXPECTED)) {
+        return Err(CsprngError::GenerationError(
+            "GM DRBG KAT self-test: output mismatch".to_string(),
+        ));
+    }
+
+    // Determinism across an independent instance with the same seed.
+    let mut rng2 = GmRng::from_seed(&SEED);
+    let second = rng2.random_bytes(32)?;
+    if first != second {
+        return Err(CsprngError::GenerationError(
+            "GM DRBG KAT self-test: non-deterministic for fixed seed".to_string(),
+        ));
+    }
+
+    // A different seed must produce a different stream.
+    let mut rng3 = GmRng::from_seed(&[0x02; 32]);
+    let other = rng3.random_bytes(32)?;
+    if other == first {
+        return Err(CsprngError::GenerationError(
+            "GM DRBG KAT self-test: seed change produced identical output".to_string(),
+        ));
+    }
+
     Ok(())
 }
 
@@ -278,5 +372,47 @@ mod tests {
     #[test]
     fn test_verify() {
         assert!(verify().is_ok());
+    }
+
+    #[test]
+    fn test_drbg_kat_self_test() {
+        // audit P3-2: the DRBG instantiation KAT must pass and stay deterministic.
+        assert!(self_test().is_ok());
+    }
+
+    #[test]
+    fn test_key_material_helpers_use_os_csprng() {
+        // audit P3-2: DEK/nonce/random_bytes come from the OS CSPRNG — non-zero
+        // and unique across calls.
+        let a = generate_dek(32);
+        let b = generate_dek(32);
+        assert_eq!(a.len(), 32);
+        assert!(!a.iter().all(|&x| x == 0));
+        assert_ne!(a.as_slice(), b.as_slice());
+        assert!(!generate_nonce(12).iter().all(|&x| x == 0));
+        assert_eq!(random_bytes(16).len(), 16);
+    }
+
+    #[test]
+    fn test_periodic_reseed_triggers_at_interval() {
+        // audit P3-2: an entropy-backed instance reseeds from the OS once the
+        // countdown elapses, mutating the state and resetting the countdown.
+        let mut rng = GmRng::new().unwrap();
+        rng.reseed_interval = 4;
+        rng.reseed_countdown = 1; // next generate() trips the reseed
+        let before = rng.state.key;
+        let _ = rng.random_bytes(16).unwrap();
+        assert_ne!(before, rng.state.key, "reseed must mutate the DRBG key");
+        assert_eq!(rng.reseed_countdown, 4, "countdown resets to the interval");
+    }
+
+    #[test]
+    fn test_from_seed_instance_does_not_auto_reseed() {
+        // The deterministic (seeded) path must keep reseed_interval == 0 so the
+        // KAT vector stays reproducible.
+        let mut rng = GmRng::from_seed(&[0x01; 32]);
+        assert_eq!(rng.reseed_interval, 0);
+        let _ = rng.random_bytes(32).unwrap();
+        assert_eq!(rng.reseed_countdown, 0, "seeded path never reseeds");
     }
 }
