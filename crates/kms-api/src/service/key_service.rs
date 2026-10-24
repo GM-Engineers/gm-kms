@@ -487,15 +487,12 @@ impl KeyService {
             opts.protection
         );
 
-        let export_id = uuid::Uuid::new_v4().to_string();
-        let expires_at = (chrono::Utc::now() + chrono::Duration::minutes(5)).to_rfc3339();
-
+        // Wrapped material is returned inline, once — there is no secondary
+        // pull-back endpoint, so no export_id/expiration is minted (audit P3-4).
         Ok(ExportedKey {
             wrapped_key: STANDARD.encode(&wrapped_key),
             encrypted_transport_key: STANDARD.encode(&encrypted_transport_key),
             key_fingerprint,
-            export_id,
-            expires_at,
         })
     }
 
@@ -522,7 +519,10 @@ impl KeyService {
     }
 }
 
-/// Result type for key export operations
+/// Result type for key export operations.
+///
+/// The wrapped material is delivered inline; there is deliberately no
+/// `export_id`/`expires_at` because no pull-back endpoint exists (audit P3-4).
 pub struct ExportedKey {
     /// Base64-encoded wrapped key (key encrypted with transport key)
     pub wrapped_key: String,
@@ -530,10 +530,6 @@ pub struct ExportedKey {
     pub encrypted_transport_key: String,
     /// SHA-256 fingerprint of the key
     pub key_fingerprint: String,
-    /// Unique export identifier
-    pub export_id: String,
-    /// ISO 8601 expiration timestamp
-    pub expires_at: String,
 }
 
 #[cfg(test)]

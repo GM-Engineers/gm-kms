@@ -596,7 +596,10 @@ pub struct ExportKeyRequest {
     pub version: Option<u32>,
 }
 
-/// Response containing wrapped key for secure export
+/// Response containing wrapped key for secure export.
+///
+/// Material is delivered inline (wrapped); there is no export_id/expiration
+/// pull-back flow, so those misleading fields were removed (audit P3-4).
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ExportKeyResponse {
     /// Base64-encoded wrapped key (key encrypted with transport key)
@@ -605,10 +608,6 @@ pub struct ExportKeyResponse {
     pub encrypted_transport_key: String,
     /// SHA-256 fingerprint of the key
     pub key_fingerprint: String,
-    /// Unique export identifier
-    pub export_id: String,
-    /// ISO 8601 expiration timestamp
-    pub expires_at: String,
 }
 
 // ── Permission middleware helpers ──────────────────────────────────────
@@ -2463,8 +2462,6 @@ async fn export_key(
         wrapped_key: exported.wrapped_key,
         encrypted_transport_key: exported.encrypted_transport_key,
         key_fingerprint: exported.key_fingerprint,
-        export_id: exported.export_id,
-        expires_at: exported.expires_at,
     }))
 }
 

@@ -381,6 +381,17 @@ async fn export_key_rest_requires_bound_approval() {
         body["wrapped_key"].as_str().is_some_and(|s| !s.is_empty()),
         "export response must carry wrapped_key: body={body}"
     );
+    assert!(
+        body["encrypted_transport_key"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty()),
+        "export response must carry encrypted_transport_key: body={body}"
+    );
+    // audit P3-4: the misleading dead fields must no longer be present.
+    assert!(
+        body.get("export_id").is_none() && body.get("expires_at").is_none(),
+        "export response must not advertise a non-existent pull-back flow: body={body}"
+    );
 }
 
 /// P1-2: an approval bound to key A cannot unlock an export of key B.
