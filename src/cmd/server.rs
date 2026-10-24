@@ -324,7 +324,7 @@ where
         let permission = ApiKeyPermission::from_role_name(&entry.role).ok_or_else(|| {
             anyhow::anyhow!(
                 "api key '{}' has an unknown role '{}' (expected read-only, operator, \
-                 key-admin, security-officer or audit-admin)",
+                 key-admin, security-officer, audit-admin or tenant-admin)",
                 entry.key_id,
                 entry.role
             )

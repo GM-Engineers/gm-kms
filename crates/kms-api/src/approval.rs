@@ -91,14 +91,18 @@ impl ApprovalManager {
         Ok(request.into())
     }
 
-    /// Reject a request
+    /// Reject a request.
+    ///
+    /// Returns the engine error so the caller can distinguish a self-rejection,
+    /// a duplicate vote, an expired request and a missing request
+    /// (audit follow-up B7-g) instead of collapsing them all into "not found".
     pub fn reject(
         &mut self,
         request_id: uuid::Uuid,
         rejector_id: &str,
         rejector_role: Role,
         reason: String,
-    ) -> Option<ApprovalRequestResponse> {
+    ) -> Result<ApprovalRequestResponse, ApprovalError> {
         let created_at = self
             .engine
             .get_request(request_id)
@@ -106,13 +110,12 @@ impl ApprovalManager {
             .map(|r| r.created_at);
         let request = self
             .engine
-            .reject(request_id, rejector_id, rejector_role, reason)
-            .ok()?;
+            .reject(request_id, rejector_id, rejector_role, reason)?;
         if let Some(created) = created_at {
             let duration = (chrono::Utc::now() - created).num_seconds().max(0) as u64;
             self.metrics.record_approval_chain_duration(duration);
         }
-        Some(request.into())
+        Ok(request.into())
     }
 
     /// Cancel a request

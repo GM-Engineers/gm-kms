@@ -72,7 +72,7 @@ pub struct ApiKeyEntry {
     pub key_id: String,
 
     /// Role of the key: `read-only`, `operator`, `key-admin`,
-    /// `security-officer` or `audit-admin`.
+    /// `security-officer`, `audit-admin` or `tenant-admin`.
     pub role: String,
 
     /// Tenant the key is bound to. When set, the server derives the tenant

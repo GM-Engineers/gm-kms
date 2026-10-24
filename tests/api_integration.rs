@@ -51,6 +51,10 @@ const OFFICER_SECRETS: [&str; 3] = [
 /// level a key export requires (audit follow-up B7-a).
 const OPERATOR_SECRET: &str = "integration-operator-key-secret";
 
+/// A TenantAdmin key: the only role that reaches the approval engine's `Admin`
+/// level, which the `tenant_admin` operation requires (audit follow-up B7-g).
+const TENANT_ADMIN_SECRET: &str = "integration-tenant-admin-key-secret";
+
 /// 起一个绑定随机 loopback 端口的 REST 服务器，返回 `http://addr` base URL 与
 /// 服务器后台任务句柄（调用方负责 abort）。
 async fn spawn_rest_server() -> (String, reqwest::Client, tokio::task::JoinHandle<()>) {
@@ -121,6 +125,10 @@ async fn spawn_rest_server_with_engine(
             .with_key_id("officer-3".to_string()),
         // Lower authority: may not approve a Triple-level (key export) request.
         ApiKey::operator(OPERATOR_SECRET.to_string()).with_key_id("operator".to_string()),
+        // Admin-level authority: the only role that can approve a
+        // `tenant_admin` request (audit follow-up B7-g).
+        ApiKey::tenant_admin(TENANT_ADMIN_SECRET.to_string())
+            .with_key_id("tenant-admin".to_string()),
         // Tenant-bound admin key (audit P1-3): server derives tenant="acme" from this
         // identity and ignores any self-reported tenant.
         ApiKey::key_admin(ACME_SECRET.to_string())
@@ -1943,5 +1951,226 @@ async fn b7g2_protocol_switch_cannot_bypass_pbac() {
     assert_eq!(
         rest_status, 403,
         "REST must refuse the denied action as well — switching protocol must not help"
+    );
+}
+
+// =============================================================================
+// Batch 7 / B7-g: approval-workflow hardening
+//
+//  * the resource type of an approval request is derived from its operation,
+//    so the request body cannot decide whether the tenant-ownership check
+//    runs;
+//  * the `tenant_admin` operation needs the `Admin` approval level, which no
+//    API key role could reach — the request could never be approved;
+//  * `tenant_id` defaults to "default" instead of the empty string;
+//  * the reject path reports the engine error instead of "not found";
+//  * an approval request may only be read by its own tenant.
+// =============================================================================
+
+/// The resource type is derived from the operation, so labelling a key
+/// resource as "policy" must not skip the tenant-ownership check.
+#[tokio::test]
+async fn b7g3_resource_type_cannot_be_forged_to_skip_tenant_check() {
+    let (base, client, handle) = spawn_rest_server().await;
+
+    // A key owned by tenant-a...
+    let key_id = create_key(&client, &base, "forged-resource-type", "sm4", "tenant-a").await;
+
+    // ...must not get an approval request from the tenant-bound "acme" key,
+    // even when the request claims the resource is a policy, not a key.
+    let (status, body) = create_approval_with(
+        &client,
+        &base,
+        ACME_SECRET,
+        "key_export",
+        &key_id,
+        "policy",
+        "acme",
+        json!({ "requestor_id": "admin" }),
+    )
+    .await;
+    handle.abort();
+    assert_eq!(
+        status, 404,
+        "the resource type must be derived from the operation, so the tenant check still runs: body={body}"
+    );
+}
+
+/// A `tenant_admin` request must be approvable: the `Admin` approval level
+/// has to be reachable from an API key.
+#[tokio::test]
+async fn b7g3_tenant_admin_request_can_be_approved() {
+    let (base, client, handle) = spawn_rest_server().await;
+
+    let (status, body) = create_approval_with(
+        &client,
+        &base,
+        ADMIN_SECRET,
+        "tenant_admin",
+        "tenant-a",
+        "tenant",
+        "tenant-a",
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, 201, "create request failed: body={body}");
+    let approval_id = body["id"].as_str().expect("approval id").to_string();
+
+    // The tenant-admin key holds the `Admin` level, so it may approve it.
+    let (status, body) =
+        approve_with(&client, &base, &approval_id, TENANT_ADMIN_SECRET, json!({})).await;
+    handle.abort();
+    assert_eq!(
+        status, 200,
+        "a tenant-admin request must be approvable by the tenant-admin key: body={body}"
+    );
+    assert_eq!(
+        body["status"], "approved",
+        "the request must reach the approved state: body={body}"
+    );
+}
+
+/// A lower authority must not be able to approve a `tenant_admin` request.
+#[tokio::test]
+async fn b7g3_tenant_admin_request_rejects_lower_authority() {
+    let (base, client, handle) = spawn_rest_server().await;
+
+    let (status, body) = create_approval_with(
+        &client,
+        &base,
+        ADMIN_SECRET,
+        "tenant_admin",
+        "tenant-a",
+        "tenant",
+        "tenant-a",
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, 201, "create request failed: body={body}");
+    let approval_id = body["id"].as_str().expect("approval id").to_string();
+
+    // The security officer only reaches the `Manager` level.
+    let (status, body) =
+        approve_with(&client, &base, &approval_id, OFFICER_SECRET, json!({})).await;
+    handle.abort();
+    assert_eq!(
+        status, 403,
+        "an approver below the required level must be refused: body={body}"
+    );
+}
+
+/// An approval request without an explicit tenant lands in "default".
+#[tokio::test]
+async fn b7g3_approval_request_tenant_defaults_to_default() {
+    let (base, client, handle) = spawn_rest_server().await;
+
+    // The key lives in the "default" tenant, so a request without an explicit
+    // tenant must resolve to "default" for the ownership check to pass.
+    let key_id = create_key(&client, &base, "default-tenant-key", "sm4", "default").await;
+
+    let resp = client
+        .post(format!("{base}/v1/approvals"))
+        .header(ADMIN_HEADER, ADMIN_SECRET)
+        .json(&json!({
+            "operation": "key_export",
+            "resource_id": key_id,
+            "resource_type": "key",
+            "justification": "no tenant given",
+        }))
+        .send()
+        .await
+        .expect("create_approval send");
+    let status = resp.status();
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .unwrap_or_else(|_| json!({"__nonjson": true}));
+    handle.abort();
+
+    assert_eq!(status, 201, "create request failed: body={body}");
+    assert_eq!(
+        body["tenant_id"], "default",
+        "an approval request without a tenant must default to \"default\": body={body}"
+    );
+}
+
+/// The reject path reports the engine error instead of flattening everything
+/// into "not found": a requestor rejecting their own request is a 403.
+#[tokio::test]
+async fn b7g3_reject_reports_the_actual_error() {
+    let (base, client, handle) = spawn_rest_server().await;
+    let key_id = create_key(&client, &base, "reject-error-key", "sm4", "tenant-a").await;
+
+    // The security officer holds the approve permission, so the reject route
+    // is reachable for it — the requestor may then try to reject its own
+    // request, which the engine refuses with `SelfApproval`.
+    let (status, body) = create_approval_with(
+        &client,
+        &base,
+        OFFICER_SECRET,
+        "key_export",
+        &key_id,
+        "key",
+        "tenant-a",
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, 201, "create request failed: body={body}");
+    let approval_id = body["id"].as_str().expect("approval id").to_string();
+
+    // The requestor rejects their own request => self-rejection => 403.
+    let resp = client
+        .post(format!("{base}/v1/approvals/{approval_id}/reject"))
+        .header(ADMIN_HEADER, OFFICER_SECRET)
+        .json(&json!({ "reason": "changed my mind" }))
+        .send()
+        .await
+        .expect("reject send");
+    let status = resp.status();
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .unwrap_or_else(|_| json!({"__nonjson": true}));
+    handle.abort();
+
+    assert_eq!(
+        status, 403,
+        "a self-rejection must be reported as forbidden, not as \"not found\": body={body}"
+    );
+}
+
+/// An approval request may only be read by the tenant that owns it.
+#[tokio::test]
+async fn b7g3_approval_request_is_not_readable_across_tenants() {
+    let (base, client, handle) = spawn_rest_server().await;
+    let key_id = create_key(&client, &base, "cross-tenant-read-key", "sm4", "tenant-a").await;
+
+    let (status, body) = create_approval_with(
+        &client,
+        &base,
+        ADMIN_SECRET,
+        "key_export",
+        &key_id,
+        "key",
+        "tenant-a",
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, 201, "create request failed: body={body}");
+    let approval_id = body["id"].as_str().expect("approval id").to_string();
+
+    // The tenant-bound "acme" key must not read tenant-a's request.
+    let resp = client
+        .get(format!("{base}/v1/approvals/{approval_id}"))
+        .header(ADMIN_HEADER, ACME_SECRET)
+        .send()
+        .await
+        .expect("get approval send");
+    let status = resp.status();
+    handle.abort();
+
+    assert_eq!(
+        status, 404,
+        "an approval request must not be readable across tenants: body={body}"
     );
 }

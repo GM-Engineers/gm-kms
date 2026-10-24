@@ -153,6 +153,12 @@ impl Permission {
 /// - **Audit Admin** → `AuditAdmin`: views/export audit logs only
 ///
 /// `ReadOnly` and `Operator` are operational roles with no admin privileges.
+///
+/// `TenantAdmin` is the authority that approves tenant-administration
+/// requests: it is the only role that maps onto the approval engine's
+/// `Admin` level, which the `tenant_admin` operation requires. It holds no
+/// policy, audit or MFA administration power, so the three-officer separation
+/// stays intact (audit follow-up B7-g).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ApiKeyPermission {
     /// Read-only access (list, get keys)
@@ -165,13 +171,16 @@ pub enum ApiKeyPermission {
     SecurityOfficer = 3,
     /// Audit administration (audit log view and export only)
     AuditAdmin = 4,
+    /// Tenant administration (approves tenant-scoped administration requests)
+    TenantAdmin = 5,
 }
 
 impl ApiKeyPermission {
     /// Parse a role name into a permission.
     ///
     /// Accepted names (case-insensitive, `-` and `_` interchangeable):
-    /// `read-only`, `operator`, `key-admin`, `security-officer`, `audit-admin`.
+    /// `read-only`, `operator`, `key-admin`, `security-officer`, `audit-admin`,
+    /// `tenant-admin`.
     ///
     /// Used by the server configuration to map a declarative role name onto a
     /// permission (audit B7-e).
@@ -183,6 +192,7 @@ impl ApiKeyPermission {
             "key-admin" | "keyadmin" => Some(Self::KeyAdmin),
             "security-officer" | "securityofficer" | "officer" => Some(Self::SecurityOfficer),
             "audit-admin" | "auditadmin" | "auditor" => Some(Self::AuditAdmin),
+            "tenant-admin" | "tenantadmin" => Some(Self::TenantAdmin),
             _ => None,
         }
     }
@@ -228,6 +238,12 @@ impl ApiKeyPermission {
                     | Permission::APPROVE_ACTION
             }
             ApiKeyPermission::AuditAdmin => Permission::VIEW_AUDIT | Permission::EXPORT_AUDIT,
+            // Tenant administration: may approve tenant-administration
+            // requests, but holds no policy/audit/MFA administration power
+            // (audit follow-up B7-g).
+            ApiKeyPermission::TenantAdmin => {
+                Permission::LIST_KEYS | Permission::GET_KEY | Permission::APPROVE_ACTION
+            }
         }
     }
 
@@ -245,6 +261,7 @@ impl std::fmt::Display for ApiKeyPermission {
             ApiKeyPermission::KeyAdmin => write!(f, "key-admin"),
             ApiKeyPermission::SecurityOfficer => write!(f, "security-officer"),
             ApiKeyPermission::AuditAdmin => write!(f, "audit-admin"),
+            ApiKeyPermission::TenantAdmin => write!(f, "tenant-admin"),
         }
     }
 }
@@ -328,6 +345,11 @@ impl ApiKey {
     /// Create an audit admin API key (audit log view and export only)
     pub fn audit_admin(secret: String) -> Self {
         Self::new(secret, ApiKeyPermission::AuditAdmin)
+    }
+
+    /// Create a tenant admin API key (approves tenant-administration requests)
+    pub fn tenant_admin(secret: String) -> Self {
+        Self::new(secret, ApiKeyPermission::TenantAdmin)
     }
 
     /// Create a new API key with expiration
@@ -1377,6 +1399,38 @@ mod tests {
         // An unknown name must not resolve to a permission.
         assert_eq!(ApiKeyPermission::from_role_name("superuser"), None);
         assert_eq!(ApiKeyPermission::from_role_name(""), None);
+    }
+
+    /// The tenant-admin role exists so that the `tenant_admin` operation —
+    /// which requires the approval engine's `Admin` level — can be approved at
+    /// all (audit follow-up B7-g).
+    #[test]
+    fn test_tenant_admin_permission() {
+        assert_eq!(
+            ApiKeyPermission::from_role_name("tenant-admin"),
+            Some(ApiKeyPermission::TenantAdmin)
+        );
+        assert_eq!(
+            ApiKeyPermission::from_role_name("TENANT_ADMIN"),
+            Some(ApiKeyPermission::TenantAdmin)
+        );
+        assert_eq!(ApiKeyPermission::TenantAdmin.to_string(), "tenant-admin");
+
+        // It may approve, but it holds no policy/audit/MFA administration
+        // power: the three-officer separation must not be weakened.
+        let perms = ApiKeyPermission::TenantAdmin.permissions();
+        assert!(perms.contains(Permission::APPROVE_ACTION));
+        assert!(!perms.contains(Permission::MANAGE_POLICY));
+        assert!(!perms.contains(Permission::MANAGE_API_KEYS));
+        assert!(!perms.contains(Permission::MANAGE_MFA));
+        assert!(!perms.contains(Permission::VIEW_AUDIT));
+        assert!(!perms.contains(Permission::EXPORT_AUDIT));
+        // Nor any key lifecycle or crypto power.
+        assert!(!perms.contains(Permission::CREATE_KEY));
+        assert!(!perms.contains(Permission::DELETE_KEY));
+        assert!(!perms.contains(Permission::EXPORT_KEY));
+        assert!(!perms.contains(Permission::ENCRYPT));
+        assert!(!perms.contains(Permission::DECRYPT));
     }
 
     /// Permission boundaries: AuditAdmin has no operational permissions

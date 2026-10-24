@@ -2068,16 +2068,40 @@ fn parse_operation(op: &str) -> Option<OperationType> {
 struct CreateApprovalReq {
     operation: String,
     resource_id: String,
+    /// Ignored: the resource type is derived from the operation, because the
+    /// request body must not decide whether the tenant-ownership check runs
+    /// (audit follow-up B7-g). Kept in the schema for wire compatibility.
+    #[serde(default)]
     resource_type: String,
     /// Tenant of the resource. Ignored when the API key carries a tenant
     /// binding (the bound tenant is authoritative).
-    #[serde(default)]
+    #[serde(default = "default_tenant_id")]
     tenant_id: String,
     /// Ignored: the requestor is derived from the authenticated API key
     /// (audit follow-up B7-a). Kept in the schema for wire compatibility.
     #[serde(default)]
     requestor_id: String,
     justification: Option<String>,
+}
+
+/// Derive the resource type of an approval request from its operation.
+///
+/// The resource type is a property of the operation, not of the request. When
+/// it came from the request body a caller could label a key resource as
+/// something else ("policy") and thereby skip the tenant-ownership check
+/// while still binding the approval to another tenant's key
+/// (audit follow-up B7-g).
+fn resource_type_for(operation: OperationType) -> &'static str {
+    match operation {
+        OperationType::KeyDelete
+        | OperationType::KeyExport
+        | OperationType::KeyRotate
+        | OperationType::HighValueKeyCreate => "key",
+        OperationType::PolicyChange => "policy",
+        OperationType::AuditAccess => "audit",
+        OperationType::MfaChange => "mfa",
+        OperationType::TenantAdmin => "tenant",
+    }
 }
 
 /// Map the authenticated API key's permission to an approval [`Role`].
@@ -2092,6 +2116,9 @@ fn role_from_permission(permission: ApiKeyPermission) -> Role {
         ApiKeyPermission::KeyAdmin => Role::Manager,
         ApiKeyPermission::SecurityOfficer => Role::SecurityOfficer,
         ApiKeyPermission::AuditAdmin => Role::User,
+        // The only role that reaches the approval engine's `Admin` level,
+        // which the `tenant_admin` operation requires (audit follow-up B7-g).
+        ApiKeyPermission::TenantAdmin => Role::Admin,
     }
 }
 
@@ -2116,6 +2143,11 @@ fn warn_ignored_identity(field: &str, value: &str) {
 /// Returns a sanitized "key not found" error when the resource is unknown or
 /// owned by another tenant, so the endpoint cannot be used to probe for
 /// key ids of other tenants (audit follow-up B7-a).
+///
+/// Only key-scoped operations are checked here. The resource type is derived
+/// from the operation (never taken from the request body), so a caller cannot
+/// label a key resource as something else to skip this check
+/// (audit follow-up B7-g).
 async fn ensure_resource_tenant(
     state: &KmsState,
     resource_type: &str,
@@ -2156,13 +2188,26 @@ async fn create_approval_request(
     warn_ignored_identity("requestor_id", &req.requestor_id);
     let requestor = caller;
 
+    // The resource type follows from the operation. Taking it from the
+    // request body would let a caller label a key resource as e.g. "policy"
+    // and thereby skip the tenant-ownership check below while still binding
+    // the approval to another tenant's key (audit follow-up B7-g).
+    let resource_type = resource_type_for(operation);
+    if !req.resource_type.is_empty() && !req.resource_type.eq_ignore_ascii_case(resource_type) {
+        tracing::warn!(
+            claimed_resource_type = %req.resource_type,
+            derived_resource_type = %resource_type,
+            "client-supplied resource_type is ignored; the server derives it from the operation"
+        );
+    }
+
     // Tenant: a key-bound tenant is authoritative; otherwise fall back to the
     // self-reported tenant (same rule as the rest of the API).
     let tenant_id = resolve_tenant(bound.as_deref(), &req.tenant_id);
     let tenant_id = tenant_id.as_str();
 
     // The approval must be bound to a resource this tenant actually owns.
-    ensure_resource_tenant(&state, &req.resource_type, &req.resource_id, tenant_id).await?;
+    ensure_resource_tenant(&state, resource_type, &req.resource_id, tenant_id).await?;
 
     let response = {
         let mut approval = state.approval_manager.write();
@@ -2171,7 +2216,7 @@ async fn create_approval_request(
             .create_request(
                 operation,
                 &req.resource_id,
-                &req.resource_type,
+                resource_type,
                 tenant_id,
                 &requestor,
                 req.justification,
@@ -2193,7 +2238,21 @@ async fn list_pending_approvals(
     CallerId { key_id: caller_id }: CallerId,
     State(state): State<Arc<KmsState>>,
     Path(tenant_id): Path<String>,
+    BoundTenant(bound): BoundTenant,
 ) -> Result<Json<Vec<crate::approval::ApprovalRequestResponse>>> {
+    // A tenant-bound key may only list its own tenant's pending approvals
+    // (audit follow-up B7-g).
+    if let Some(bound_tenant) = bound.as_deref()
+        && bound_tenant != tenant_id
+    {
+        tracing::warn!(
+            bound_tenant = %bound_tenant,
+            requested_tenant = %tenant_id,
+            "refusing cross-tenant approval listing: authenticated API key is bound to its own tenant"
+        );
+        return Err(ApiError::PermissionDenied);
+    }
+
     let requests = {
         let approval = state.approval_manager.read();
         approval.list_pending(&tenant_id)
@@ -2218,6 +2277,7 @@ async fn get_approval_request(
     CallerId { key_id: caller_id }: CallerId,
     State(state): State<Arc<KmsState>>,
     Path(request_id): Path<Uuid>,
+    BoundTenant(bound): BoundTenant,
 ) -> Result<Json<crate::approval::ApprovalRequestResponse>> {
     let response = {
         let approval = state.approval_manager.read();
@@ -2225,6 +2285,16 @@ async fn get_approval_request(
             .get_request(request_id)
             .ok_or_else(|| ApiError::NotFound("Approval request not found".to_string()))?
     }; // approval dropped here
+
+    // A tenant-bound key may only read the approval requests of its own
+    // tenant. Without this check any authenticated caller could read the
+    // approval requests of every other tenant by id (audit follow-up B7-g).
+    if let Some(bound_tenant) = bound.as_deref()
+        && response.tenant_id != bound_tenant
+    {
+        // Sanitized: do not disclose that the request exists elsewhere.
+        return Err(ApiError::NotFound("Approval request not found".to_string()));
+    }
 
     // Log audit event
     let event = kms_core::event::Event::new(
@@ -2338,9 +2408,7 @@ async fn reject_request(
         let mut approval = state.approval_manager.write();
         approval
             .reject(request_id, &rejector, role, req.reason)
-            .ok_or_else(|| {
-                ApiError::NotFound("Approval request not found or already completed".to_string())
-            })?
+            .map_err(approval_error_to_api_error)?
     }; // approval dropped here
 
     // Log audit event
