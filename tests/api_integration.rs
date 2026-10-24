@@ -18,6 +18,10 @@ use std::time::Duration;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use kms_api::auth::{ApiKey, ApiKeyConfig};
+use kms_api::grpc::pb;
+use kms_api::grpc::pb::kms_service_client::KmsServiceClient;
+use kms_api::grpc::pb::kms_service_server::KmsServiceServer;
+use kms_api::grpc::{GrpcAuthInterceptor, KmsGrpcService};
 use kms_api::{KmsMetrics, KmsState, Sm9State, rest::create_routes};
 use kms_audit::AuditLogger;
 use kms_core::PolicyEffect;
@@ -739,5 +743,319 @@ async fn hmac_sm3_compute_verify_rest() {
         !resp.status().is_success(),
         "HMAC over a non-SM3-HMAC key must be rejected: status={}",
         resp.status()
+    );
+}
+
+// =============================================================================
+// Batch 6 / P4-3: REST <-> gRPC cross-channel semantic consistency.
+//
+// Both channels converge on the SAME service layer (`KeyService`/`CryptoService`)
+// and the SAME keystore. These tests boot a single shared `KmsState` behind both
+// an axum REST router and a tonic gRPC server, then assert that the invariants
+// documented in `docs/api-semantics.md` hold identically on both transports:
+//   * an (key_id, tenant, version, format 2) ciphertext produced on one channel
+//     decrypts on the other (AAD-binding convergence);
+//   * not-found and cross-tenant access fail on both channels with the same
+//     sanitized "not found" semantics.
+// =============================================================================
+
+/// Wrap a gRPC request with the `x-api-key` admin metadata so it passes the
+/// server's `GrpcAuthInterceptor` (mirrors the REST `x-api-key` header).
+fn admin_req<T>(msg: T) -> tonic::Request<T> {
+    let mut req = tonic::Request::new(msg);
+    req.metadata_mut().insert(
+        "x-api-key",
+        tonic::metadata::MetadataValue::from_static(ADMIN_SECRET),
+    );
+    req
+}
+
+/// A REST + gRPC server pair sharing one keystore/state.
+struct DualStack {
+    base: String,
+    client: reqwest::Client,
+    grpc: KmsServiceClient<tonic::transport::Channel>,
+    _handles: Vec<tokio::task::JoinHandle<()>>,
+}
+
+/// Boot REST (axum) + gRPC (tonic) over one shared `KmsState` on random loopback
+/// ports. The `admin` key is unbound, so both channels honour the self-reported
+/// tenant — letting a test drive the same tenant on both transports.
+async fn spawn_dual_stack() -> DualStack {
+    let keystore = Arc::new(SoftwareKeystore::new());
+
+    let engine = PBACEngine::new();
+    engine
+        .add_policy(Policy {
+            id: uuid::Uuid::new_v4(),
+            name: "allow-all-integration".to_string(),
+            effect: PolicyEffect::Allow,
+            condition: json!({ "operator": "always" }),
+            resources: vec!["*".to_string()],
+            subjects: vec!["*".to_string()],
+            enabled: true,
+        })
+        .await
+        .expect("add policy");
+
+    let audit = Arc::new(AuditLogger::default());
+    let sm9 = Sm9State::from_key(gm_sm9_rs::KgcMasterKey::generate().expect("sm9 master key"));
+    let metrics = KmsMetrics::new();
+    let state = Arc::new(KmsState::new(keystore, engine, audit, sm9, metrics));
+
+    let api_key_config = ApiKeyConfig::with_keys(vec![
+        ApiKey::key_admin(ADMIN_SECRET.to_string()).with_key_id("admin".to_string()),
+        ApiKey::security_officer(OFFICER_SECRET.to_string()).with_key_id("officer".to_string()),
+    ]);
+
+    // REST listener.
+    let app = create_routes(state.clone(), api_key_config.clone());
+    let rest_listener = TcpListener::bind("127.0.0.1:0".parse::<SocketAddr>().unwrap())
+        .await
+        .expect("bind rest");
+    let rest_addr = rest_listener.local_addr().expect("rest addr");
+    let rest_handle = tokio::spawn(async move {
+        axum::serve(rest_listener, app).await.expect("serve rest");
+    });
+
+    // gRPC listener sharing the same state + api keys.
+    let grpc_listener = TcpListener::bind("127.0.0.1:0".parse::<SocketAddr>().unwrap())
+        .await
+        .expect("bind grpc");
+    let grpc_addr = grpc_listener.local_addr().expect("grpc addr");
+    let service = KmsServiceServer::with_interceptor(
+        KmsGrpcService::new(state.clone()),
+        GrpcAuthInterceptor::new(Arc::new(api_key_config)),
+    );
+    let incoming: tonic::transport::server::TcpIncoming = grpc_listener.into();
+    let incoming = incoming.with_nodelay(Some(true));
+    let grpc_handle = tokio::spawn(async move {
+        tonic::transport::Server::builder()
+            .add_service(service)
+            .serve_with_incoming(incoming)
+            .await
+            .expect("serve grpc");
+    });
+
+    let client = reqwest::Client::new();
+    let base = format!("http://{rest_addr}");
+
+    // Wait for REST readiness via the public health endpoint.
+    for _ in 0..100 {
+        if client
+            .get(format!("{base}/v1/health"))
+            .send()
+            .await
+            .map(|r| r.status().is_success())
+            .unwrap_or(false)
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    // Connect the gRPC client (retry until the server task is accepting).
+    let grpc_url = format!("http://{grpc_addr}");
+    let mut grpc = None;
+    for _ in 0..100 {
+        match KmsServiceClient::connect(grpc_url.clone()).await {
+            Ok(c) => {
+                grpc = Some(c);
+                break;
+            }
+            Err(_) => tokio::time::sleep(Duration::from_millis(20)).await,
+        }
+    }
+    let grpc = grpc.expect("grpc client connect");
+
+    DualStack {
+        base,
+        client,
+        grpc,
+        _handles: vec![rest_handle, grpc_handle],
+    }
+}
+
+/// gRPC encrypt: returns (ciphertext, nonce, tag) base64 + version + format_version.
+async fn grpc_encrypt(
+    grpc: &mut KmsServiceClient<tonic::transport::Channel>,
+    key_id: &str,
+    tenant: &str,
+    plaintext: &[u8],
+) -> (String, String, String, u32, u32) {
+    let resp = grpc
+        .encrypt(admin_req(pb::EncryptRequest {
+            key_id: key_id.to_string(),
+            plaintext: plaintext.to_vec(),
+            aad: Vec::new(),
+            tenant_id: tenant.to_string(),
+        }))
+        .await
+        .expect("grpc encrypt")
+        .into_inner();
+    (
+        resp.ciphertext,
+        resp.nonce,
+        resp.tag,
+        resp.version,
+        resp.format_version,
+    )
+}
+
+/// gRPC decrypt: returns the Result-carrying Status so callers can assert errors.
+async fn grpc_decrypt(
+    grpc: &mut KmsServiceClient<tonic::transport::Channel>,
+    key_id: &str,
+    tenant: &str,
+    ct: &str,
+    nonce: &str,
+    tag: &str,
+    version: u32,
+) -> Result<Vec<u8>, tonic::Status> {
+    let resp = grpc
+        .decrypt(admin_req(pb::DecryptRequest {
+            key_id: key_id.to_string(),
+            ciphertext: ct.to_string(),
+            nonce: nonce.to_string(),
+            tag: tag.to_string(),
+            aad: Vec::new(),
+            version,
+            tenant_id: tenant.to_string(),
+            format_version: None, // defaults to production format 2 (matches REST)
+        }))
+        .await?;
+    Ok(resp.into_inner().plaintext)
+}
+
+#[tokio::test]
+async fn p43_ciphertext_interops_across_rest_and_grpc() {
+    // audit P4-3 invariant: AAD binding (key_id, tenant, version, format 2) is
+    // computed identically on both channels, so a ciphertext sealed on one
+    // decrypts on the other.
+    let mut stack = spawn_dual_stack().await;
+    let tenant = "tenant-a";
+    let plaintext = b"cross-channel interop plaintext";
+    let key_id = create_key(&stack.client, &stack.base, "key-p43", "sm4", tenant).await;
+
+    // Seal on REST -> open on gRPC.
+    let (ct, nonce, tag) = encrypt(&stack.client, &stack.base, &key_id, tenant, plaintext).await;
+    let got = grpc_decrypt(&mut stack.grpc, &key_id, tenant, &ct, &nonce, &tag, 1)
+        .await
+        .expect("gRPC must decrypt a REST-produced ciphertext (shared AAD binding)");
+    assert_eq!(got, plaintext, "REST->gRPC round-trip plaintext mismatch");
+
+    // Seal on gRPC -> open on REST.
+    let (ct2, nonce2, tag2, version2, fmt2) =
+        grpc_encrypt(&mut stack.grpc, &key_id, tenant, plaintext).await;
+    assert_eq!(fmt2, 2, "gRPC encrypt should use production format 2");
+    assert_eq!(version2, 1, "fresh key version 1");
+    let (ok, got2, body) = decrypt(
+        &stack.client,
+        &stack.base,
+        &key_id,
+        tenant,
+        &ct2,
+        &nonce2,
+        &tag2,
+    )
+    .await;
+    assert!(
+        ok,
+        "REST must decrypt a gRPC-produced ciphertext: body={body}"
+    );
+    assert_eq!(
+        got2.expect("plaintext"),
+        plaintext,
+        "gRPC->REST round-trip mismatch"
+    );
+}
+
+#[tokio::test]
+async fn p43_not_found_maps_consistently_across_channels() {
+    // audit P4-3 error-mapping invariant (the aligned KeyNotFound row): a missing
+    // key yields REST 404 and gRPC NOT_FOUND on both channels.
+    let mut stack = spawn_dual_stack().await;
+    let tenant = "tenant-a";
+    let missing = uuid::Uuid::new_v4().to_string();
+
+    let resp = stack
+        .client
+        .post(format!(
+            "{}/v1/keys/{missing}/encrypt?tenant_id={tenant}",
+            stack.base
+        ))
+        .header(ADMIN_HEADER, ADMIN_SECRET)
+        .json(&json!({ "plaintext": STANDARD.encode(b"x"), "aad": null }))
+        .send()
+        .await
+        .expect("rest encrypt send");
+    assert_eq!(
+        resp.status(),
+        reqwest::StatusCode::NOT_FOUND,
+        "REST: missing key -> 404"
+    );
+
+    let err = stack
+        .grpc
+        .encrypt(admin_req(pb::EncryptRequest {
+            key_id: missing.clone(),
+            plaintext: b"x".to_vec(),
+            aad: Vec::new(),
+            tenant_id: tenant.to_string(),
+        }))
+        .await
+        .expect_err("gRPC: missing key must error");
+    assert_eq!(
+        err.code(),
+        tonic::Code::NotFound,
+        "gRPC: missing key -> NOT_FOUND"
+    );
+}
+
+#[tokio::test]
+async fn p43_cross_tenant_denied_on_both_channels() {
+    // audit P4-3 tenant-isolation invariant: a key owned by tenant-a is not usable
+    // under tenant-b on either channel (both fail-closed with the sanitized
+    // not-found semantics used to avoid cross-tenant enumeration).
+    let mut stack = spawn_dual_stack().await;
+    let key_id = create_key(&stack.client, &stack.base, "key-iso", "sm4", "tenant-a").await;
+
+    // Same-tenant encrypt works on both channels (baseline).
+    let _ = encrypt(&stack.client, &stack.base, &key_id, "tenant-a", b"ok").await;
+    let _ = grpc_encrypt(&mut stack.grpc, &key_id, "tenant-a", b"ok").await;
+
+    // Cross-tenant must fail on REST.
+    let resp = stack
+        .client
+        .post(format!(
+            "{}/v1/keys/{key_id}/encrypt?tenant_id=tenant-b",
+            stack.base
+        ))
+        .header(ADMIN_HEADER, ADMIN_SECRET)
+        .json(&json!({ "plaintext": STANDARD.encode(b"nope"), "aad": null }))
+        .send()
+        .await
+        .expect("rest cross-tenant send");
+    assert!(
+        !resp.status().is_success(),
+        "REST cross-tenant encrypt must be denied: status={}",
+        resp.status()
+    );
+
+    // Cross-tenant must fail on gRPC too.
+    let err = stack
+        .grpc
+        .encrypt(admin_req(pb::EncryptRequest {
+            key_id: key_id.clone(),
+            plaintext: b"nope".to_vec(),
+            aad: Vec::new(),
+            tenant_id: "tenant-b".to_string(),
+        }))
+        .await
+        .expect_err("gRPC cross-tenant encrypt must be denied");
+    assert_eq!(
+        err.code(),
+        tonic::Code::NotFound,
+        "gRPC cross-tenant uses the sanitized NOT_FOUND semantics"
     );
 }

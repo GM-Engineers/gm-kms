@@ -2,6 +2,25 @@
 //!
 //! Implements cache-aside pattern for key metadata.
 //! Caches key metadata with TTL to reduce datastore load.
+//!
+//! ## Current scope: write-through / reserved (audit P3-5)
+//!
+//! Cache entries are keyed by `(tenant_id, key_id)` (see the `cache_key_id`
+//! helper), but
+//! the [`KeystoreBackend`] trait's read methods — notably [`KeystoreBackend::get_key_metadata`]
+//! — receive only `key_id` with no `tenant_id`. Without the tenant dimension we
+//! cannot compute the cache key, so **the read path currently always misses**
+//! and falls through to the backing store. Writes (`generate_key`) and
+//! invalidations (`rotate_key`/`delete_key`/...) still populate and clear the
+//! cache correctly because those calls do carry `tenant_id`.
+//!
+//! In other words this layer is, as it stands, a write-through + invalidation
+//! scaffold: it keeps the cache consistent but does not yet accelerate reads.
+//! Enabling read hits requires extending the trait's read methods to accept
+//! `tenant_id` (tracked by audit P3-5); until then do not rely on this cache
+//! for read-path latency. The `#[allow(dead_code)]`-free read helpers below are
+//! intentionally kept so the enablement is a one-line change once the interface
+//! carries the tenant dimension.
 
 use crate::KeystoreBackend;
 use async_trait::async_trait;
@@ -44,18 +63,26 @@ impl<B: KeystoreBackend + Send + Sync> KeystoreBackend for RedisCachedKeystore<B
         Ok(meta)
     }
 
+    /// Read a key's metadata.
+    ///
+    /// audit P3-5: the cache key requires `tenant_id`, which this trait method
+    /// does not receive, so we cannot look the entry up by `(tenant_id, key_id)`
+    /// and the read is **always a cache miss** today. We fetch from storage and
+    /// re-populate the cache (write-through) so it stays consistent, but no read
+    /// acceleration happens here. See the module docs for the enablement plan.
     async fn get_key_metadata(&self, key_id: &uuid::Uuid) -> Result<KeyMeta> {
-        // The cache key includes tenant_id, but we don't have tenant_id until we fetch the key.
-        // So we always fetch from storage first, then cache with proper tenant_id.
-        // This means the first read is always a cache miss, but subsequent reads
-        // (within TTL) that pass tenant_id through generate_key won't hit this method.
+        // The cache key includes tenant_id, but we don't have tenant_id until we
+        // fetch the key, so this read path can never compute a cache lookup key
+        // and always misses (audit P3-5 — reserved read cache, write-through only).
 
         tracing::debug!("Cache miss for key {}, fetching from storage", key_id);
 
         // Cache miss - fetch from storage
         let meta = self.inner.get_key_metadata(key_id).await?;
 
-        // Cache it with proper tenant_id
+        // Write-through: (re)populate the cache with proper tenant_id so later
+        // invalidations (rotate/delete) target the right key. Read acceleration
+        // is intentionally not wired up here until the trait carries tenant_id.
         self.cache_key_meta(&meta).await?;
 
         Ok(meta)
