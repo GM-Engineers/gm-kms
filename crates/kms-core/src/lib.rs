@@ -3,8 +3,6 @@
 //! This crate contains core types with no I/O dependencies.
 
 pub mod aad;
-pub mod algorithms;
-pub mod algorithms_impl;
 pub mod backup;
 pub mod csprng;
 pub mod dh;
@@ -34,15 +32,6 @@ mod proptests;
 
 pub use aad::{
     AAD_MAGIC, AAD_V2_LEN, AAD_VERSION, Purpose, export_wrap_aad, kek_wrap_aad, user_data_aad,
-};
-pub use algorithms::{
-    AlgorithmInfo, AlgorithmRegistry, DecryptResult, Decryptor, EncryptResult, Encryptor,
-    SignResult, Signer, SymmetricCrypto, Verifier, VerifyResult, get_algorithm_info,
-    is_encryption_supported, is_signing_supported, validate_key_size,
-};
-pub use algorithms_impl::{
-    Aes256GcmCrypto, Aes256GcmDecryptor, Aes256GcmEncryptor, AlgorithmFactory, Sm4GcmCrypto,
-    Sm4GcmDecryptor, Sm4GcmEncryptor,
 };
 pub use backup::{BackupConfig, KeyBackup, KeyBackupService, MasterKey};
 pub use csprng::{
