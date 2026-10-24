@@ -164,10 +164,11 @@ impl KeystoreBackend for FaultWrappedKeystore {
         key_id: &Uuid,
         peer_public_key: &[u8],
         algorithm: DhAlgorithm,
+        tenant_id: &str,
     ) -> Result<SharedSecret> {
         self.maybe_fault("derive_shared_secret").await?;
         self.inner
-            .derive_shared_secret(key_id, peer_public_key, algorithm)
+            .derive_shared_secret(key_id, peer_public_key, algorithm, tenant_id)
             .await
     }
 }

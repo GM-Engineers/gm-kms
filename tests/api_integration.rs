@@ -54,6 +54,16 @@ const OPERATOR_SECRET: &str = "integration-operator-key-secret";
 /// 起一个绑定随机 loopback 端口的 REST 服务器，返回 `http://addr` base URL 与
 /// 服务器后台任务句柄（调用方负责 abort）。
 async fn spawn_rest_server() -> (String, reqwest::Client, tokio::task::JoinHandle<()>) {
+    spawn_rest_server_with_policies(Vec::new()).await
+}
+
+/// Same as [`spawn_rest_server`], plus extra PBAC policies.
+///
+/// Deny policies are evaluated before allow policies by the PBAC engine, so an
+/// extra `Deny` policy can single out one action (audit B7-b).
+async fn spawn_rest_server_with_policies(
+    extra_policies: Vec<Policy>,
+) -> (String, reqwest::Client, tokio::task::JoinHandle<()>) {
     // keystore
     let keystore = Arc::new(SoftwareKeystore::new());
 
@@ -71,6 +81,9 @@ async fn spawn_rest_server() -> (String, reqwest::Client, tokio::task::JoinHandl
         })
         .await
         .expect("add policy");
+    for policy in extra_policies {
+        engine.add_policy(policy).await.expect("add extra policy");
+    }
 
     let audit = Arc::new(AuditLogger::default());
     let sm9 = Sm9State::from_key(gm_sm9_rs::KgcMasterKey::generate().expect("sm9 master key"));
@@ -1362,5 +1375,160 @@ async fn b7a_approval_for_other_tenant_key_rejected() {
     assert_eq!(
         status, 404,
         "cross-tenant approval request must be rejected as not-found: body={body}"
+    );
+}
+
+// =============================================================================
+// Batch 7 / B7-b: REST/gRPC PBAC parity and DH tenant isolation
+//
+// The REST HMAC handlers skipped the PBAC check that the gRPC handlers
+// perform, so attribute-based access control could be bypassed by switching
+// protocol. The DH derive endpoint had neither a PBAC check nor any tenant
+// check at all, which allowed deriving a shared secret with another tenant's
+// private key.
+// =============================================================================
+
+/// A PBAC policy that denies one specific action.
+fn deny_action_policy(action: &str) -> Policy {
+    Policy {
+        id: uuid::Uuid::new_v4(),
+        name: format!("deny-{action}"),
+        effect: PolicyEffect::Deny,
+        condition: json!({ "operator": "eq", "attribute": "action", "value": action }),
+        resources: vec!["*".to_string()],
+        subjects: vec!["*".to_string()],
+        enabled: true,
+    }
+}
+
+/// The REST HMAC endpoint must honour the same PBAC decision as the gRPC one.
+#[tokio::test]
+async fn b7b_rest_hmac_respects_pbac_deny() {
+    let (base, client, handle) =
+        spawn_rest_server_with_policies(vec![deny_action_policy("hmac")]).await;
+    let tenant = "tenant-a";
+    let key_id = create_key(&client, &base, "pbac-mac-key", "hmac-sm3", tenant).await;
+
+    let resp = client
+        .post(format!("{base}/v1/keys/{key_id}/hmac?tenant_id={tenant}"))
+        .header(ADMIN_HEADER, ADMIN_SECRET)
+        .json(&json!({ "data": STANDARD.encode(b"payload"), "aad": null }))
+        .send()
+        .await
+        .expect("hmac send");
+    let status = resp.status();
+    handle.abort();
+
+    assert_eq!(
+        status, 403,
+        "a PBAC deny on the hmac action must block the REST endpoint too"
+    );
+}
+
+/// The REST HMAC verify endpoint must honour the same PBAC decision.
+#[tokio::test]
+async fn b7b_rest_hmac_verify_respects_pbac_deny() {
+    let (base, client, handle) =
+        spawn_rest_server_with_policies(vec![deny_action_policy("hmac_verify")]).await;
+    let tenant = "tenant-a";
+    let key_id = create_key(&client, &base, "pbac-mac-verify-key", "hmac-sm3", tenant).await;
+
+    let resp = client
+        .post(format!(
+            "{base}/v1/keys/{key_id}/hmac/verify?tenant_id={tenant}"
+        ))
+        .header(ADMIN_HEADER, ADMIN_SECRET)
+        .json(&json!({
+            "data": STANDARD.encode(b"payload"),
+            "mac": STANDARD.encode([0u8; 32]),
+            "aad": null
+        }))
+        .send()
+        .await
+        .expect("hmac verify send");
+    let status = resp.status();
+    handle.abort();
+
+    assert_eq!(
+        status, 403,
+        "a PBAC deny on the hmac_verify action must block the REST endpoint too"
+    );
+}
+
+/// Deriving a shared secret with another tenant's private key must be denied
+/// with the same sanitized "not found" answer the other key operations give.
+#[tokio::test]
+async fn b7b_dh_derive_cross_tenant_rejected() {
+    let (base, client, handle) = spawn_rest_server().await;
+    let key_id = create_key(&client, &base, "dh-key", "ed25519", "tenant-a").await;
+
+    // Same tenant: allowed.
+    let resp = client
+        .post(format!("{base}/v1/dh/derive"))
+        .header(ADMIN_HEADER, ADMIN_SECRET)
+        .json(&json!({
+            "key_id": key_id,
+            "algorithm": "X25519",
+            "peer_public_key": STANDARD.encode([7u8; 32]),
+            "tenant_id": "tenant-a",
+        }))
+        .send()
+        .await
+        .expect("dh derive send");
+    let status = resp.status();
+    assert_eq!(
+        status, 200,
+        "deriving with the owning tenant must succeed: status={status}"
+    );
+
+    // Another tenant: denied, and the answer must not disclose the key.
+    let resp = client
+        .post(format!("{base}/v1/dh/derive"))
+        .header(ADMIN_HEADER, ADMIN_SECRET)
+        .json(&json!({
+            "key_id": key_id,
+            "algorithm": "X25519",
+            "peer_public_key": STANDARD.encode([7u8; 32]),
+            "tenant_id": "tenant-b",
+        }))
+        .send()
+        .await
+        .expect("dh derive cross-tenant send");
+    let status = resp.status();
+    let body: serde_json::Value = resp.json().await.unwrap_or(json!({}));
+    handle.abort();
+
+    assert_eq!(
+        status, 404,
+        "cross-tenant DH derive must be rejected as not-found: body={body}"
+    );
+}
+
+/// A tenant-bound key must not be usable to derive with another tenant's key.
+#[tokio::test]
+async fn b7b_dh_derive_bound_key_confined_to_its_tenant() {
+    let (base, client, handle) = spawn_rest_server().await;
+    let key_id = create_key(&client, &base, "dh-bound-key", "ed25519", "tenant-a").await;
+
+    // The "acme" key is bound to tenant "acme", so it may not touch the
+    // tenant-a key no matter which tenant it claims.
+    let resp = client
+        .post(format!("{base}/v1/dh/derive"))
+        .header(ADMIN_HEADER, ACME_SECRET)
+        .json(&json!({
+            "key_id": key_id,
+            "algorithm": "X25519",
+            "peer_public_key": STANDARD.encode([7u8; 32]),
+            "tenant_id": "tenant-a",
+        }))
+        .send()
+        .await
+        .expect("dh derive bound send");
+    let status = resp.status();
+    handle.abort();
+
+    assert_eq!(
+        status, 404,
+        "a tenant-bound key must not derive with another tenant's key"
     );
 }

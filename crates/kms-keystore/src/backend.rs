@@ -117,11 +117,16 @@ pub trait KeystoreBackend: Send + Sync {
     ///
     /// Uses our private key (identified by key_id) and peer's public key
     /// to compute a shared secret. Supports ECDH-P256, ECDH-P384, X25519, and SM2-KEX.
+    ///
+    /// `tenant_id` is the tenant the caller acts in; every implementation must
+    /// verify that the key belongs to it (audit B7-b). Without that check a
+    /// caller could derive a shared secret with another tenant's private key.
     async fn derive_shared_secret(
         &self,
         key_id: &Uuid,
         peer_public_key: &[u8],
         algorithm: DhAlgorithm,
+        tenant_id: &str,
     ) -> Result<SharedSecret>;
 
     // SM2-KEX Session Management Methods

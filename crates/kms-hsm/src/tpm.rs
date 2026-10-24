@@ -835,6 +835,7 @@ impl kms_keystore::KeystoreBackend for SimulatedTpmKeystore {
         _key_id: &Uuid,
         _peer_public_key: &[u8],
         _algorithm: kms_core::dh::DhAlgorithm,
+        _tenant_id: &str,
     ) -> Result<SharedSecret> {
         // TPM keystore DH operations would require TPM2_ComputeDH
         Err(kms_core::Error::NotImplemented(
@@ -1145,7 +1146,12 @@ mod tests {
 
         let peer_pubkey = vec![0u8; 32];
         let result = tpm
-            .derive_shared_secret(&meta.id, &peer_pubkey, kms_core::dh::DhAlgorithm::X25519)
+            .derive_shared_secret(
+                &meta.id,
+                &peer_pubkey,
+                kms_core::dh::DhAlgorithm::X25519,
+                "tenant",
+            )
             .await;
         // DH is not implemented in simulated TPM
         assert!(result.is_err());

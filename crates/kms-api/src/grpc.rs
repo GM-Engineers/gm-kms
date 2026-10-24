@@ -1149,7 +1149,7 @@ impl KmsService for KmsGrpcService {
         &self,
         request: Request<pb::DhDeriveRequest>,
     ) -> Result<Response<pb::DhDeriveResponse>, Status> {
-        let (_, caller_id, _caller_tenant) = check_permission(&request, Permission::ENCRYPT)?;
+        let (_, caller_id, caller_tenant) = check_permission(&request, Permission::ENCRYPT)?;
         let req = request.into_inner();
 
         let key_id = uuid::Uuid::parse_str(&req.key_id)
@@ -1157,13 +1157,29 @@ impl KmsService for KmsGrpcService {
         self.check_pbac(&caller_id, "dh_derive", &key_id.to_string())
             .await?;
 
+        // Tenant isolation (audit B7-b): the private key belongs to exactly one
+        // tenant, so the derived secret must not be handed to a caller acting
+        // for another one. The keystore enforces it too; the check here gives
+        // the same sanitized NOT_FOUND answer as the other key operations.
+        let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
+        let tenant_id: &str = &tenant_id_owned;
+        let meta = self
+            .state
+            .keystore
+            .get_key_metadata(&key_id)
+            .await
+            .map_err(|_| Status::not_found("key not found"))?;
+        if meta.tenant_id != tenant_id {
+            return Err(Status::not_found("key not found"));
+        }
+
         // Default to SM2-KEX for gm ecosystem
         let algorithm = kms_core::dh::DhAlgorithm::Sm2Kex;
 
         let shared_secret = self
             .state
             .keystore
-            .derive_shared_secret(&key_id, &req.peer_public, algorithm)
+            .derive_shared_secret(&key_id, &req.peer_public, algorithm, tenant_id)
             .await
             .map_err(|e| match e {
                 kms_core::Error::KeyNotFound(_) => {

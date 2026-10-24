@@ -497,6 +497,10 @@ pub struct DhDeriveRequest {
     pub algorithm: String,
     /// Base64-encoded peer's public key
     pub peer_public_key: String,
+    /// Tenant the caller acts in. Ignored when the API key carries a tenant
+    /// binding (the bound tenant is authoritative).
+    #[serde(default)]
+    pub tenant_id: Option<String>,
 }
 
 /// DH key derivation response
@@ -1199,6 +1203,14 @@ async fn hmac(
 ) -> Result<Json<HmacResponse>> {
     use base64::{Engine, engine::general_purpose::STANDARD};
 
+    // PBAC evaluation (audit B7-b): mirror the gRPC handler, which already
+    // checks the "hmac" action. Without this the attribute-based access
+    // control could be bypassed by switching from gRPC to REST.
+    use crate::auth::check_rest_pbac;
+    check_rest_pbac(&state.policy_engine, &caller_id, "hmac", &id.to_string())
+        .await
+        .map_err(|_| ApiError::PermissionDenied)?;
+
     let tenant_id_owned = resolve_tenant(bound.as_deref(), &tenant_query.tenant_id);
     let tenant_id: &str = &tenant_id_owned;
 
@@ -1240,6 +1252,17 @@ async fn hmac_verify(
     Json(req): Json<HmacVerifyRequest>,
 ) -> Result<Json<VerifyResponse>> {
     use base64::{Engine, engine::general_purpose::STANDARD};
+
+    // PBAC evaluation (audit B7-b): mirror the gRPC handler.
+    use crate::auth::check_rest_pbac;
+    check_rest_pbac(
+        &state.policy_engine,
+        &caller_id,
+        "hmac_verify",
+        &id.to_string(),
+    )
+    .await
+    .map_err(|_| ApiError::PermissionDenied)?;
 
     let tenant_id_owned = resolve_tenant(bound.as_deref(), &tenant_query.tenant_id);
     let tenant_id: &str = &tenant_id_owned;
@@ -2506,7 +2529,9 @@ async fn envelope_rewrap(
 
 /// Derive a shared secret using Diffie-Hellman key exchange
 async fn dh_derive(
+    CallerId { key_id: caller_id }: CallerId,
     State(state): State<Arc<KmsState>>,
+    BoundTenant(bound): BoundTenant,
     Json(req): Json<DhDeriveRequest>,
 ) -> Result<Json<DhDeriveResponse>> {
     use base64::{Engine, engine::general_purpose::STANDARD};
@@ -2515,6 +2540,38 @@ async fn dh_derive(
     // Parse key ID
     let key_id = uuid::Uuid::parse_str(&req.key_id)
         .map_err(|_| ApiError::InvalidRequest("invalid key_id format".to_string()))?;
+
+    // PBAC evaluation (audit B7-b): mirror the gRPC handler, which already
+    // checks the "dh_derive" action.
+    use crate::auth::check_rest_pbac;
+    check_rest_pbac(
+        &state.policy_engine,
+        &caller_id,
+        "dh_derive",
+        &key_id.to_string(),
+    )
+    .await
+    .map_err(|_| ApiError::PermissionDenied)?;
+
+    // Tenant isolation (audit B7-b): a key belongs to exactly one tenant, so
+    // the derived secret must never be handed to a caller acting for another
+    // tenant. The keystore enforces this too; the check here turns a
+    // cross-tenant attempt into the same sanitized "not found" answer the
+    // other key operations give.
+    let tenant_id_owned = resolve_tenant(
+        bound.as_deref(),
+        req.tenant_id.as_deref().unwrap_or("default"),
+    );
+    let tenant_id: &str = &tenant_id_owned;
+    let meta = state
+        .keystore
+        .get_key_metadata(&key_id)
+        .await
+        .map_err(|_| ApiError::KeyNotFound(key_id.to_string()))?;
+    if meta.tenant_id != tenant_id {
+        // Sanitized: do not disclose that the key exists in another tenant.
+        return Err(ApiError::KeyNotFound(key_id.to_string()));
+    }
 
     // Parse algorithm
     let algorithm = match req.algorithm.to_uppercase().as_str() {
@@ -2538,7 +2595,7 @@ async fn dh_derive(
     // Perform DH key exchange
     let shared_secret = state
         .keystore
-        .derive_shared_secret(&key_id, &peer_public_key, algorithm)
+        .derive_shared_secret(&key_id, &peer_public_key, algorithm, tenant_id)
         .await
         .map_err(|e| match e {
             kms_core::Error::KeyNotFound(_) => {
@@ -2552,7 +2609,7 @@ async fn dh_derive(
     // Log audit event
     let event = kms_core::event::Event::new(
         kms_core::event::EventType::KeyAccessed,
-        "dh-user",
+        &caller_id,
         "user",
         "derive_shared_secret",
         "dh",

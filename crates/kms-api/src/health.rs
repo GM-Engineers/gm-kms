@@ -203,6 +203,7 @@ mod tests {
             _key_id: &Uuid,
             _peer_public_key: &[u8],
             _algorithm: kms_core::dh::DhAlgorithm,
+            _tenant_id: &str,
         ) -> kms_core::Result<kms_core::dh::SharedSecret> {
             Err(kms_core::Error::NotImplemented("mock stub".into()))
         }
@@ -325,6 +326,7 @@ mod tests {
             _: &Uuid,
             _: &[u8],
             _: kms_core::dh::DhAlgorithm,
+            _: &str,
         ) -> kms_core::Result<kms_core::dh::SharedSecret> {
             Err(kms_core::Error::NotImplemented("mock stub".into()))
         }
@@ -420,6 +422,7 @@ mod tests {
             _: &Uuid,
             _: &[u8],
             _: kms_core::dh::DhAlgorithm,
+            _: &str,
         ) -> kms_core::Result<kms_core::dh::SharedSecret> {
             Err(kms_core::Error::NotImplemented("mock stub".into()))
         }

@@ -1440,8 +1440,13 @@ impl super::KeystoreBackend for SoftwareKeystore {
         key_id: &Uuid,
         peer_public_key: &[u8],
         algorithm: kms_core::dh::DhAlgorithm,
+        tenant_id: &str,
     ) -> Result<SharedSecret> {
         use kms_core::dh::SharedSecret;
+
+        // Tenant isolation (audit B7-b): the private key must belong to the
+        // tenant the caller acts in.
+        self.verify_tenant(key_id, tenant_id).await?;
 
         let keys = self.keys.read();
         let entry = keys

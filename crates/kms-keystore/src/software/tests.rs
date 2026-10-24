@@ -126,6 +126,7 @@ async fn test_x25519_derive_shared_secret() {
             &meta.id,
             &peer_public_key,
             kms_core::dh::DhAlgorithm::X25519,
+            "test-tenant",
         )
         .await
         .unwrap();
@@ -155,6 +156,7 @@ async fn test_x25519_shared_secret_deterministic() {
             &alice_meta.id,
             &bob_public,
             kms_core::dh::DhAlgorithm::X25519,
+            "test-tenant",
         )
         .await
         .unwrap();
@@ -165,6 +167,7 @@ async fn test_x25519_shared_secret_deterministic() {
             &alice_meta.id,
             &bob_public,
             kms_core::dh::DhAlgorithm::X25519,
+            "test-tenant",
         )
         .await
         .unwrap();
@@ -187,12 +190,22 @@ async fn test_x25519_different_peer_keys_different_secret() {
     let peer2 = [2u8; 32];
 
     let shared1 = store
-        .derive_shared_secret(&alice_meta.id, &peer1, kms_core::dh::DhAlgorithm::X25519)
+        .derive_shared_secret(
+            &alice_meta.id,
+            &peer1,
+            kms_core::dh::DhAlgorithm::X25519,
+            "test-tenant",
+        )
         .await
         .unwrap();
 
     let shared2 = store
-        .derive_shared_secret(&alice_meta.id, &peer2, kms_core::dh::DhAlgorithm::X25519)
+        .derive_shared_secret(
+            &alice_meta.id,
+            &peer2,
+            kms_core::dh::DhAlgorithm::X25519,
+            "test-tenant",
+        )
         .await
         .unwrap();
 
@@ -212,6 +225,7 @@ async fn test_dh_key_not_found() {
             &Uuid::new_v4(),
             &peer_key,
             kms_core::dh::DhAlgorithm::X25519,
+            "test-tenant",
         )
         .await;
     assert!(result.is_err());

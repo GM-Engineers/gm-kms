@@ -212,9 +212,10 @@ impl<B: KeystoreBackend + Send + Sync> KeystoreBackend for RedisCachedKeystore<B
         key_id: &uuid::Uuid,
         peer_public_key: &[u8],
         algorithm: kms_core::dh::DhAlgorithm,
+        tenant_id: &str,
     ) -> Result<SharedSecret> {
         self.inner
-            .derive_shared_secret(key_id, peer_public_key, algorithm)
+            .derive_shared_secret(key_id, peer_public_key, algorithm, tenant_id)
             .await
     }
 }

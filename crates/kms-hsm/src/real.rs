@@ -246,6 +246,7 @@ impl kms_keystore::KeystoreBackend for RealTpmKeystore {
         _key_id: &Uuid,
         _peer_public_key: &[u8],
         _algorithm: kms_core::dh::DhAlgorithm,
+        _tenant_id: &str,
     ) -> Result<SharedSecret> {
         Err(Error::NotImplemented(
             "RealTpmKeystore: DH requires tpm2-tss integration at deployment time.".to_string(),
@@ -442,6 +443,7 @@ mod tests {
                 &Uuid::new_v4(),
                 &[0u8; 32],
                 kms_core::dh::DhAlgorithm::X25519,
+                "tenant",
             )
             .await;
         assert!(result.is_err());

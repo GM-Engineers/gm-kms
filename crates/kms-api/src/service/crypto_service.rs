@@ -1076,9 +1076,10 @@ mod tests {
                 key_id: &Uuid,
                 peer_public_key: &[u8],
                 algorithm: kms_core::dh::DhAlgorithm,
+                tenant_id: &str,
             ) -> kms_core::Result<kms_core::dh::SharedSecret> {
                 self.inner
-                    .derive_shared_secret(key_id, peer_public_key, algorithm)
+                    .derive_shared_secret(key_id, peer_public_key, algorithm, tenant_id)
                     .await
             }
         }
