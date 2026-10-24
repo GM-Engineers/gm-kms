@@ -340,6 +340,7 @@ impl KmsService for KmsGrpcService {
             nonce: STANDARD.encode(&ciphertext.nonce),
             tag: STANDARD.encode(&ciphertext.tag),
             version: ciphertext.version,
+            format_version: ciphertext.format_version as u32,
         }))
     }
 
@@ -359,7 +360,11 @@ impl KmsService for KmsGrpcService {
         let ciphertext = kms_core::key::Ciphertext {
             key_id: id,
             version: req.version,
-            format_version: 0, // Legacy format
+            // Echo the caller-supplied format so the keystore reproduces the
+            // exact AAD used at encryption (format 2 binds AAD to
+            // key_id/tenant/version); unset defaults to 2 (current production
+            // format), legacy 0/1 by explicit echo from Encrypt.
+            format_version: req.format_version.unwrap_or(2) as u8,
             nonce: STANDARD
                 .decode(&req.nonce)
                 .map_err(|_| Status::invalid_argument("invalid base64 nonce"))?,

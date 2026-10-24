@@ -55,6 +55,11 @@ message EncryptResponse {
     string nonce = 2;
     string tag = 3;
     uint32 version = 4;
+    // format_version is echoed back so the caller can supply it on Decrypt.
+    // AEAD keys (SM4 / AES-256-GCM / HMAC-SHA256) seal with AAD bound to
+    // (key_id, tenant_id, version) at format_version 2; the decrypt side must
+    // reproduce the same AAD or the GCM tag check fails.
+    uint32 format_version = 5;
 }
 
 message DecryptRequest {
@@ -65,6 +70,10 @@ message DecryptRequest {
     bytes aad = 5;
     uint32 version = 6;
     string tenant_id = 7;
+    // Optional explicit ciphertext format. When unset the server assumes the
+    // current production format (2, AAD-bound); legacy 0/1 (empty AAD) can be
+    // requested explicitly by echoing the value returned from Encrypt.
+    optional uint32 format_version = 8;
 }
 
 message DecryptResponse {

@@ -133,6 +133,10 @@ pub struct EncryptResponse {
     pub nonce: String,
     /// Base64-encoded authentication tag
     pub tag: String,
+    /// Ciphertext format version. Echo back in `DecryptRequest.format_version`
+    /// so the server can reproduce the exact AAD used at encryption (AEAD keys
+    /// bind AAD to `(key_id, tenant_id, version)` at format 2).
+    pub format_version: u8,
 }
 
 /// Decrypt ciphertext using a key
@@ -147,6 +151,16 @@ pub struct DecryptRequest {
     /// Optional additional authenticated data (AAD) - must match encryption
     #[serde(default)]
     pub aad: Option<String>,
+    /// Ciphertext format version returned by `Encrypt`. Defaults to the current
+    /// production format (2, AAD-bound to `key_id/tenant_id/version`). Legacy
+    /// `format_version` 0/1 ciphertexts (empty AAD) must be decrypted by
+    /// echoing the value returned from `Encrypt`.
+    #[serde(default = "default_format_version")]
+    pub format_version: u8,
+}
+
+fn default_format_version() -> u8 {
+    2
 }
 
 /// Decryption response with plaintext
@@ -816,6 +830,7 @@ async fn encrypt(
         ciphertext: STANDARD.encode(&ciphertext.ciphertext),
         nonce: STANDARD.encode(&ciphertext.nonce),
         tag: STANDARD.encode(&ciphertext.tag),
+        format_version: ciphertext.format_version,
     }))
 }
 
@@ -844,7 +859,10 @@ async fn decrypt(
     let ciphertext = kms_core::key::Ciphertext {
         key_id: id,
         version: 1,
-        format_version: 0, // Legacy format
+        // Echo the caller-supplied format so the keystore reproduces the exact
+        // AAD used at encryption (format 2 binds AAD to key_id/tenant/version);
+        // defaults to 2 for current ciphertexts, legacy 0/1 via explicit echo.
+        format_version: req.format_version,
         nonce: STANDARD
             .decode(&req.nonce)
             .map_err(|_| ApiError::InvalidRequest("invalid base64 nonce".to_string()))?,
