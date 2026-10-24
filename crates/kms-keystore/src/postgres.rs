@@ -522,6 +522,27 @@ impl PostgresKeystore {
             .map_err(|e| Error::Internal(e.to_string()))
     }
 
+    /// Load the key material of a specific historical version (audit B7-c).
+    ///
+    /// The Postgres backend stores every rotation as its own key row, and the
+    /// archived material of a rotated-away key lives in `key_versions` under
+    /// that key's own id. A version that cannot be resolved is an error, never
+    /// the current material.
+    async fn material_for_version(&self, key_id: &Uuid, version: u32) -> Result<Vec<u8>> {
+        let row = self
+            .get_key_version(key_id, version)
+            .await?
+            .ok_or_else(|| {
+                Error::InvalidAlgorithm(format!("Key version {version} not found for key {key_id}"))
+            })?;
+        let encrypted = row.encrypted_dek.ok_or_else(|| {
+            Error::InvalidAlgorithm(format!(
+                "Key version {version} of key {key_id} has no stored material"
+            ))
+        })?;
+        self.decrypt_material(key_id, &encrypted)
+    }
+
     async fn crypto_encrypt(
         material: &[u8],
         spec: &KeySpec,
@@ -938,14 +959,53 @@ impl super::KeystoreBackend for PostgresKeystore {
             )));
         }
 
+        // Select the material for the requested version (audit B7-c): the
+        // current material is only correct for the current version. Falling
+        // back to it for a different version would silently decrypt with the
+        // wrong key and report a tag failure that looks like corruption.
+        let key_material = if ciphertext.version == entry.meta.version {
+            entry.material.as_slice().to_vec()
+        } else {
+            self.material_for_version(key_id, ciphertext.version)
+                .await?
+        };
+
         Self::crypto_decrypt(
-            &entry.material,
+            &key_material,
             &entry.meta.spec,
             ciphertext,
-            tenant_id,
+            // The format-2 AAD binds the *owning* tenant, exactly like the
+            // software backend (audit B7-c / M4). Using the request tenant
+            // here would make the two backends compute different AADs.
+            &entry.meta.tenant_id,
             _aad,
         )
         .await
+    }
+
+    /// Get the raw material of a specific key version (audit B7-c).
+    ///
+    /// The default trait implementation silently returns the *current*
+    /// material for every version, which made a versioned export return the
+    /// wrong key together with a matching fingerprint. This implementation
+    /// resolves the requested version and fails closed when it cannot.
+    async fn get_key_material_version(
+        &self,
+        key_id: &Uuid,
+        version: u32,
+        tenant_id: &str,
+    ) -> Result<Vec<u8>> {
+        self.verify_tenant(key_id, tenant_id).await?;
+        let entry = self
+            .keys
+            .get_cloned(key_id)
+            .ok_or_else(|| Error::KeyNotFound(key_id.to_string()))?;
+
+        if version == 0 || version == entry.meta.version {
+            return Ok(entry.material.as_slice().to_vec());
+        }
+
+        self.material_for_version(key_id, version).await
     }
 
     async fn sign(&self, key_id: &Uuid, data: &[u8], tenant_id: &str) -> Result<Signature> {

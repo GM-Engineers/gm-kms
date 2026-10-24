@@ -207,6 +207,24 @@ impl<B: KeystoreBackend + Send + Sync> KeystoreBackend for RedisCachedKeystore<B
         self.inner.get_key_material(key_id, tenant_id).await
     }
 
+    /// Delegate the version-aware material lookup to the inner backend
+    /// (audit B7-c).
+    ///
+    /// Without this override the wrapper inherited the trait's default
+    /// implementation, which ignores the requested version and returns the
+    /// *current* material. That silently shadowed the software backend's
+    /// correct version handling whenever the Redis cache was enabled.
+    async fn get_key_material_version(
+        &self,
+        key_id: &uuid::Uuid,
+        version: u32,
+        tenant_id: &str,
+    ) -> Result<Vec<u8>> {
+        self.inner
+            .get_key_material_version(key_id, version, tenant_id)
+            .await
+    }
+
     async fn derive_shared_secret(
         &self,
         key_id: &uuid::Uuid,

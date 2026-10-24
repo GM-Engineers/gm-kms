@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use kms_core::{
-    BackendType, Result,
+    BackendType, Error, Result,
     dh::{DhAlgorithm, SharedSecret},
     key::{Ciphertext, KeyMeta, KeySpec, Signature},
 };
@@ -102,15 +102,30 @@ pub trait KeystoreBackend: Send + Sync {
     /// Returns the key material at the given version. If version is 0 or matches
     /// the current version, returns the current material. For older versions,
     /// searches the version history.
+    ///
+    /// The default implementation serves the current version only and **fails
+    /// closed** for an older one: a backend without version history must not
+    /// hand out the current material for a historical request, because the
+    /// caller would silently receive the wrong key (audit B7-c). Backends that
+    /// keep a version history override this method.
     async fn get_key_material_version(
         &self,
         key_id: &Uuid,
         version: u32,
         tenant_id: &str,
     ) -> Result<Vec<u8>> {
-        // Default: delegate to current version (backends without version history)
-        let _ = version;
-        self.get_key_material(key_id, tenant_id).await
+        // `get_key_material` performs the tenant check.
+        let material = self.get_key_material(key_id, tenant_id).await?;
+        if version == 0 {
+            return Ok(material);
+        }
+        let meta = self.get_key_metadata(key_id).await?;
+        if meta.version == version {
+            return Ok(material);
+        }
+        Err(Error::InvalidAlgorithm(format!(
+            "Key version {version} not found for key {key_id}"
+        )))
     }
 
     /// Derive a shared secret using Diffie-Hellman key exchange

@@ -2180,3 +2180,91 @@ async fn test_pr14_aad_differs_across_tenants() {
     assert_eq!(&aad_b[..2], &kms_core::AAD_MAGIC);
     assert_eq!(&aad_b[2..4], &kms_core::AAD_VERSION.to_be_bytes());
 }
+
+/// audit B7-c: the version-aware material lookup must return the *historical*
+/// material for an old version, not the current one.
+///
+/// The trait's default implementation used to answer every version with the
+/// current material, which made a versioned export return the wrong key
+/// together with a matching fingerprint.
+#[tokio::test]
+async fn test_get_key_material_version_returns_historical_material() {
+    let store = SoftwareKeystore::new();
+
+    let meta = store
+        .generate_key(&KeySpec::Aes256Gcm, "version-material", "test-tenant")
+        .await
+        .unwrap();
+
+    let v1_material = store
+        .get_key_material_version(&meta.id, 1, "test-tenant")
+        .await
+        .expect("version 1 material");
+
+    // Rotate: version 2 becomes current, version 1 moves to the history.
+    store
+        .rotate_key(&meta.id, "test-tenant")
+        .await
+        .expect("rotate");
+
+    let current = store
+        .get_key_material_version(&meta.id, 2, "test-tenant")
+        .await
+        .expect("version 2 material");
+    let historical = store
+        .get_key_material_version(&meta.id, 1, "test-tenant")
+        .await
+        .expect("version 1 material after rotation");
+
+    assert_eq!(current.len(), 32);
+    assert_eq!(historical.len(), 32);
+    assert_ne!(
+        current, historical,
+        "the historical version must not be answered with the current material"
+    );
+    assert_eq!(
+        historical, v1_material,
+        "the historical version must be stable across the rotation"
+    );
+}
+
+/// audit B7-c: an unknown version must fail closed instead of returning the
+/// current material.
+#[tokio::test]
+async fn test_get_key_material_version_unknown_version_fails_closed() {
+    let store = SoftwareKeystore::new();
+
+    let meta = store
+        .generate_key(&KeySpec::Aes256Gcm, "version-unknown", "test-tenant")
+        .await
+        .unwrap();
+
+    let err = store
+        .get_key_material_version(&meta.id, 99, "test-tenant")
+        .await
+        .expect_err("an unknown version must fail closed");
+    assert!(
+        err.to_string().contains("version"),
+        "unexpected error: {err}"
+    );
+}
+
+/// audit B7-c: the version-aware lookup must respect the tenant boundary.
+#[tokio::test]
+async fn test_get_key_material_version_cross_tenant_rejected() {
+    let store = SoftwareKeystore::new();
+
+    let meta = store
+        .generate_key(&KeySpec::Aes256Gcm, "version-tenant", "tenant-a")
+        .await
+        .unwrap();
+
+    let err = store
+        .get_key_material_version(&meta.id, 1, "tenant-b")
+        .await
+        .expect_err("a cross-tenant version lookup must be rejected");
+    assert!(
+        err.to_string().contains("not found"),
+        "unexpected error: {err}"
+    );
+}

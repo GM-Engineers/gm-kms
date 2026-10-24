@@ -206,6 +206,44 @@ mod tests {
         assert!(err.contains("fault injected"));
     }
 
+    /// audit B7-c: a backend that does not keep a version history must fail
+    /// closed for a historical version instead of handing out the *current*
+    /// material (which would silently export the wrong key).
+    ///
+    /// `FaultWrappedKeystore` deliberately does not override
+    /// `get_key_material_version`, so it exercises the trait's default.
+    #[tokio::test]
+    async fn test_default_version_lookup_fails_closed_for_old_version() {
+        let (wrapper, _) = make_fault_keystore(0.0);
+
+        let meta = wrapper
+            .generate_key(&KeySpec::Aes256Gcm, "version-fail-closed", "tenant-a")
+            .await
+            .expect("generate key");
+        wrapper
+            .rotate_key(&meta.id, "tenant-a")
+            .await
+            .expect("rotate key");
+
+        // The current version resolves normally.
+        let current = wrapper
+            .get_key_material_version(&meta.id, 2, "tenant-a")
+            .await
+            .expect("current version must resolve");
+        assert_eq!(current.len(), 32);
+
+        // The historical version does not exist on this backend and must be
+        // reported as an error rather than answered with the current material.
+        let err = wrapper
+            .get_key_material_version(&meta.id, 1, "tenant-a")
+            .await
+            .expect_err("an unknown version must fail closed");
+        assert!(
+            err.to_string().contains("version"),
+            "unexpected error: {err}"
+        );
+    }
+
     #[tokio::test]
     async fn test_fault_wrapper_fail_decrypt() {
         let (wrapper, _) = make_fault_keystore(1.0);
