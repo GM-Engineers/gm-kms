@@ -1016,6 +1016,7 @@ pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()
                     kms_core::key::KeySpec::Ed25519 => 32,
                     kms_core::key::KeySpec::Ed448 => 57,
                     kms_core::key::KeySpec::HmacSha256 => 32,
+                    kms_core::key::KeySpec::Sm3Hmac => 32,
                     kms_core::key::KeySpec::Sm2 => 32,
                     kms_core::key::KeySpec::Sm4 => 16,
                     kms_core::key::KeySpec::Sm9Signing => 160,

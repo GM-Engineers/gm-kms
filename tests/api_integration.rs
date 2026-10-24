@@ -653,3 +653,91 @@ async fn decrypt_after_rotation_echoes_version_rest() {
         "round-trip plaintext mismatch"
     );
 }
+
+// =============================================================================
+// Batch 5: managed HMAC-SM3 (audit P2-1)
+// =============================================================================
+
+/// REST compute+verify round-trip over the dedicated /hmac endpoints, and that
+/// an AES key is rejected for HMAC (the MAC path is spec-gated, not a silent
+/// fallback onto AES-GCM).
+#[tokio::test]
+async fn hmac_sm3_compute_verify_rest() {
+    let (base, client, handle) = spawn_rest_server().await;
+    let tenant = "tenant-a";
+    let key_id = create_key(&client, &base, "mac-rest", "hmac-sm3", tenant).await;
+
+    let payload = STANDARD.encode(b"the quick brown fox");
+
+    // Compute
+    let resp = client
+        .post(format!("{base}/v1/keys/{key_id}/hmac?tenant_id={tenant}"))
+        .header(ADMIN_HEADER, ADMIN_SECRET)
+        .json(&json!({ "data": payload, "aad": null }))
+        .send()
+        .await
+        .expect("hmac send");
+    let status = resp.status();
+    let body: serde_json::Value = resp.json().await.expect("hmac json");
+    assert!(
+        status.is_success(),
+        "hmac compute should succeed: {status} body={body}"
+    );
+    let mac = body["mac"].as_str().expect("mac field").to_string();
+    assert_eq!(
+        STANDARD.decode(&mac).expect("decode mac").len(),
+        32,
+        "SM3 tag is 32 bytes"
+    );
+    assert_eq!(body["version"].as_u64(), Some(1), "fresh key version 1");
+
+    // Verify (correct)
+    let resp = client
+        .post(format!(
+            "{base}/v1/keys/{key_id}/hmac/verify?tenant_id={tenant}"
+        ))
+        .header(ADMIN_HEADER, ADMIN_SECRET)
+        .json(&json!({ "data": payload, "mac": mac, "aad": null }))
+        .send()
+        .await
+        .expect("hmac verify send");
+    let vbody: serde_json::Value = resp.json().await.expect("hmac verify json");
+    assert_eq!(
+        vbody["valid"].as_bool(),
+        Some(true),
+        "valid MAC must verify"
+    );
+
+    // Verify (tampered data)
+    let resp = client
+        .post(format!(
+            "{base}/v1/keys/{key_id}/hmac/verify?tenant_id={tenant}"
+        ))
+        .header(ADMIN_HEADER, ADMIN_SECRET)
+        .json(&json!({ "data": STANDARD.encode(b"tampered"), "mac": mac, "aad": null }))
+        .send()
+        .await
+        .expect("hmac verify tampered send");
+    let tbody: serde_json::Value = resp.json().await.expect("hmac verify tampered json");
+    assert_eq!(
+        tbody["valid"].as_bool(),
+        Some(false),
+        "MAC must not verify over altered data"
+    );
+
+    // A non-HMAC key must be rejected (spec gate), not silently MAC'd via AES-GCM.
+    let aes_id = create_key(&client, &base, "not-a-mac", "aes-256-gcm", tenant).await;
+    let resp = client
+        .post(format!("{base}/v1/keys/{aes_id}/hmac?tenant_id={tenant}"))
+        .header(ADMIN_HEADER, ADMIN_SECRET)
+        .json(&json!({ "data": payload, "aad": null }))
+        .send()
+        .await
+        .expect("hmac on aes send");
+    handle.abort();
+    assert!(
+        !resp.status().is_success(),
+        "HMAC over a non-SM3-HMAC key must be rejected: status={}",
+        resp.status()
+    );
+}

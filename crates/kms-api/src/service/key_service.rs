@@ -503,6 +503,7 @@ impl KeyService {
         match spec_str.to_lowercase().as_str() {
             "aes-256-gcm" | "aes256gcm" => Ok(KeySpec::Aes256Gcm),
             "hmac-sha256" | "hmacsha256" => Ok(KeySpec::HmacSha256),
+            "hmac-sm3" | "sm3-hmac" | "sm3hmac" => Ok(KeySpec::Sm3Hmac),
             "ecdsa-p256" | "ecdsap256" => Ok(KeySpec::EcdsaP256),
             "ecdsa-p384" | "ecdsap384" => Ok(KeySpec::EcdsaP384),
             "ed25519" => Ok(KeySpec::Ed25519),
@@ -565,6 +566,7 @@ mod tests {
         let specs = vec![
             "aes-256-gcm",
             "hmac-sha256",
+            "hmac-sm3",
             "ecdsa-p256",
             "ecdsa-p384",
             "ed25519",

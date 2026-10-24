@@ -7,12 +7,28 @@
 
 use crate::rotation::OperationCounter;
 use crate::{ApiError, KmsMetrics, KmsState, Result, quota::TenantQuotaTracker};
-use kms_core::key::{Ciphertext, KeyMeta, Signature};
+use kms_core::key::{Ciphertext, KeyMeta, KeySpec, Signature};
 use kms_core::sanitize::sanitize_for_log;
 use std::sync::Arc;
 use uuid::Uuid;
 
 use super::{IntoApiError, ServiceError};
+
+/// Build the HMAC-SM3 input, domain-separating an optional AAD with a 4-byte
+/// big-endian length prefix so `(aad, data)` cannot be confused with a bare
+/// concatenation of a different split. Empty/absent AAD MACs the data directly.
+fn build_mac_input(aad: Option<&[u8]>, data: &[u8]) -> Vec<u8> {
+    match aad {
+        Some(a) if !a.is_empty() => {
+            let mut buf = Vec::with_capacity(4 + a.len() + data.len());
+            buf.extend_from_slice(&(a.len() as u32).to_be_bytes());
+            buf.extend_from_slice(a);
+            buf.extend_from_slice(data);
+            buf
+        }
+        _ => data.to_vec(),
+    }
+}
 
 /// Service for cryptographic operations
 pub struct CryptoService {
@@ -285,6 +301,122 @@ impl CryptoService {
         );
 
         Ok(result)
+    }
+
+    /// Compute a managed HMAC-SM3 over `data` using an `Sm3Hmac` key (audit P2-1).
+    ///
+    /// The key material never leaves the keystore: it is fetched internally via
+    /// `get_key_material` and fed to `gm_crypto::sm3::Sm3Hmac`. An optional `aad`
+    /// is domain-separated into the MAC input (length-prefixed) so the same data
+    /// under a different context yields a different tag. Returns `(mac, version)`.
+    pub async fn hmac(
+        &self,
+        key_id: &uuid::Uuid,
+        data: &[u8],
+        aad: Option<&[u8]>,
+        tenant_id: &str,
+        user_id: &str,
+    ) -> Result<(Vec<u8>, u32)> {
+        let (meta, material) = self.prepare_hmac(key_id, tenant_id).await?;
+        let mac_input = build_mac_input(aad, data);
+
+        let mac = gm_crypto::sm3::Sm3Hmac::new(&material)
+            .compute(&mac_input)
+            .map_err(|e| ApiError::Internal(format!("hmac-sm3 failed: {e}")))?;
+
+        self.record_hmac_op("hmac", &meta.spec, key_id).await;
+        tracing::debug!(
+            "Key {} hmac ({} bytes) by user {}",
+            key_id,
+            data.len(),
+            sanitize_for_log(user_id)
+        );
+
+        Ok((mac, meta.version))
+    }
+
+    /// Verify a managed HMAC-SM3 tag over `data` (audit P2-1). The comparison is
+    /// constant-time and the key material is never returned.
+    pub async fn hmac_verify(
+        &self,
+        key_id: &uuid::Uuid,
+        data: &[u8],
+        aad: Option<&[u8]>,
+        expected_mac: &[u8],
+        tenant_id: &str,
+        user_id: &str,
+    ) -> Result<bool> {
+        let (meta, material) = self.prepare_hmac(key_id, tenant_id).await?;
+        let mac_input = build_mac_input(aad, data);
+
+        let valid = gm_crypto::sm3::Sm3Hmac::new(&material)
+            .verify(&mac_input, expected_mac)
+            .map_err(|e| ApiError::Internal(format!("hmac-sm3 verify failed: {e}")))?;
+
+        self.record_hmac_op("hmac_verify", &meta.spec, key_id).await;
+        tracing::debug!(
+            "Key {} hmac-verify by user {} => {valid}",
+            key_id,
+            sanitize_for_log(user_id)
+        );
+
+        Ok(valid)
+    }
+
+    /// Shared preamble for HMAC operations: quota check, ownership/existence
+    /// verification, `Sm3Hmac` spec enforcement, and internal material fetch.
+    async fn prepare_hmac(
+        &self,
+        key_id: &uuid::Uuid,
+        tenant_id: &str,
+    ) -> Result<(KeyMeta, Vec<u8>)> {
+        if let Some(ref tracker) = self.quota_tracker {
+            let quota_ok = tracker.record_request(tenant_id).await;
+            if let Err(quota_err) = quota_ok {
+                tracing::warn!(
+                    "Quota exceeded for tenant {}: {}",
+                    sanitize_for_log(tenant_id),
+                    quota_err
+                );
+                return Err(ApiError::QuotaExceeded {
+                    resource: quota_err.resource,
+                    current: quota_err.current,
+                    limit: quota_err.limit,
+                });
+            }
+        }
+
+        // Ownership + existence pre-check (mirrors sign/verify).
+        let meta = self.fetch_owned_key_meta(key_id, tenant_id).await?;
+
+        // Only managed HMAC-SM3 keys are accepted; reject misuse loudly rather
+        // than silently falling back to another algorithm.
+        if meta.spec != KeySpec::Sm3Hmac {
+            return Err(ApiError::InvalidRequest(format!(
+                "key {key_id} is {:?}, not an HMAC-SM3 key",
+                meta.spec
+            )));
+        }
+
+        // Fetch key material internally. HMAC keys are never exportable, so this
+        // uses the non-export-policy-checked accessor purely to compute the MAC;
+        // the raw bytes never reach the caller.
+        let material = self
+            .keystore
+            .get_key_material(key_id, tenant_id)
+            .await
+            .map_err(|e| ServiceError::from(e).into_api_error())?;
+
+        Ok((meta, material))
+    }
+
+    /// Metric/counter bookkeeping shared by HMAC compute and verify.
+    async fn record_hmac_op(&self, operation: &str, spec: &KeySpec, key_id: &uuid::Uuid) {
+        self.metrics.record_key_op_with_spec(operation, spec);
+        self.metrics.record_key_access(key_id);
+        if let Some(ref counter) = self.op_counter {
+            counter.increment(key_id).await;
+        }
     }
 }
 
@@ -993,6 +1125,129 @@ mod tests {
             !matches!(result2, Err(ApiError::KeyNotFound(_))),
             "correct-tenant attempt must NOT be conflated with cross-tenant; \
              must surface the underlying sign-disabled error"
+        );
+    }
+
+    // ── HMAC-SM3 managed MAC (audit P2-1) ──
+
+    #[test]
+    fn build_mac_input_without_aad_is_data_only() {
+        assert_eq!(build_mac_input(None, b"payload"), b"payload".to_vec());
+        assert_eq!(build_mac_input(Some(b""), b"payload"), b"payload".to_vec());
+    }
+
+    #[test]
+    fn build_mac_input_length_prefixes_aad() {
+        let out = build_mac_input(Some(b"ctx"), b"payload");
+        let mut expect = Vec::new();
+        expect.extend_from_slice(&(3u32).to_be_bytes());
+        expect.extend_from_slice(b"ctx");
+        expect.extend_from_slice(b"payload");
+        assert_eq!(out, expect);
+    }
+
+    #[tokio::test]
+    async fn hmac_sm3_round_trip_and_verify() {
+        let store = Arc::new(SoftwareKeystore::new());
+        let svc = build_test_service(store.clone(), None);
+        let meta = store
+            .generate_key(&KeySpec::Sm3Hmac, "mac-key", "test-tenant")
+            .await
+            .unwrap();
+        let key_id = meta.id;
+
+        let (mac, version) = svc
+            .hmac(&key_id, b"message", None, "test-tenant", "user1")
+            .await
+            .unwrap();
+        assert_eq!(version, 1);
+        assert_eq!(mac.len(), 32, "SM3 tag is 32 bytes");
+        assert!(
+            svc.hmac_verify(&key_id, b"message", None, &mac, "test-tenant", "user1")
+                .await
+                .unwrap(),
+            "valid MAC must verify"
+        );
+        assert!(
+            !svc.hmac_verify(&key_id, b"tampered", None, &mac, "test-tenant", "user1")
+                .await
+                .unwrap(),
+            "MAC must not verify over altered data"
+        );
+    }
+
+    #[tokio::test]
+    async fn hmac_aad_is_domain_separating() {
+        let store = Arc::new(SoftwareKeystore::new());
+        let svc = build_test_service(store.clone(), None);
+        let meta = store
+            .generate_key(&KeySpec::Sm3Hmac, "mac-aad", "test-tenant")
+            .await
+            .unwrap();
+        let key_id = meta.id;
+
+        let (mac_aad, _) = svc
+            .hmac(&key_id, b"msg", Some(b"ctx"), "test-tenant", "user1")
+            .await
+            .unwrap();
+        let (mac_plain, _) = svc
+            .hmac(&key_id, b"msg", None, "test-tenant", "user1")
+            .await
+            .unwrap();
+        assert_ne!(mac_aad, mac_plain, "AAD must change the MAC");
+        // Verify must supply the same AAD to succeed.
+        assert!(
+            svc.hmac_verify(
+                &key_id,
+                b"msg",
+                Some(b"ctx"),
+                &mac_aad,
+                "test-tenant",
+                "user1"
+            )
+            .await
+            .unwrap()
+        );
+        assert!(
+            !svc.hmac_verify(&key_id, b"msg", None, &mac_aad, "test-tenant", "user1")
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn hmac_rejects_non_hmac_key() {
+        let store = Arc::new(SoftwareKeystore::new());
+        let svc = build_test_service(store.clone(), None);
+        let meta = store
+            .generate_key(&KeySpec::Aes256Gcm, "aes-not-mac", "test-tenant")
+            .await
+            .unwrap();
+        let key_id = meta.id;
+
+        let result = svc
+            .hmac(&key_id, b"msg", None, "test-tenant", "user1")
+            .await;
+        assert!(
+            matches!(result, Err(ApiError::InvalidRequest(_))),
+            "AES key must be rejected for HMAC, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn hmac_cross_tenant_denied() {
+        let store = Arc::new(SoftwareKeystore::new());
+        let svc = build_test_service(store.clone(), None);
+        let meta = store
+            .generate_key(&KeySpec::Sm3Hmac, "mac-tenant", "tenant-a")
+            .await
+            .unwrap();
+        let key_id = meta.id;
+
+        let result = svc.hmac(&key_id, b"msg", None, "tenant-b", "user1").await;
+        assert!(
+            matches!(result, Err(ApiError::KeyNotFound(_))),
+            "cross-tenant hmac must return KeyNotFound, got {result:?}"
         );
     }
 }

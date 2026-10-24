@@ -37,7 +37,9 @@ pub fn validate_key_material(
         KeySpec::Sm2 => validate_sm2_key(material),
         KeySpec::Rsa4096 => validate_rsa_key(material),
         // Symmetric keys - only size validation
-        KeySpec::Aes256Gcm | KeySpec::HmacSha256 => validate_symmetric_key(material, 32),
+        KeySpec::Aes256Gcm | KeySpec::HmacSha256 | KeySpec::Sm3Hmac => {
+            validate_symmetric_key(material, 32)
+        }
         KeySpec::Sm4 => validate_symmetric_key(material, 16),
         // SM9 uses identity-based crypto, skip format validation
         KeySpec::Sm9Signing | KeySpec::Sm9Encryption => Ok(KeyValidationResult {

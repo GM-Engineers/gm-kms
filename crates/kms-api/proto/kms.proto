@@ -123,6 +123,33 @@ message VerifyResponse {
     bool valid = 1;
 }
 
+// Managed HMAC-SM3 messages (audit P2-1)
+message HmacRequest {
+    string key_id = 1;
+    bytes data = 2;
+    // Optional additional authenticated data, domain-separated (length-prefixed)
+    // into the MAC input. Must also be supplied to HmacVerify.
+    bytes aad = 3;
+    string tenant_id = 4;
+}
+
+message HmacResponse {
+    bytes mac = 1;
+    uint32 version = 2;
+}
+
+message HmacVerifyRequest {
+    string key_id = 1;
+    bytes data = 2;
+    bytes mac = 3;
+    bytes aad = 4;
+    string tenant_id = 5;
+}
+
+message HmacVerifyResponse {
+    bool valid = 1;
+}
+
 // SM9 Identity-Based Cryptography messages
 message Sm9SignRequest {
     string identity = 1;
@@ -328,6 +355,8 @@ service KMSService {
     rpc Decrypt(DecryptRequest) returns (DecryptResponse);
     rpc Sign(SignRequest) returns (SignResponse);
     rpc Verify(VerifyRequest) returns (VerifyResponse);
+    rpc Hmac(HmacRequest) returns (HmacResponse);
+    rpc HmacVerify(HmacVerifyRequest) returns (HmacVerifyResponse);
     rpc Hash(HashRequest) returns (HashResponse);
 
     // Envelope encryption

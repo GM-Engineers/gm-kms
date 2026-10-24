@@ -307,7 +307,7 @@ impl PostgresKeystore {
 
     fn generate_key_material(spec: &KeySpec) -> Result<Vec<u8>> {
         let len = match spec {
-            KeySpec::Aes256Gcm | KeySpec::HmacSha256 => 32,
+            KeySpec::Aes256Gcm | KeySpec::HmacSha256 | KeySpec::Sm3Hmac => 32,
             KeySpec::EcdsaP256 | KeySpec::EcdsaP384 | KeySpec::Ed25519 | KeySpec::Ed448 => 32,
             KeySpec::Sm4 => 16,
             KeySpec::Sm2 => 32,
@@ -1180,7 +1180,7 @@ impl super::KeystoreBackend for PostgresKeystore {
     ) -> Result<KeyMeta> {
         // Validate material size matches the spec
         let expected_size = match spec {
-            KeySpec::Aes256Gcm | KeySpec::HmacSha256 => 32,
+            KeySpec::Aes256Gcm | KeySpec::HmacSha256 | KeySpec::Sm3Hmac => 32,
             KeySpec::Sm4 => 16,
             KeySpec::Sm2 => 32,
             KeySpec::Ed25519 => 32,

@@ -177,6 +177,14 @@ pub fn get_algorithm_info(spec: KeySpec) -> Option<AlgorithmInfo> {
             nonce_size: 0,
             tag_size: 32,
         }),
+        KeySpec::Sm3Hmac => Some(AlgorithmInfo {
+            name: "HMAC-SM3",
+            is_symmetric: true,
+            is_asymmetric: false,
+            key_size: 32,
+            nonce_size: 0,
+            tag_size: 32,
+        }),
         _ => None,
     }
 }
@@ -201,7 +209,7 @@ pub fn is_signing_supported(spec: KeySpec) -> bool {
 /// Validate key material size for a given KeySpec
 pub fn validate_key_size(spec: KeySpec, key_size: usize) -> bool {
     match spec {
-        KeySpec::Aes256Gcm | KeySpec::HmacSha256 => key_size == 32,
+        KeySpec::Aes256Gcm | KeySpec::HmacSha256 | KeySpec::Sm3Hmac => key_size == 32,
         KeySpec::Sm4 => key_size == 16,
         KeySpec::Sm2 | KeySpec::Ed25519 | KeySpec::EcdsaP256 => key_size == 32,
         KeySpec::EcdsaP384 => key_size == 48,

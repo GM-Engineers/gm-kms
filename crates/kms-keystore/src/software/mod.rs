@@ -701,7 +701,7 @@ impl super::KeystoreBackend for SoftwareKeystore {
         let now = Utc::now();
 
         let material = match spec {
-            KeySpec::Aes256Gcm | KeySpec::HmacSha256 => self.generate_aes_key(),
+            KeySpec::Aes256Gcm | KeySpec::HmacSha256 | KeySpec::Sm3Hmac => self.generate_aes_key(),
             KeySpec::EcdsaP256 | KeySpec::EcdsaP384 | KeySpec::Ed25519 | KeySpec::Ed448 => {
                 self.generate_ed25519_key()
             }
@@ -1286,7 +1286,7 @@ impl super::KeystoreBackend for SoftwareKeystore {
         entry.versions.push((old_version, old_material));
 
         let new_material = match entry.meta.spec {
-            KeySpec::Aes256Gcm | KeySpec::HmacSha256 => self.generate_aes_key(),
+            KeySpec::Aes256Gcm | KeySpec::HmacSha256 | KeySpec::Sm3Hmac => self.generate_aes_key(),
             KeySpec::Sm4 => self.generate_sm4_key(),
             // PR-4.14 / P2-9: same Result-propagation as in
             // generate_key() above.

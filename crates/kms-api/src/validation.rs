@@ -26,6 +26,7 @@ const SUPPORTED_SPECS: &[&str] = &[
     "sm9-signing",
     "sm9-encryption",
     "hmac-sha256",
+    "hmac-sm3",
     "ed448",
     "rsa4096",
 ];

@@ -653,6 +653,72 @@ impl KmsService for KmsGrpcService {
         Ok(Response::new(VerifyResponse { valid }))
     }
 
+    async fn hmac(
+        &self,
+        request: Request<pb::HmacRequest>,
+    ) -> Result<Response<pb::HmacResponse>, Status> {
+        let (_, caller_id, caller_tenant) = check_permission(&request, Permission::ENCRYPT)?;
+        let req = request.into_inner();
+        let id = uuid::Uuid::parse_str(&req.key_id)
+            .map_err(|_| Status::invalid_argument("invalid key id"))?;
+        self.check_pbac(&caller_id, "hmac", &id.to_string()).await?;
+
+        // data/aad are proto `bytes`, already Vec<u8> (no base64 on the gRPC channel).
+        let aad = if req.aad.is_empty() {
+            None
+        } else {
+            Some(req.aad.as_slice())
+        };
+
+        let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
+        let tenant_id: &str = &tenant_id_owned;
+
+        let crypto = self.state.crypto_service();
+        let (mac, version) = crypto
+            .hmac(&id, &req.data, aad, tenant_id, &caller_id)
+            .await
+            .map_err(api_error_to_status)?;
+
+        // Log audit event (reuse the signing event type for MAC computation).
+        let event = kms_core::event::Event::key_signed(&id, &caller_id);
+        self.state.audit_logger.log_event(&event).await;
+
+        Ok(Response::new(pb::HmacResponse { mac, version }))
+    }
+
+    async fn hmac_verify(
+        &self,
+        request: Request<pb::HmacVerifyRequest>,
+    ) -> Result<Response<pb::HmacVerifyResponse>, Status> {
+        let (_, caller_id, caller_tenant) = check_permission(&request, Permission::ENCRYPT)?;
+        let req = request.into_inner();
+        let id = uuid::Uuid::parse_str(&req.key_id)
+            .map_err(|_| Status::invalid_argument("invalid key id"))?;
+        self.check_pbac(&caller_id, "hmac_verify", &id.to_string())
+            .await?;
+
+        let aad = if req.aad.is_empty() {
+            None
+        } else {
+            Some(req.aad.as_slice())
+        };
+
+        let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
+        let tenant_id: &str = &tenant_id_owned;
+
+        let crypto = self.state.crypto_service();
+        let valid = crypto
+            .hmac_verify(&id, &req.data, aad, &req.mac, tenant_id, &caller_id)
+            .await
+            .map_err(api_error_to_status)?;
+
+        // Log audit event (reuse the verify event type for MAC verification).
+        let event = kms_core::event::Event::key_verified(&id, &caller_id, valid);
+        self.state.audit_logger.log_event(&event).await;
+
+        Ok(Response::new(pb::HmacVerifyResponse { valid }))
+    }
+
     async fn sm9_sign(
         &self,
         request: Request<pb::Sm9SignRequest>,

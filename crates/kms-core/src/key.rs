@@ -22,6 +22,8 @@ pub enum KeySpec {
     Ed448,
     /// HMAC-SHA256 (also used for audit log signing)
     HmacSha256,
+    /// HMAC-SM3 managed MAC key (国密 SM3 密钥杂凑算法)
+    Sm3Hmac,
     /// SM2 signature key (国密非对称加密)
     Sm2,
     /// SM4 symmetric encryption (国密对称加密, 128-bit)
@@ -56,6 +58,7 @@ impl KeySpec {
             KeySpec::Ed25519 => "Ed25519",
             KeySpec::Ed448 => "Ed448",
             KeySpec::HmacSha256 => "HMAC-SHA256",
+            KeySpec::Sm3Hmac => "HMAC-SM3",
             KeySpec::Sm2 => "SM2",
             KeySpec::Sm4 => "SM4",
             KeySpec::Sm9Signing => "SM9-Signing",
@@ -80,7 +83,7 @@ impl KeySpec {
     pub fn is_symmetric(&self) -> bool {
         matches!(
             self,
-            KeySpec::Aes256Gcm | KeySpec::HmacSha256 | KeySpec::Sm4
+            KeySpec::Aes256Gcm | KeySpec::HmacSha256 | KeySpec::Sm3Hmac | KeySpec::Sm4
         )
     }
 
@@ -111,7 +114,7 @@ impl KeySpec {
     /// Get the default purpose for a key spec
     pub fn default_purpose(&self) -> KeyPurpose {
         match self {
-            KeySpec::HmacSha256 => KeyPurpose::AuditSigning,
+            KeySpec::HmacSha256 | KeySpec::Sm3Hmac => KeyPurpose::AuditSigning,
             KeySpec::Sm2
             | KeySpec::Ed25519
             | KeySpec::Ed448

@@ -228,7 +228,7 @@ impl SimulatedTpmKeystore {
     fn generate_key_material(spec: &KeySpec) -> Result<Vec<u8>> {
         let mut key = Vec::new();
         let len = match spec {
-            KeySpec::Aes256Gcm | KeySpec::HmacSha256 => 32,
+            KeySpec::Aes256Gcm | KeySpec::HmacSha256 | KeySpec::Sm3Hmac => 32,
             KeySpec::EcdsaP256 | KeySpec::EcdsaP384 | KeySpec::Ed25519 | KeySpec::Ed448 => 32,
             KeySpec::Sm4 => 16,
             KeySpec::Sm2 => 32,

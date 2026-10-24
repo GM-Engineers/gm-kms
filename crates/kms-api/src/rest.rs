@@ -50,7 +50,8 @@ use uuid::Uuid;
                       EnvelopeEncryptRequest, EnvelopeEncryptResponse,
                       EnvelopeDecryptRequest, EnvelopeDecryptResponse,
                       ImportKeyRequest, ImportKeyResponse,
-                      ExportKeyRequest, ExportKeyResponse))
+                      ExportKeyRequest, ExportKeyResponse,
+                      HmacRequest, HmacResponse, HmacVerifyRequest))
 )]
 pub struct ApiDoc;
 
@@ -236,6 +237,38 @@ pub struct VerifyRequest {
 pub struct VerifyResponse {
     /// Whether the signature is valid
     pub valid: bool,
+}
+
+/// Compute a managed HMAC-SM3 over data with an HMAC key (audit P2-1)
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct HmacRequest {
+    /// Base64-encoded data to MAC
+    pub data: String,
+    /// Optional base64-encoded additional authenticated data, domain-separated
+    /// into the MAC input (must also be supplied to `hmac/verify`).
+    #[serde(default)]
+    pub aad: Option<String>,
+}
+
+/// HMAC computation response
+#[derive(Debug, Serialize, ToSchema)]
+pub struct HmacResponse {
+    /// Base64-encoded MAC tag
+    pub mac: String,
+    /// Version of the HMAC key used
+    pub version: u32,
+}
+
+/// Verify a managed HMAC-SM3 tag over data
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct HmacVerifyRequest {
+    /// Base64-encoded data the MAC was computed over
+    pub data: String,
+    /// Base64-encoded MAC tag to verify
+    pub mac: String,
+    /// Optional base64-encoded AAD; must match the one used at computation
+    #[serde(default)]
+    pub aad: Option<String>,
 }
 
 /// Compute cryptographic hash of data
@@ -639,6 +672,8 @@ pub fn create_routes(state: Arc<KmsState>, api_key_config: ApiKeyConfig) -> Rout
         .route("/v1/keys/{id}/decrypt", post(decrypt))
         .route("/v1/keys/{id}/sign", post(sign))
         .route("/v1/keys/{id}/verify", post(verify))
+        .route("/v1/keys/{id}/hmac", post(hmac))
+        .route("/v1/keys/{id}/hmac/verify", post(hmac_verify))
         .route("/v1/hash", post(hash))
         .route("/v1/sm9/sign", post(sm9_sign))
         .route("/v1/sm9/verify", post(sm9_verify))
@@ -1147,6 +1182,97 @@ async fn verify(
     let valid = crypto.verify(&id, &data, &signature, tenant_id).await?;
 
     // Log audit event
+    let event = kms_core::event::Event::key_verified(&id, &caller_id, valid);
+    state.audit_logger.log_event(&event).await;
+
+    Ok(Json(VerifyResponse { valid }))
+}
+
+/// Compute a managed HMAC-SM3 over `data` with an `Sm3Hmac` key (audit P2-1).
+async fn hmac(
+    CallerId { key_id: caller_id }: CallerId,
+    State(state): State<Arc<KmsState>>,
+    Path(id): Path<Uuid>,
+    Query(tenant_query): Query<TenantQuery>,
+    BoundTenant(bound): BoundTenant,
+    Json(req): Json<HmacRequest>,
+) -> Result<Json<HmacResponse>> {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+
+    let tenant_id_owned = resolve_tenant(bound.as_deref(), &tenant_query.tenant_id);
+    let tenant_id: &str = &tenant_id_owned;
+
+    let data = STANDARD
+        .decode(&req.data)
+        .map_err(|_| ApiError::InvalidRequest("invalid base64 data".to_string()))?;
+    let aad = req
+        .aad
+        .as_deref()
+        .map(|s| {
+            STANDARD
+                .decode(s)
+                .map_err(|_| ApiError::InvalidRequest("invalid base64 aad".to_string()))
+        })
+        .transpose()?;
+
+    let crypto = state.crypto_service();
+    let (mac, version) = crypto
+        .hmac(&id, &data, aad.as_deref(), tenant_id, &caller_id)
+        .await?;
+
+    // Log audit event (reuse the signing event type for MAC computation).
+    let event = kms_core::event::Event::key_signed(&id, &caller_id);
+    state.audit_logger.log_event(&event).await;
+
+    Ok(Json(HmacResponse {
+        mac: STANDARD.encode(&mac),
+        version,
+    }))
+}
+
+/// Verify a managed HMAC-SM3 tag over `data` (audit P2-1).
+async fn hmac_verify(
+    CallerId { key_id: caller_id }: CallerId,
+    State(state): State<Arc<KmsState>>,
+    Path(id): Path<Uuid>,
+    Query(tenant_query): Query<TenantQuery>,
+    BoundTenant(bound): BoundTenant,
+    Json(req): Json<HmacVerifyRequest>,
+) -> Result<Json<VerifyResponse>> {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+
+    let tenant_id_owned = resolve_tenant(bound.as_deref(), &tenant_query.tenant_id);
+    let tenant_id: &str = &tenant_id_owned;
+
+    let data = STANDARD
+        .decode(&req.data)
+        .map_err(|_| ApiError::InvalidRequest("invalid base64 data".to_string()))?;
+    let expected_mac = STANDARD
+        .decode(&req.mac)
+        .map_err(|_| ApiError::InvalidRequest("invalid base64 mac".to_string()))?;
+    let aad = req
+        .aad
+        .as_deref()
+        .map(|s| {
+            STANDARD
+                .decode(s)
+                .map_err(|_| ApiError::InvalidRequest("invalid base64 aad".to_string()))
+        })
+        .transpose()?;
+
+    let crypto = state.crypto_service();
+    let valid = crypto
+        .hmac_verify(
+            &id,
+            &data,
+            aad.as_deref(),
+            &expected_mac,
+            tenant_id,
+            &caller_id,
+        )
+        .await?;
+
+    // Log audit event (reuse the verify event type for MAC verification).
     let event = kms_core::event::Event::key_verified(&id, &caller_id, valid);
     state.audit_logger.log_event(&event).await;
 
