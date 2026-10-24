@@ -838,11 +838,20 @@ async fn create_key(
 }
 
 async fn get_key(
+    CallerId { key_id: caller_id }: CallerId,
     State(state): State<Arc<KmsState>>,
     Path(id): Path<Uuid>,
     Query(tenant_query): Query<TenantQuery>,
     BoundTenant(bound): BoundTenant,
 ) -> Result<Json<KeyResponse>> {
+    // PBAC evaluation (audit B7-g): mirror the gRPC handler, which already
+    // checks the "get_key" action. Without this the attribute-based access
+    // control could be bypassed by switching from gRPC to REST.
+    use crate::auth::check_rest_pbac;
+    check_rest_pbac(&state.policy_engine, &caller_id, "get_key", &id.to_string())
+        .await
+        .map_err(|_| ApiError::PermissionDenied)?;
+
     let tenant_id_owned = resolve_tenant(bound.as_deref(), &tenant_query.tenant_id);
     let tenant_id: &str = &tenant_id_owned;
     let key_svc = state.key_service();
@@ -1135,6 +1144,14 @@ async fn sign(
 ) -> Result<Json<SignResponse>> {
     use base64::{Engine, engine::general_purpose::STANDARD};
 
+    // PBAC evaluation — the gRPC channel already checks this action, so
+    // omitting it here would let a client bypass the attribute-based control
+    // by switching protocol (audit follow-up B7-g).
+    use crate::auth::check_rest_pbac;
+    check_rest_pbac(&state.policy_engine, &caller_id, "sign", &id.to_string())
+        .await
+        .map_err(|_| ApiError::PermissionDenied)?;
+
     let tenant_id_owned = resolve_tenant(bound.as_deref(), &tenant_query.tenant_id);
     let tenant_id: &str = &tenant_id_owned;
 
@@ -1164,6 +1181,12 @@ async fn verify(
     Json(req): Json<VerifyRequest>,
 ) -> Result<Json<VerifyResponse>> {
     use base64::{Engine, engine::general_purpose::STANDARD};
+
+    // PBAC evaluation — mirror the gRPC handler (audit follow-up B7-g).
+    use crate::auth::check_rest_pbac;
+    check_rest_pbac(&state.policy_engine, &caller_id, "verify", &id.to_string())
+        .await
+        .map_err(|_| ApiError::PermissionDenied)?;
 
     let tenant_id_owned = resolve_tenant(bound.as_deref(), &tenant_query.tenant_id);
     let tenant_id: &str = &tenant_id_owned;
@@ -2383,6 +2406,17 @@ async fn envelope_encrypt(
     let kek_id = uuid::Uuid::parse_str(&req.kek_id)
         .map_err(|_| ApiError::InvalidRequest("invalid kek_id format".to_string()))?;
 
+    // PBAC evaluation — mirror the gRPC handler (audit follow-up B7-g).
+    use crate::auth::check_rest_pbac;
+    check_rest_pbac(
+        &state.policy_engine,
+        &caller_id,
+        "envelope_encrypt",
+        &kek_id.to_string(),
+    )
+    .await
+    .map_err(|_| ApiError::PermissionDenied)?;
+
     let plaintext = STANDARD
         .decode(&req.plaintext)
         .map_err(|_| ApiError::InvalidRequest("invalid base64 plaintext".to_string()))?;
@@ -2423,6 +2457,17 @@ async fn envelope_decrypt(
 
     let kek_id = uuid::Uuid::parse_str(&req.kek_id)
         .map_err(|_| ApiError::InvalidRequest("invalid kek_id format".to_string()))?;
+
+    // PBAC evaluation — mirror the gRPC handler (audit follow-up B7-g).
+    use crate::auth::check_rest_pbac;
+    check_rest_pbac(
+        &state.policy_engine,
+        &caller_id,
+        "envelope_decrypt",
+        &kek_id.to_string(),
+    )
+    .await
+    .map_err(|_| ApiError::PermissionDenied)?;
 
     // Use KEK version from request for version-aware decryption.
     // This allows decrypting data encrypted with an older KEK version after rotation.
@@ -2490,6 +2535,17 @@ async fn envelope_rewrap(
 
     let kek_id = uuid::Uuid::parse_str(&req.kek_id)
         .map_err(|_| ApiError::InvalidRequest("invalid kek_id format".to_string()))?;
+
+    // PBAC evaluation — mirror the gRPC handler (audit follow-up B7-g).
+    use crate::auth::check_rest_pbac;
+    check_rest_pbac(
+        &state.policy_engine,
+        &caller_id,
+        "envelope_rewrap",
+        &kek_id.to_string(),
+    )
+    .await
+    .map_err(|_| ApiError::PermissionDenied)?;
 
     let wrapped_dek = STANDARD
         .decode(&req.wrapped_dek)

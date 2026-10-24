@@ -900,6 +900,14 @@ struct DualStack {
 /// ports. The `admin` key is unbound, so both channels honour the self-reported
 /// tenant — letting a test drive the same tenant on both transports.
 async fn spawn_dual_stack() -> DualStack {
+    spawn_dual_stack_with_policies(Vec::new()).await
+}
+
+/// Same as [`spawn_dual_stack`], plus extra PBAC policies.
+///
+/// Both channels share one engine, so a policy that denies an action blocks
+/// the REST *and* the gRPC endpoint of that action (audit follow-up B7-g).
+async fn spawn_dual_stack_with_policies(extra_policies: Vec<Policy>) -> DualStack {
     let keystore = Arc::new(SoftwareKeystore::new());
 
     let engine = PBACEngine::new();
@@ -915,6 +923,9 @@ async fn spawn_dual_stack() -> DualStack {
         })
         .await
         .expect("add policy");
+    for policy in extra_policies {
+        engine.add_policy(policy).await.expect("add extra policy");
+    }
 
     let audit = Arc::new(AuditLogger::default());
     let sm9 = Sm9State::from_key(gm_sm9_rs::KgcMasterKey::generate().expect("sm9 master key"));
@@ -1714,5 +1725,223 @@ async fn b7g1_installed_policy_restores_default_deny() {
     assert_eq!(
         status, 403,
         "with a policy installed, requests that no policy covers must be denied"
+    );
+}
+
+// =============================================================================
+// Batch 7 / B7-g: REST must evaluate the same PBAC actions as gRPC
+//
+// The gRPC channel checked the attribute-based policy for every one of its 23
+// methods, but six REST endpoints did not evaluate it at all. A client that
+// was denied over gRPC could simply switch to REST and get through — the
+// protocol-switchable PBAC bypass (audit follow-up B7-g).
+//
+// The action names below are the ones the gRPC handlers use, verbatim.
+// =============================================================================
+
+/// The REST sign endpoint must honour the PBAC decision for the `sign` action.
+#[tokio::test]
+async fn b7g2_rest_sign_respects_pbac_deny() {
+    let (base, client, handle) =
+        spawn_rest_server_with_policies(vec![deny_action_policy("sign")]).await;
+    let tenant = "tenant-a";
+    let key_id = create_key(&client, &base, "pbac-sign-key", "sm2", tenant).await;
+
+    let resp = client
+        .post(format!("{base}/v1/keys/{key_id}/sign?tenant_id={tenant}"))
+        .header(ADMIN_HEADER, ADMIN_SECRET)
+        .json(&json!({ "data": STANDARD.encode(b"payload") }))
+        .send()
+        .await
+        .expect("sign send");
+    let status = resp.status();
+    handle.abort();
+
+    assert_eq!(
+        status, 403,
+        "a PBAC deny on the sign action must block the REST endpoint too"
+    );
+}
+
+/// The REST verify endpoint must honour the PBAC decision for `verify`.
+#[tokio::test]
+async fn b7g2_rest_verify_respects_pbac_deny() {
+    let (base, client, handle) =
+        spawn_rest_server_with_policies(vec![deny_action_policy("verify")]).await;
+    let tenant = "tenant-a";
+    let key_id = create_key(&client, &base, "pbac-verify-key", "sm2", tenant).await;
+
+    let resp = client
+        .post(format!("{base}/v1/keys/{key_id}/verify?tenant_id={tenant}"))
+        .header(ADMIN_HEADER, ADMIN_SECRET)
+        .json(&json!({
+            "data": STANDARD.encode(b"payload"),
+            "signature": STANDARD.encode([0u8; 64]),
+        }))
+        .send()
+        .await
+        .expect("verify send");
+    let status = resp.status();
+    handle.abort();
+
+    assert_eq!(
+        status, 403,
+        "a PBAC deny on the verify action must block the REST endpoint too"
+    );
+}
+
+/// The REST key-metadata endpoint must honour the PBAC decision for `get_key`.
+#[tokio::test]
+async fn b7g2_rest_get_key_respects_pbac_deny() {
+    let (base, client, handle) =
+        spawn_rest_server_with_policies(vec![deny_action_policy("get_key")]).await;
+    let tenant = "tenant-a";
+    let key_id = create_key(&client, &base, "pbac-get-key", "sm4", tenant).await;
+
+    let resp = client
+        .get(format!("{base}/v1/keys/{key_id}?tenant_id={tenant}"))
+        .header(ADMIN_HEADER, ADMIN_SECRET)
+        .send()
+        .await
+        .expect("get_key send");
+    let status = resp.status();
+    handle.abort();
+
+    assert_eq!(
+        status, 403,
+        "a PBAC deny on the get_key action must block the REST endpoint too"
+    );
+}
+
+/// The REST envelope-encrypt endpoint must honour `envelope_encrypt`.
+#[tokio::test]
+async fn b7g2_rest_envelope_encrypt_respects_pbac_deny() {
+    let (base, client, handle) =
+        spawn_rest_server_with_policies(vec![deny_action_policy("envelope_encrypt")]).await;
+    let tenant = "tenant-a";
+    let kek_id = create_key(&client, &base, "pbac-envelope-kek", "sm4", tenant).await;
+
+    let resp = client
+        .post(format!("{base}/v1/envelope/encrypt"))
+        .header(ADMIN_HEADER, ADMIN_SECRET)
+        .json(&json!({
+            "kek_id": kek_id,
+            "plaintext": STANDARD.encode(b"payload"),
+            "tenant_id": tenant,
+        }))
+        .send()
+        .await
+        .expect("envelope encrypt send");
+    let status = resp.status();
+    handle.abort();
+
+    assert_eq!(
+        status, 403,
+        "a PBAC deny on the envelope_encrypt action must block the REST endpoint too"
+    );
+}
+
+/// The REST envelope-decrypt endpoint must honour `envelope_decrypt`.
+#[tokio::test]
+async fn b7g2_rest_envelope_decrypt_respects_pbac_deny() {
+    let (base, client, handle) =
+        spawn_rest_server_with_policies(vec![deny_action_policy("envelope_decrypt")]).await;
+    let tenant = "tenant-a";
+    let kek_id = create_key(&client, &base, "pbac-envelope-decrypt-kek", "sm4", tenant).await;
+
+    let resp = client
+        .post(format!("{base}/v1/envelope/decrypt"))
+        .header(ADMIN_HEADER, ADMIN_SECRET)
+        .json(&json!({
+            "kek_id": kek_id,
+            "wrapped_dek": STANDARD.encode([0u8; 32]),
+            "dek_nonce": STANDARD.encode([0u8; 12]),
+            "ciphertext": STANDARD.encode([0u8; 32]),
+            "data_nonce": STANDARD.encode([0u8; 12]),
+            "tag": STANDARD.encode([0u8; 16]),
+            "kek_version": 1,
+            "tenant_id": tenant,
+        }))
+        .send()
+        .await
+        .expect("envelope decrypt send");
+    let status = resp.status();
+    handle.abort();
+
+    assert_eq!(
+        status, 403,
+        "a PBAC deny on the envelope_decrypt action must block the REST endpoint too"
+    );
+}
+
+/// The REST envelope-rewrap endpoint must honour `envelope_rewrap`.
+#[tokio::test]
+async fn b7g2_rest_envelope_rewrap_respects_pbac_deny() {
+    let (base, client, handle) =
+        spawn_rest_server_with_policies(vec![deny_action_policy("envelope_rewrap")]).await;
+    let tenant = "tenant-a";
+    let kek_id = create_key(&client, &base, "pbac-envelope-rewrap-kek", "sm4", tenant).await;
+
+    let resp = client
+        .post(format!("{base}/v1/envelope/rewrap"))
+        .header(ADMIN_HEADER, ADMIN_SECRET)
+        .json(&json!({
+            "kek_id": kek_id,
+            "wrapped_dek": STANDARD.encode([0u8; 32]),
+            "dek_nonce": STANDARD.encode([0u8; 12]),
+            "old_kek_version": 1,
+            "tenant_id": tenant,
+        }))
+        .send()
+        .await
+        .expect("envelope rewrap send");
+    let status = resp.status();
+    handle.abort();
+
+    assert_eq!(
+        status, 403,
+        "a PBAC deny on the envelope_rewrap action must block the REST endpoint too"
+    );
+}
+
+/// Switching protocol must not change the decision: one policy denies the
+/// `sign` action on both channels.
+#[tokio::test]
+async fn b7g2_protocol_switch_cannot_bypass_pbac() {
+    let mut stack = spawn_dual_stack_with_policies(vec![deny_action_policy("sign")]).await;
+    let tenant = "tenant-a";
+    let key_id = create_key(&stack.client, &stack.base, "pbac-parity-key", "sm2", tenant).await;
+
+    // REST must refuse.
+    let rest_url = format!("{}/v1/keys/{key_id}/sign?tenant_id={tenant}", stack.base);
+    let resp = stack
+        .client
+        .post(rest_url)
+        .header(ADMIN_HEADER, ADMIN_SECRET)
+        .json(&json!({ "data": STANDARD.encode(b"payload") }))
+        .send()
+        .await
+        .expect("rest sign send");
+    let rest_status = resp.status();
+
+    // gRPC must refuse as well.
+    let grpc_status = stack
+        .grpc
+        .sign(admin_req(pb::SignRequest {
+            key_id: key_id.clone(),
+            data: STANDARD.encode(b"payload"),
+            tenant_id: tenant.to_string(),
+        }))
+        .await
+        .expect_err("gRPC sign must be denied by the same policy");
+    assert_eq!(
+        grpc_status.code(),
+        tonic::Code::PermissionDenied,
+        "gRPC must refuse the denied action"
+    );
+
+    assert_eq!(
+        rest_status, 403,
+        "REST must refuse the denied action as well — switching protocol must not help"
     );
 }
