@@ -257,7 +257,15 @@ fn api_error_to_status(e: ApiError) -> Status {
         }
         ApiError::NotFound(msg) => Status::not_found(msg),
         ApiError::InvalidArgument(msg) => Status::invalid_argument(msg),
-        _ => Status::internal("internal server error"),
+        // The remaining variants used to fall into a catch-all arm and were
+        // reported as INTERNAL, while REST answers 403/400/429/501 for them.
+        // The two channels now agree (audit follow-up B7-g).
+        ApiError::PermissionDenied => Status::permission_denied("permission denied"),
+        ApiError::BadRequest(msg) => Status::invalid_argument(msg),
+        ApiError::TooManyRequests(msg) => Status::resource_exhausted(msg),
+        ApiError::NotImplemented => Status::unimplemented("not implemented"),
+        // No catch-all on purpose: a new `ApiError` variant must be mapped
+        // explicitly instead of silently becoming INTERNAL.
     }
 }
 
@@ -1450,5 +1458,27 @@ mod tests {
             .unwrap()
             .clone();
         assert_eq!(caller2.tenant_id, None);
+    }
+    /// The gRPC channel must map the same `ApiError` variants to the same
+    /// status codes as REST. The four variants below used to fall into the
+    /// catch-all arm and were reported as INTERNAL (audit follow-up B7-g).
+    #[test]
+    fn test_api_error_to_status_covers_every_variant() {
+        assert_eq!(
+            api_error_to_status(ApiError::PermissionDenied).code(),
+            tonic::Code::PermissionDenied
+        );
+        assert_eq!(
+            api_error_to_status(ApiError::BadRequest("bad".into())).code(),
+            tonic::Code::InvalidArgument
+        );
+        assert_eq!(
+            api_error_to_status(ApiError::TooManyRequests("slow down".into())).code(),
+            tonic::Code::ResourceExhausted
+        );
+        assert_eq!(
+            api_error_to_status(ApiError::NotImplemented).code(),
+            tonic::Code::Unimplemented
+        );
     }
 }

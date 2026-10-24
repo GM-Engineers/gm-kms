@@ -329,7 +329,7 @@ the server then derives the tenant from the credential and ignores any self-repo
 ```toml
 [[api_keys]]
 key_id = "acme-admin"                    # identifier used in audit trails
-role = "key-admin"                       # read-only | operator | key-admin | security-officer | audit-admin
+role = "key-admin"                       # read-only | operator | key-admin | security-officer | audit-admin | tenant-admin
 tenant = "acme"                          # bound tenant: the authoritative one
 secret_env = "KMS_API_KEY_ACME"          # secret lives in the environment, not in the file
 
@@ -351,9 +351,80 @@ Notes:
 - The secret is only read from `secret_env`; it is never stored in the configuration file.
 - A missing environment variable or an unknown role makes the **startup fail** rather than
   silently running with a weaker key.
+- An **empty** secret makes the startup fail as well: an empty `x-api-key` header is a valid
+  credential, so accepting one would let anybody authenticate.
+- Two keys must not share a secret, and two keys must not share a `key_id`; both make the
+  **startup fail**. A duplicate secret authenticates as whichever key is checked first, and a
+  duplicate key id breaks the revocation, which only revokes the first match.
 - Keys without a `tenant` produce a `warn` log line at startup, because they still rely on the
   tenant the caller reports.
 - `KMS_API_KEY` keeps working as the primary (unbound) key.
+
+#### Roles and the approval workflow
+
+| Role | May | Approval level |
+|------|-----|----------------|
+| `read-only` | list and read key metadata | `Single` |
+| `operator` | encrypt, decrypt, sign, verify, hash, DH | `Double` |
+| `key-admin` | key lifecycle (create, rotate, delete, import, export) | `Triple` |
+| `security-officer` | policies, API keys, MFA, **approvals**, audit view | `Manager` |
+| `audit-admin` | audit log view and export | `Single` |
+| `tenant-admin` | **approvals** only (tenant administration) | `Admin` |
+
+The approval level is what an approver contributes to a request. An operation fixes the level it
+requires (`key_export` → `Triple`, `high_value_key_create` → `Manager`, `tenant_admin` →
+`Admin`), and an approver whose level is **below** it is refused. Both the identity and the
+authority of the approver come from the API key — a client-supplied `approver_id` or
+`approver_role` in the request body is ignored (and logged as a warning).
+
+`tenant-admin` is the only role that reaches the `Admin` level, so it is the only role that can
+approve a `tenant_admin` request. It holds the approval permission and nothing else, so the
+three-officer separation (system admin / security admin / audit admin) stays intact.
+
+### Attribute-Based Access Control (PBAC)
+
+PBAC is an **additional** layer on top of the role-based check. The role check (the API key's
+permission bits) always runs first and PBAC can only restrict further — it can never grant
+access.
+
+Two states matter:
+
+- **No policy configured** — the server starts with an empty policy engine and loads no policy
+  at startup, so attribute-based control is *inactive* and the role check is the only gate. This
+  is the out-of-the-box state.
+- **At least one policy configured** — the engine denies every request that no policy covers, so
+  an allow-list policy means exactly that: only what the policies cover is permitted.
+
+A `Deny` policy always wins over an `Allow` policy for the same request.
+
+```bash
+# Install a policy: from then on the default-deny applies.
+curl -X POST http://127.0.0.1:8080/v1/policies \
+  -H "x-api-key: $KMS_API_KEY_SECURITY_OFFICER" \
+  -H 'content-type: application/json' \
+  -d '{
+        "name": "operators-may-not-export",
+        "effect": "deny",
+        "condition": {"operator": "eq", "attribute": "action", "value": "export_key"},
+        "resources": ["*"],
+        "subjects": ["*"]
+      }'
+```
+
+The policy management endpoints require the `security-officer` role (`MANAGE_POLICY`).
+
+Both protocol channels evaluate the same policies with the same action names, so switching
+between REST and gRPC cannot change the decision. The action names are:
+
+```
+create_key  get_key  list_keys  delete_key  rotate_key  import_key  export_key
+encrypt     decrypt  sign       verify      hmac       hmac_verify hash
+dh_derive   envelope_encrypt  envelope_decrypt  envelope_rewrap
+sm9_sign    sm9_verify  sm9_encrypt  sm9_decrypt  query_audit_events
+```
+
+The `action` attribute of a policy condition is matched against these names (see the example
+above).
 
 ## Troubleshooting
 

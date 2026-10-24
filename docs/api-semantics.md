@@ -51,12 +51,14 @@
 > ```toml
 > [[api_keys]]
 > key_id = "acme-admin"
-> role = "key-admin"          # read-only | operator | key-admin | security-officer | audit-admin
+> role = "key-admin"          # read-only | operator | key-admin | security-officer | audit-admin | tenant-admin
 > tenant = "acme"             # 绑定租户：服务端据此推导租户
 > secret_env = "KMS_API_KEY_ACME"   # 密钥存放于环境变量，不写入配置文件
 > ```
 >
 > 未绑定租户的 Key 启动时会打印 `warn` 日志（因为它仍依赖调用方自报租户）。
+>
+> 配置校验（audit B7-g）：空密钥、重复密钥、重复 `key_id` 均导致**启动失败**。
 
 ## 3. 错误映射
 
@@ -69,17 +71,18 @@
 | `InvalidRequest` | 400 | `INVALID_ARGUMENT` | ✅ |
 | `InvalidArgument` | 400 | `INVALID_ARGUMENT` | ✅ |
 | `Forbidden` | 403 | `PERMISSION_DENIED` | ✅ |
+| `PermissionDenied` | 403 | `PERMISSION_DENIED` | ✅（audit B7-g 补齐） |
+| `BadRequest` | 400 | `INVALID_ARGUMENT` | ✅（audit B7-g 补齐） |
+| `TooManyRequests` | 429 | `RESOURCE_EXHAUSTED` | ✅（audit B7-g 补齐） |
+| `NotImplemented` | 501 | `UNIMPLEMENTED` | ✅（audit B7-g 补齐） |
 | `QuotaExceeded` | 429 | `RESOURCE_EXHAUSTED` | ✅ |
 | `Internal` | 500（脱敏） | `INTERNAL`（脱敏） | ✅ |
-| `PermissionDenied` | 403 | `INTERNAL`（落入 `_` 兜底） | ⚠️ 分叉 |
-| `BadRequest` | 400 | `INTERNAL`（兜底） | ⚠️ 分叉 |
-| `TooManyRequests` | 429 | `INTERNAL`（兜底） | ⚠️ 分叉 |
-| `NotImplemented` | 501 | `INTERNAL`（兜底） | ⚠️ 分叉 |
 
-> ⚠️ 已知分叉（非本次修复范围，仅固化记录）：`grpc.rs::api_error_to_status` 未显式列出
-> 后四类，落入 `_ => Status::internal(...)` 兜底，导致 gRPC 侧把它们报为 `INTERNAL`
-> 而非 REST 对应的 403/400/429/501。建议后续（独立 PR）在 `api_error_to_status` 补齐映射，
-> 使两通道的错误语义完全对齐。核心业务码（上表 ✅ 行）当前已一致并有测试守护。
+> 此前 `PermissionDenied`/`BadRequest`/`TooManyRequests`/`NotImplemented` 在
+> `grpc.rs::api_error_to_status` 中落入 `_ => Status::internal(...)` 兜底，gRPC 侧报
+> `INTERNAL` 而 REST 报 403/400/429/501（audit B7-g 已补齐映射）。
+>
+> **不存在的密钥版本**统一走 `KeyNotFound` → 404（脱敏），两通道一致。
 
 ## 4. 导出语义（audit P2-5 / P2-6 / P2-2）
 
@@ -97,14 +100,18 @@
   当前生产格式为 **2**，其 AAD 绑定 `(key_id, tenant_id, version)`。
 - `Decrypt` 接受 `format_version`（缺省按 **2** 重算绑定 AAD）；`format_version` 0/1 为遗留空 AAD 密文，
   需显式回传以解密历史密文。
-- **缺省 `version` 的语义**（audit B7-d 更正）：
-  - REST：`version` 缺省为 **1**（`default_decrypt_version()`）。
+- **缺省 `version` 的语义**（audit B7-d 更正，audit B7-g 补齐 REST 侧）：
+  - REST：`version` 缺省为 **1**（`default_decrypt_version()`）；**显式传 `version: 0`
+    同样归一为 1**（audit B7-g）。
   - gRPC：proto3 无法区分“未设置”与 0，因此服务端将 `version == 0` 归一为 **1**，
     与 REST 一致（`grpc.rs::decrypt`）。
   - 两通道的缺省值相同，但**均不代表“当前版本”**：密钥轮换后（当前版本 > 1），
     解密历史密文必须回显 `Encrypt` 返回的 `version`；不回显会按版本 1 选材，
     从而解密失败（fail-closed，不会静默使用错误密钥）。
   - 例外：`version` 缺省仅对“密钥当前版本就是 1”的密文成立。
+- **不存在的密钥版本**是“资源不存在”，不是“算法非法”：后端统一返回
+  `Error::KeyVersionNotFound`，API 层脱敏为 **404 `key not found`**（audit B7-g）。
+  早期实现报 `InvalidAlgorithm`，会变成 400 并把内部文案回给客户端。
 
 ## 6. 托管 HMAC-SM3（audit P2-1）
 
@@ -134,15 +141,76 @@
 1. **一把 Key = 一票**。多方法人法定人数（如密钥导出的 `Triple`）需要**多把不同的 Key**，
    同一把 Key 重复提交不同 `approver_id` 不再计票。
 2. **角色不可自选**。审批人角色由 Key 权限映射（ReadOnly→User、Operator→Operator、
-   KeyAdmin→Manager、SecurityOfficer→SecurityOfficer、AuditAdmin→User）；
-   审批人级别低于操作所需级别时直接拒绝（403）。
+   KeyAdmin→Manager、SecurityOfficer→SecurityOfficer、AuditAdmin→User、
+   **TenantAdmin→Admin**）；审批人级别低于操作所需级别时直接拒绝（403）。
 3. **自助审批被拒**。请求方与审批人同为一把 Key 时，引擎的自审批保护生效（403）。
    取消请求同样只有发起方可用（他人 404）。
 
 另外，审批请求的资源必须属于该请求的租户，否则返回脱敏的 404（不泄露资源是否存在）。
 
+### 8.1 资源类型由操作推导（audit B7-g）
+
+`resource_type` **不是**请求体字段的特权：它由 `operation` 推导（`key_delete`/`key_export`/
+`key_rotate`/`high_value_key_create` → `key`，`policy_change` → `policy`，`audit_access` →
+`audit`，`mfa_change` → `mfa`，`tenant_admin` → `tenant`）。请求体里的 `resource_type`
+与推导值不一致时**告警并忽略**。
+
+> 原因：早期实现以请求体的 `resource_type` 决定是否做租户归属校验，调用方把密钥资源
+> 标成 `"policy"` 就能跳过校验，把审批绑定到别的租户的密钥上。
+
+### 8.2 `tenant_admin` 需要可达到的 `Admin` 级（audit B7-g）
+
+`tenant_admin` 操作要求 `ApprovalLevel::Admin`，而 `Role::Admin` 之前没有任何 API Key 角色
+能映射到（`read-only`/`operator`/`key-admin`/`security-officer`/`audit-admin` 只能到
+`Single`/`Double`/`Triple`/`Manager`/`Single`），于是该类请求**永远无法被批准**。
+新增 `tenant-admin` 角色（配置名 `tenant-admin`）映射到 `Role::Admin`；它只持有
+`APPROVE_ACTION` 权限，不持有策略/审计/MFA 管理权，三员分立不受影响。
+
+### 8.3 审批请求的可见性（audit B7-g）
+
+绑定租户的 Key 只能读取/列举**自己租户**的审批请求：跨租户读取返回脱敏 404，
+跨租户列举返回 403。未绑定租户的 Key 沿用本 API 其余部分的既有语义（自报租户）。
+
+### 8.4 错误不再被压平（audit B7-g）
+
+`reject` 路径此前把所有引擎错误（自审批、已投票、已过期、已终止）统一压成 404；
+现在与 `approve` 路径一样按 `ApprovalError` 映射（自审批 → 403 等）。
+
 > 兼容性：请求体中上述字段仍可发送（未知字段被忽略），服务端会记录 `warn` 日志提示
 > 这些字段不再生效；新客户端应停止发送。
+
+## 9. PBAC：两通道同源（audit B7-g）
+
+REST 与 gRPC 通过**同一个**求值入口（`kms_api::auth::evaluate_pbac`）评估属性策略，
+动作名与资源 id 逐字一致，共 23 个：
+
+```
+create_key  get_key  list_keys  delete_key  rotate_key  import_key  export_key
+encrypt     decrypt  sign       verify      hmac       hmac_verify hash
+dh_derive   envelope_encrypt  envelope_decrypt  envelope_rewrap
+sm9_sign    sm9_verify  sm9_encrypt  sm9_decrypt  query_audit_events
+```
+
+> 原因：早期 gRPC 对全部 23 个方法都做 PBAC 求值，而 REST 有 6 个端点
+> （`sign`/`verify`/`get_key`/`envelope_encrypt`/`envelope_decrypt`/`envelope_rewrap`）
+> **完全不做**求值——被 gRPC 拒绝的客户端换到 REST 即可绕过。
+
+### 9.1 空引擎 = 未启用（audit B7-g）
+
+策略引擎对“未被任何策略覆盖”的请求返回 `Deny`。而服务端启动时**不加载任何策略**，
+若直接沿用该语义，所有受 PBAC 保护的端点（含建钥、加密、解密）在**出厂状态下**
+一律 403，KMS 不可用。
+
+因此 API 层的语义分两种状态：
+
+| 策略数量 | 语义 |
+|----------|------|
+| 0（出厂状态） | 属性级控制**未启用**，RBAC（API Key 权限位）是唯一闸门 |
+| ≥ 1 | 引擎默认拒绝生效，未被覆盖的请求一律拒绝（allow-list 语义可用） |
+
+引擎自身的 `evaluate` 默认拒绝语义**未改动**；“空引擎不限制”只存在于 API 层的部署语义，
+两通道共用同一入口，因此不会出现一通道放行、另一通道拒绝的分叉。显式 `Deny` 策略始终优先
+于 `Allow`。
 
 ## 测试固化
 
@@ -152,4 +220,19 @@
 - 导出均为包裹语义（`wrapped_key` 非明文、含 `encrypted_transport_key`）；
 - 共享错误码（`KeyNotFound`/`InvalidRequest`/`Forbidden`）在两通道语义对齐。
 
-第 3 节的 ⚠️ 分叉行**不在**断言范围内，作为已知记录保留，待独立 PR 修复后并入。
+第 3 节曾经存在的 ⚠️ 分叉已在 audit B7-g 中消除（`api_error_to_status` 补齐四个变体），
+现在两通道的错误码完全对齐。
+
+### Batch 7 / B7-g 的固化用例
+
+| 前缀 | 覆盖的缺陷 |
+|------|-----------|
+| `b7g1_*` | 空策略引擎时服务端仍可用（PBAC 未启用）、RBAC 仍然生效、装入策略后恢复默认拒绝 |
+| `b7g2_*` | REST 六个端点的 PBAC 覆盖 + 跨协议一致性（同一策略同时拒绝 REST 与 gRPC） |
+| `b7g3_*` | 资源类型由操作推导、`tenant_admin` 可被批准、缺省租户为 `default`、reject 错误不被压平、跨租户不可读 |
+| `b7g4_*` | 无审批权限的 Key 不能审批 |
+| `b7g5_*` | 不存在的版本 → 404；REST `version: 0` 归一 |
+
+另：`crates/kms-api/src/auth.rs` 与 `crates/kms-policy/src/engine.rs` 的单测固化 PBAC 的
+引导语义与 `policy_count`；`src/cmd/server.rs` 的单测固化 API Key 配置校验；
+`crates/kms-core/src/backup.rs` 的单测固化主密钥文件的原子写与不跟随符号链接。
