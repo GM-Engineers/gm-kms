@@ -347,18 +347,19 @@ impl DestructionProof {
     }
     /// Compute HMAC signature for the destruction proof
     /// Hashes all fields except hmac_signature for deterministic output
+    ///
+    /// Uses HMAC-SM3 (国密) per audit P4-2, replacing the previous HMAC-SHA256.
     pub fn compute_hmac(&self, key: &[u8]) -> Vec<u8> {
-        use ring::hmac::{HMAC_SHA256, Key};
-        let signing_key = Key::new(HMAC_SHA256, key);
+        use gm_crypto::sm3::Sm3Hmac;
         // Serialize but exclude hmac_signature field for consistent hashing
         let mut value = serde_json::to_value(self).unwrap_or_default();
         if let Some(obj) = value.as_object_mut() {
             obj.remove("hmac_signature");
         }
         let data = serde_json::to_string(&value).unwrap_or_default();
-        ring::hmac::sign(&signing_key, data.as_bytes())
-            .as_ref()
-            .to_vec()
+        Sm3Hmac::new(key)
+            .compute(data.as_bytes())
+            .expect("SM3 HMAC computation should not fail")
     }
 
     /// Verify HMAC signature
@@ -371,11 +372,10 @@ impl DestructionProof {
             }
             let data = serde_json::to_string(&value).unwrap_or_default();
 
-            use ring::hmac::{HMAC_SHA256, Key};
-            let signing_key = Key::new(HMAC_SHA256, key);
-            let computed = ring::hmac::sign(&signing_key, data.as_bytes())
-                .as_ref()
-                .to_vec();
+            use gm_crypto::sm3::Sm3Hmac;
+            let computed = Sm3Hmac::new(key)
+                .compute(data.as_bytes())
+                .expect("SM3 HMAC computation should not fail");
 
             // Decode base64 signature and compare
             if let Ok(decoded_sig) =
