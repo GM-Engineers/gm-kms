@@ -98,6 +98,32 @@
 - 证明中的 `material_hash` 仍为 **SHA-256**（`hash_algorithm="SHA256"` 字段描述的是材料哈希，
   非签名 HMAC），两通道/各后端一致。
 
+## 8. 审批工作流：身份来自认证主体（audit B7-a）
+
+审批的**请求方、审批人、审批人角色**一律由服务端从**认证的 API Key** 推导，不再采信请求体：
+
+| 端点 | 服务端派生字段 | 请求体中的同名字段 |
+|------|----------------|---------------------|
+| `POST /v1/approvals` | `requestor_id` = 认证 Key 的 `key_id`；`tenant_id` 按 §2 规则解析 | `requestor_id` 忽略（仅告警） |
+| `POST /v1/approvals/{id}/approve` | `approver_id` = 认证 Key 的 `key_id`；角色 = 认证 Key 权限映射 | `approver_id` / `approver_role` 忽略（仅告警） |
+| `POST /v1/approvals/{id}/reject` | 同上 | `rejector_id` / `rejector_role` 忽略 |
+| `POST /v1/approvals/{id}/cancel` | `requestor_id` = 认证 Key 的 `key_id` | `requestor_id` 忽略 |
+
+由此得到三条硬性约束：
+
+1. **一把 Key = 一票**。多方法人法定人数（如密钥导出的 `Triple`）需要**多把不同的 Key**，
+   同一把 Key 重复提交不同 `approver_id` 不再计票。
+2. **角色不可自选**。审批人角色由 Key 权限映射（ReadOnly→User、Operator→Operator、
+   KeyAdmin→Manager、SecurityOfficer→SecurityOfficer、AuditAdmin→User）；
+   审批人级别低于操作所需级别时直接拒绝（403）。
+3. **自助审批被拒**。请求方与审批人同为一把 Key 时，引擎的自审批保护生效（403）。
+   取消请求同样只有发起方可用（他人 404）。
+
+另外，审批请求的资源必须属于该请求的租户，否则返回脱敏的 404（不泄露资源是否存在）。
+
+> 兼容性：请求体中上述字段仍可发送（未知字段被忽略），服务端会记录 `warn` 日志提示
+> 这些字段不再生效；新客户端应停止发送。
+
 ## 测试固化
 
 `tests/api_integration.rs` 的 `p43_*` 用例对同一批请求断言 REST 与 gRPC 的：

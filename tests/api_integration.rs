@@ -35,6 +35,22 @@ const OFFICER_SECRET: &str = "integration-officer-key-secret";
 const ACME_SECRET: &str = "integration-acme-key-secret";
 const ADMIN_HEADER: &str = "x-api-key";
 
+/// Distinct SecurityOfficer keys used as distinct approvers.
+///
+/// audit follow-up B7-a: the approver identity is derived from the
+/// authenticated API key, so one key = one vote. A multi-party quorum
+/// therefore requires several *different* keys, not one key replayed with
+/// different body-supplied names.
+const OFFICER_SECRETS: [&str; 3] = [
+    "integration-officer-1-secret",
+    "integration-officer-2-secret",
+    "integration-officer-3-secret",
+];
+
+/// An Operator key: authority level `Double`, which is **below** the `Triple`
+/// level a key export requires (audit follow-up B7-a).
+const OPERATOR_SECRET: &str = "integration-operator-key-secret";
+
 /// 起一个绑定随机 loopback 端口的 REST 服务器，返回 `http://addr` base URL 与
 /// 服务器后台任务句柄（调用方负责 abort）。
 async fn spawn_rest_server() -> (String, reqwest::Client, tokio::task::JoinHandle<()>) {
@@ -65,6 +81,15 @@ async fn spawn_rest_server() -> (String, reqwest::Client, tokio::task::JoinHandl
     let api_key_config = ApiKeyConfig::with_keys(vec![
         ApiKey::key_admin(ADMIN_SECRET.to_string()).with_key_id("admin".to_string()),
         ApiKey::security_officer(OFFICER_SECRET.to_string()).with_key_id("officer".to_string()),
+        // Distinct approver keys (audit follow-up B7-a): each key is one vote.
+        ApiKey::security_officer(OFFICER_SECRETS[0].to_string())
+            .with_key_id("officer-1".to_string()),
+        ApiKey::security_officer(OFFICER_SECRETS[1].to_string())
+            .with_key_id("officer-2".to_string()),
+        ApiKey::security_officer(OFFICER_SECRETS[2].to_string())
+            .with_key_id("officer-3".to_string()),
+        // Lower authority: may not approve a Triple-level (key export) request.
+        ApiKey::operator(OPERATOR_SECRET.to_string()).with_key_id("operator".to_string()),
         // Tenant-bound admin key (audit P1-3): server derives tenant="acme" from this
         // identity and ignores any self-reported tenant.
         ApiKey::key_admin(ACME_SECRET.to_string())
@@ -279,30 +304,90 @@ async fn create_approval(
     body["id"].as_str().expect("approval id").to_string()
 }
 
-/// Approve with `n` distinct approvers via the SecurityOfficer key (APPROVE_ACTION).
+/// Approve with `n` **distinct** approver keys (audit follow-up B7-a).
+///
+/// The server derives the approver identity from the authenticated API key,
+/// so every vote needs a *different* key; replaying one key with different
+/// body-supplied names no longer counts.
 async fn approve_n(client: &reqwest::Client, base: &str, approval_id: &str, n: usize) {
     for i in 0..n {
-        let resp = client
-            .post(format!("{base}/v1/approvals/{approval_id}/approve"))
-            .header(ADMIN_HEADER, OFFICER_SECRET)
-            .json(&json!({
-                "approver_id": format!("approver-{i}"),
-                "approver_role": "manager",
-                "comment": null,
-            }))
-            .send()
-            .await
-            .expect("approve send");
-        let status = resp.status();
-        let body: serde_json::Value = resp
-            .json()
-            .await
-            .unwrap_or_else(|_| json!({ "__nonjson": true }));
+        let secret = OFFICER_SECRETS[i % OFFICER_SECRETS.len()];
+        let (status, body) = approve_with(client, base, approval_id, secret, json!({})).await;
         assert!(
             status.is_success(),
             "approve[{i}] failed: {status} body={body}"
         );
     }
+}
+
+/// Approve with a specific API key and a specific request body.
+///
+/// Returns (status, body) so negative tests can assert on the exact outcome.
+async fn approve_with(
+    client: &reqwest::Client,
+    base: &str,
+    approval_id: &str,
+    secret: &str,
+    body: serde_json::Value,
+) -> (reqwest::StatusCode, serde_json::Value) {
+    let resp = client
+        .post(format!("{base}/v1/approvals/{approval_id}/approve"))
+        .header(ADMIN_HEADER, secret)
+        .json(&body)
+        .send()
+        .await
+        .expect("approve send");
+    let status = resp.status();
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .unwrap_or_else(|_| json!({ "__nonjson": true }));
+    (status, body)
+}
+
+/// Create a resource-bound approval request with a specific API key.
+///
+/// `extra` is merged into the request body so a test can still send
+/// client-supplied identity fields (which the server now ignores) and assert
+/// that they cannot be used to impersonate anybody.
+///
+/// Returns (status, body) so negative tests can assert on the exact outcome.
+#[allow(clippy::too_many_arguments)]
+async fn create_approval_with(
+    client: &reqwest::Client,
+    base: &str,
+    secret: &str,
+    operation: &str,
+    resource_id: &str,
+    resource_type: &str,
+    tenant: &str,
+    extra: serde_json::Value,
+) -> (reqwest::StatusCode, serde_json::Value) {
+    let mut body = json!({
+        "operation": operation,
+        "resource_id": resource_id,
+        "resource_type": resource_type,
+        "tenant_id": tenant,
+        "justification": "integration test",
+    });
+    if let (Some(obj), Some(extra_obj)) = (body.as_object_mut(), extra.as_object()) {
+        for (k, v) in extra_obj {
+            obj.insert(k.clone(), v.clone());
+        }
+    }
+    let resp = client
+        .post(format!("{base}/v1/approvals"))
+        .header(ADMIN_HEADER, secret)
+        .json(&body)
+        .send()
+        .await
+        .expect("create_approval send");
+    let status = resp.status();
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .unwrap_or_else(|_| json!({ "__nonjson": true }));
+    (status, body)
 }
 
 /// REST export; returns (status, body).
@@ -414,9 +499,11 @@ async fn export_key_rest_rejects_unbound_resource() {
     let (status, body) = export_key(&client, &base, &key_b, tenant, Some(&approval_id)).await;
     handle.abort();
 
-    assert!(
-        !(200..300).contains(&status) && status != 404,
-        "cross-resource export must be rejected by the approval gate (got {status}): body={body}"
+    // The approval gate answers with a plain 400 (InvalidRequest); assert the
+    // exact code so an internal error (500) cannot satisfy this test.
+    assert_eq!(
+        status, 400,
+        "cross-resource export must be rejected by the approval gate: body={body}"
     );
 }
 
@@ -446,11 +533,11 @@ async fn rotate_key_requires_approval() {
     let tenant = "tenant-a";
     let key_id = create_key(&client, &base, "rotate-me", "sm4", tenant).await;
 
-    // Without approval => rejected.
+    // Without approval => rejected (400: approval gate).
     let (no_appr_status, body1) = rotate_key(&client, &base, &key_id, tenant, None).await;
-    assert!(
-        !(200..300).contains(&no_appr_status),
-        "rotate without approval must be rejected: body={body1}"
+    assert_eq!(
+        no_appr_status, 400,
+        "rotate without approval must be rejected by the approval gate: body={body1}"
     );
 
     // With a bound, fully approved KeyRotate (Double => 2 approvers) => success.
@@ -1057,5 +1144,223 @@ async fn p43_cross_tenant_denied_on_both_channels() {
         err.code(),
         tonic::Code::NotFound,
         "gRPC cross-tenant uses the sanitized NOT_FOUND semantics"
+    );
+}
+
+// =============================================================================
+// Batch 7 / B7-a: approval identity must come from the authenticated API key
+//
+// Before this fix the requestor, the approver and the approver's role were all
+// taken from the request body. A single API key could therefore post three
+// approvals with three different body-supplied names and satisfy the
+// `Triple` quorum that a key export requires, and could cancel or reject
+// requests raised by other principals. These tests pin the fixed behaviour.
+// =============================================================================
+
+/// The core regression: one key replayed with different body-supplied approver
+/// names must NOT be able to forge a three-party quorum.
+#[tokio::test]
+async fn b7a_single_key_cannot_forge_multi_party_quorum() {
+    let (base, client, handle) = spawn_rest_server().await;
+    let tenant = "tenant-a";
+    let key_id = create_key(&client, &base, "quorum-key", "sm4", tenant).await;
+
+    let approval_id = create_approval(&client, &base, "key_export", &key_id, tenant).await;
+
+    // First vote with the officer key: legitimate, succeeds.
+    let (s1, b1) = approve_with(
+        &client,
+        &base,
+        &approval_id,
+        OFFICER_SECRETS[0],
+        json!({ "approver_id": "alice", "approver_role": "admin" }),
+    )
+    .await;
+    assert_eq!(s1, 200, "first approval must succeed: body={b1}");
+
+    // Second and third votes with the SAME key but different claimed names:
+    // the server derives the approver from the key, so the key has already
+    // voted and cannot vote again.
+    let (s2, b2) = approve_with(
+        &client,
+        &base,
+        &approval_id,
+        OFFICER_SECRETS[0],
+        json!({ "approver_id": "bob", "approver_role": "admin" }),
+    )
+    .await;
+    assert_eq!(
+        s2, 400,
+        "the same key must not be able to vote twice: body={b2}"
+    );
+
+    let (s3, b3) = approve_with(
+        &client,
+        &base,
+        &approval_id,
+        OFFICER_SECRETS[0],
+        json!({ "approver_id": "carol", "approver_role": "admin" }),
+    )
+    .await;
+    assert_eq!(
+        s3, 400,
+        "the same key must not be able to vote a third time: body={b3}"
+    );
+
+    // The quorum must therefore be incomplete: the export stays blocked.
+    let (status, body) = export_key(&client, &base, &key_id, tenant, Some(&approval_id)).await;
+    handle.abort();
+    assert_eq!(
+        status, 400,
+        "export must stay blocked without a real three-party quorum: body={body}"
+    );
+}
+
+/// The requestor is the authenticated key, so the same key cannot approve the
+/// request it raised (the engine's self-approval guard becomes meaningful).
+#[tokio::test]
+async fn b7a_self_approval_rejected() {
+    let (base, client, handle) = spawn_rest_server().await;
+    let tenant = "tenant-a";
+    let key_id = create_key(&client, &base, "self-approve-key", "sm4", tenant).await;
+
+    // The officer key raises the request, claiming a *different* requestor in
+    // the body...
+    let (status, body) = create_approval_with(
+        &client,
+        &base,
+        OFFICER_SECRETS[0],
+        "key_export",
+        &key_id,
+        "key",
+        tenant,
+        json!({ "requestor_id": "alice" }),
+    )
+    .await;
+    assert_eq!(status, 201, "approval request must be created: body={body}");
+    let approval_id = body["id"].as_str().expect("approval id").to_string();
+
+    // ...and then tries to approve it itself, claiming yet another name. The
+    // server derives both identities from the key, so the requestor and the
+    // approver are the same principal and the engine rejects the vote.
+    let (s, b) = approve_with(
+        &client,
+        &base,
+        &approval_id,
+        OFFICER_SECRETS[0],
+        json!({ "approver_id": "bob", "approver_role": "admin" }),
+    )
+    .await;
+    handle.abort();
+    assert_eq!(s, 403, "self-approval must be rejected with 403: body={b}");
+}
+
+/// An approver whose authority is below the level the operation requires must
+/// not be able to contribute a vote.
+///
+/// A tenant-admin operation requires the `Admin` level; a SecurityOfficer key
+/// maps to the `Manager` level, which is not enough. The approver *does* hold
+/// the `APPROVE_ACTION` permission, so this exercises the level gate itself
+/// and not the coarse route permission.
+#[tokio::test]
+async fn b7a_insufficient_authority_rejected() {
+    let (base, client, handle) = spawn_rest_server().await;
+    let tenant = "tenant-a";
+
+    let (status, body) = create_approval_with(
+        &client,
+        &base,
+        ADMIN_SECRET,
+        "tenant_admin",
+        "tenant-a-admin",
+        "policy",
+        tenant,
+        json!({ "requestor_id": "admin" }),
+    )
+    .await;
+    assert_eq!(status, 201, "approval request must be created: body={body}");
+    let approval_id = body["id"].as_str().expect("approval id").to_string();
+
+    // SecurityOfficer authority is `Manager`, below the required `Admin` level.
+    let (s, b) = approve_with(
+        &client,
+        &base,
+        &approval_id,
+        OFFICER_SECRETS[0],
+        json!({ "approver_id": "officer-1", "approver_role": "admin" }),
+    )
+    .await;
+    handle.abort();
+    assert_eq!(
+        s, 403,
+        "an approver below the required level must be rejected: body={b}"
+    );
+}
+
+/// Only the principal that raised an approval request may cancel it.
+#[tokio::test]
+async fn b7a_other_principal_cannot_cancel_request() {
+    let (base, client, handle) = spawn_rest_server().await;
+    let tenant = "tenant-a";
+    let key_id = create_key(&client, &base, "cancel-key", "sm4", tenant).await;
+
+    // The admin raises the request; the body claims to be "admin" so a
+    // body-driven implementation would let the attacker cancel it.
+    let (status, body) = create_approval_with(
+        &client,
+        &base,
+        ADMIN_SECRET,
+        "key_export",
+        &key_id,
+        "key",
+        tenant,
+        json!({ "requestor_id": "admin" }),
+    )
+    .await;
+    assert_eq!(status, 201, "approval request must be created: body={body}");
+    let approval_id = body["id"].as_str().expect("approval id").to_string();
+
+    // A different principal tries to cancel it while claiming to be the
+    // requestor.
+    let resp = client
+        .post(format!("{base}/v1/approvals/{approval_id}/cancel"))
+        .header(ADMIN_HEADER, OFFICER_SECRETS[0])
+        .json(&json!({ "requestor_id": "admin" }))
+        .send()
+        .await
+        .expect("cancel send");
+    let status = resp.status();
+    handle.abort();
+    assert_eq!(
+        status, 404,
+        "a foreign principal must not be able to cancel the request"
+    );
+}
+
+/// An approval request may not be raised for a key owned by another tenant.
+#[tokio::test]
+async fn b7a_approval_for_other_tenant_key_rejected() {
+    let (base, client, handle) = spawn_rest_server().await;
+
+    // A key owned by tenant-a...
+    let key_id = create_key(&client, &base, "other-tenant-key", "sm4", "tenant-a").await;
+
+    // ...cannot have an approval request raised for it by the tenant-bound
+    // "acme" key, and the error must not disclose that the key exists.
+    let (status, body) = create_approval_with(
+        &client,
+        &base,
+        ACME_SECRET,
+        "key_export",
+        &key_id,
+        "key",
+        "acme",
+        json!({ "requestor_id": "admin" }),
+    )
+    .await;
+    handle.abort();
+    assert_eq!(
+        status, 404,
+        "cross-tenant approval request must be rejected as not-found: body={body}"
     );
 }

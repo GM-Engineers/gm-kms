@@ -1,6 +1,6 @@
 //! REST API implementation using Axum
 
-use crate::auth::{ApiKeyConfig, BoundTenant, CallerId};
+use crate::auth::{ApiKeyConfig, ApiKeyPermission, BoundTenant, CallerId, CallerRole};
 use crate::mfa::{MAX_BACKUP_CODE_USES, MAX_TOTP_ATTEMPTS, MfaStatusResponse, TOTP_LOCKOUT_SECS};
 use crate::validation::{
     validate_create_key_request, validate_decrypt_request, validate_encrypt_request,
@@ -2018,29 +2018,85 @@ fn parse_operation(op: &str) -> Option<OperationType> {
     }
 }
 
-fn parse_role(role: &str) -> Role {
-    match role.to_lowercase().as_str() {
-        "user" => Role::User,
-        "operator" => Role::Operator,
-        "manager" => Role::Manager,
-        "admin" => Role::Admin,
-        "security_officer" => Role::SecurityOfficer,
-        _ => Role::User,
-    }
-}
-
 #[derive(Debug, Deserialize, ToSchema)]
 struct CreateApprovalReq {
     operation: String,
     resource_id: String,
     resource_type: String,
+    /// Tenant of the resource. Ignored when the API key carries a tenant
+    /// binding (the bound tenant is authoritative).
+    #[serde(default)]
     tenant_id: String,
+    /// Ignored: the requestor is derived from the authenticated API key
+    /// (audit follow-up B7-a). Kept in the schema for wire compatibility.
+    #[serde(default)]
     requestor_id: String,
     justification: Option<String>,
 }
 
+/// Map the authenticated API key's permission to an approval [`Role`].
+///
+/// The role is always derived from the credential, never from the request body,
+/// so a caller cannot claim a higher authority than its key holds
+/// (audit follow-up B7-a).
+fn role_from_permission(permission: ApiKeyPermission) -> Role {
+    match permission {
+        ApiKeyPermission::ReadOnly => Role::User,
+        ApiKeyPermission::Operator => Role::Operator,
+        ApiKeyPermission::KeyAdmin => Role::Manager,
+        ApiKeyPermission::SecurityOfficer => Role::SecurityOfficer,
+        ApiKeyPermission::AuditAdmin => Role::User,
+    }
+}
+
+/// Warn when a client still sends a client-side approval identity.
+///
+/// The server derives the requestor/approver from the authenticated API key
+/// (audit follow-up B7-a); the field is kept in the schema for wire
+/// compatibility but is not authoritative, so say so out loud instead of
+/// silently dropping it.
+fn warn_ignored_identity(field: &str, value: &str) {
+    if !value.is_empty() {
+        tracing::warn!(
+            ignored_field = field,
+            "client-supplied approval identity is ignored; the server derives it \
+             from the authenticated API key"
+        );
+    }
+}
+
+/// Verify that a key resource belongs to the given tenant.
+///
+/// Returns a sanitized "key not found" error when the resource is unknown or
+/// owned by another tenant, so the endpoint cannot be used to probe for
+/// key ids of other tenants (audit follow-up B7-a).
+async fn ensure_resource_tenant(
+    state: &KmsState,
+    resource_type: &str,
+    resource_id: &str,
+    tenant_id: &str,
+) -> Result<()> {
+    if !resource_type.eq_ignore_ascii_case("key") {
+        return Ok(());
+    }
+    let key_id = Uuid::parse_str(resource_id)
+        .map_err(|_| ApiError::InvalidRequest("invalid resource_id format".to_string()))?;
+    let meta = state
+        .keystore
+        .get_key_metadata(&key_id)
+        .await
+        .map_err(|_| ApiError::KeyNotFound(key_id.to_string()))?;
+    if meta.tenant_id != tenant_id {
+        // Sanitized: do not disclose that the key exists in another tenant.
+        return Err(ApiError::KeyNotFound(key_id.to_string()));
+    }
+    Ok(())
+}
+
 async fn create_approval_request(
     State(state): State<Arc<KmsState>>,
+    CallerId { key_id: caller }: CallerId,
+    BoundTenant(bound): BoundTenant,
     Json(req): Json<CreateApprovalReq>,
 ) -> Result<(StatusCode, Json<crate::approval::ApprovalRequestResponse>)> {
     let operation = parse_operation(&req.operation).ok_or_else(|| {
@@ -2048,7 +2104,19 @@ async fn create_approval_request(
     })?;
 
     let operation_name = req.operation.clone();
-    let requestor = req.requestor_id.clone();
+    // The requestor is the authenticated API key, never a client-supplied
+    // string: otherwise anyone could impersonate another requestor and
+    // bypass the engine's self-approval guard (audit follow-up B7-a).
+    warn_ignored_identity("requestor_id", &req.requestor_id);
+    let requestor = caller;
+
+    // Tenant: a key-bound tenant is authoritative; otherwise fall back to the
+    // self-reported tenant (same rule as the rest of the API).
+    let tenant_id = resolve_tenant(bound.as_deref(), &req.tenant_id);
+    let tenant_id = tenant_id.as_str();
+
+    // The approval must be bound to a resource this tenant actually owns.
+    ensure_resource_tenant(&state, &req.resource_type, &req.resource_id, tenant_id).await?;
 
     let response = {
         let mut approval = state.approval_manager.write();
@@ -2058,7 +2126,7 @@ async fn create_approval_request(
                 operation,
                 &req.resource_id,
                 &req.resource_type,
-                &req.tenant_id,
+                tenant_id,
                 &requestor,
                 req.justification,
                 None,
@@ -2129,26 +2197,60 @@ async fn get_approval_request(
 
 #[derive(Debug, Deserialize, ToSchema)]
 struct ApproveReq {
+    /// Ignored: the approver is derived from the authenticated API key
+    /// (audit follow-up B7-a). Kept in the schema for wire compatibility.
+    #[serde(default)]
     approver_id: String,
+    /// Ignored: the approver's authority is derived from the authenticated API
+    /// key (audit follow-up B7-a). Kept in the schema for wire compatibility.
+    #[serde(default)]
     approver_role: String,
     comment: Option<String>,
+}
+
+/// Map an approval engine error onto the API error surface.
+fn approval_error_to_api_error(e: kms_approval::ApprovalError) -> ApiError {
+    use kms_approval::ApprovalError;
+    match e {
+        ApprovalError::SelfApproval => {
+            ApiError::Forbidden("self-approval is not allowed".to_string())
+        }
+        ApprovalError::InsufficientApprovalLevel => {
+            ApiError::Forbidden("approver authority is insufficient for this operation".to_string())
+        }
+        ApprovalError::AlreadyVoted => {
+            ApiError::InvalidRequest("this approver has already voted on the request".to_string())
+        }
+        ApprovalError::RequestExpired => {
+            ApiError::InvalidRequest("approval request has expired".to_string())
+        }
+        ApprovalError::RequestNotFound | ApprovalError::RequestAlreadyCompleted => {
+            ApiError::NotFound("Approval request not found or already completed".to_string())
+        }
+        other => ApiError::Internal(other.to_string()),
+    }
 }
 
 async fn approve_request(
     State(state): State<Arc<KmsState>>,
     Path(request_id): Path<Uuid>,
+    CallerId { key_id: caller }: CallerId,
+    CallerRole(permission): CallerRole,
     Json(req): Json<ApproveReq>,
 ) -> Result<Json<crate::approval::ApprovalRequestResponse>> {
-    let role = parse_role(&req.approver_role);
-    let approver = req.approver_id.clone();
+    // The approver identity and its authority both come from the
+    // authenticated API key. Taking them from the request body would let a
+    // single key forge a multi-party quorum (audit follow-up B7-a).
+    warn_ignored_identity("approver_id", &req.approver_id);
+    warn_ignored_identity("approver_role", &req.approver_role);
+    let role = role_from_permission(permission);
+    let approver = caller;
 
     let response = {
         let mut approval = state.approval_manager.write();
         approval
             .approve(request_id, &approver, role, req.comment)
-            .ok_or_else(|| {
-                ApiError::NotFound("Approval request not found or already completed".to_string())
-            })?
+            .map_err(approval_error_to_api_error)?
     }; // approval dropped here
 
     // Log audit event
@@ -2160,7 +2262,13 @@ async fn approve_request(
 
 #[derive(Debug, Deserialize, ToSchema)]
 struct RejectReq {
+    /// Ignored: the rejector is derived from the authenticated API key
+    /// (audit follow-up B7-a).
+    #[serde(default)]
     rejector_id: String,
+    /// Ignored: the rejector's authority is derived from the authenticated API
+    /// key (audit follow-up B7-a).
+    #[serde(default)]
     rejector_role: String,
     reason: String,
 }
@@ -2168,10 +2276,16 @@ struct RejectReq {
 async fn reject_request(
     State(state): State<Arc<KmsState>>,
     Path(request_id): Path<Uuid>,
+    CallerId { key_id: caller }: CallerId,
+    CallerRole(permission): CallerRole,
     Json(req): Json<RejectReq>,
 ) -> Result<Json<crate::approval::ApprovalRequestResponse>> {
-    let role = parse_role(&req.rejector_role);
-    let rejector = req.rejector_id.clone();
+    // Identity and authority come from the credential, not the body
+    // (audit follow-up B7-a).
+    warn_ignored_identity("rejector_id", &req.rejector_id);
+    warn_ignored_identity("rejector_role", &req.rejector_role);
+    let role = role_from_permission(permission);
+    let rejector = caller;
     let reason = req.reason.clone();
 
     let response = {
@@ -2192,15 +2306,23 @@ async fn reject_request(
 
 #[derive(Debug, Deserialize, ToSchema)]
 struct CancelReq {
+    /// Ignored: only the authenticated key that created the request may
+    /// cancel it (audit follow-up B7-a).
+    #[serde(default)]
     requestor_id: String,
 }
 
 async fn cancel_request(
     State(state): State<Arc<KmsState>>,
     Path(request_id): Path<Uuid>,
+    CallerId { key_id: caller }: CallerId,
     Json(req): Json<CancelReq>,
 ) -> Result<Json<crate::approval::ApprovalRequestResponse>> {
-    let requestor = req.requestor_id.clone();
+    // Only the authenticated key that created the request may cancel it: the
+    // engine compares this identity with the stored requestor, and both are
+    // now server-derived (audit follow-up B7-a).
+    warn_ignored_identity("requestor_id", &req.requestor_id);
+    let requestor = caller;
 
     let response = {
         let mut approval = state.approval_manager.write();

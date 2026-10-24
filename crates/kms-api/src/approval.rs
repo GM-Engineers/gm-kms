@@ -3,7 +3,7 @@
 //! Approval types for API integration
 
 use crate::KmsMetrics;
-use kms_approval::{ApprovalEngine, ApprovalLevel, OperationType, Role};
+use kms_approval::{ApprovalEngine, ApprovalError, ApprovalLevel, OperationType, Role};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -64,14 +64,18 @@ impl ApprovalManager {
         self.engine.is_approved(request_id, operation, resource_id)
     }
 
-    /// Approve a request
+    /// Approve a request.
+    ///
+    /// Returns the engine error so the caller can distinguish a self-approval,
+    /// a duplicate vote, an insufficient authority level and a missing request
+    /// (audit follow-up B7-a) instead of collapsing them all into "not found".
     pub fn approve(
         &mut self,
         request_id: uuid::Uuid,
         approver_id: &str,
         approver_role: Role,
         comment: Option<String>,
-    ) -> Option<ApprovalRequestResponse> {
+    ) -> Result<ApprovalRequestResponse, ApprovalError> {
         let created_at = self
             .engine
             .get_request(request_id)
@@ -79,13 +83,12 @@ impl ApprovalManager {
             .map(|r| r.created_at);
         let request = self
             .engine
-            .approve(request_id, approver_id, approver_role, comment)
-            .ok()?;
+            .approve(request_id, approver_id, approver_role, comment)?;
         if let Some(created) = created_at {
             let duration = (chrono::Utc::now() - created).num_seconds().max(0) as u64;
             self.metrics.record_approval_chain_duration(duration);
         }
-        Some(request.into())
+        Ok(request.into())
     }
 
     /// Reject a request

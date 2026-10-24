@@ -40,6 +40,14 @@ pub struct CallerId {
 #[derive(Debug, Clone)]
 pub struct BoundTenant(pub Option<String>);
 
+/// Permission (role) of the authenticated API key.
+///
+/// Injected by the auth middleware alongside [`CallerId`]. Handlers that must
+/// not trust a client-supplied role (e.g. approval workflows, audit
+/// follow-up B7-a) read the authority from here instead of the request body.
+#[derive(Debug, Clone)]
+pub struct CallerRole(pub ApiKeyPermission);
+
 impl<S: Send + Sync> FromRequestParts<S> for BoundTenant {
     type Rejection = StatusCode;
 
@@ -50,6 +58,18 @@ impl<S: Send + Sync> FromRequestParts<S> for BoundTenant {
             .get::<BoundTenant>()
             .cloned()
             .unwrap_or(BoundTenant(None)))
+    }
+}
+
+impl<S: Send + Sync> FromRequestParts<S> for CallerRole {
+    type Rejection = StatusCode;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        parts
+            .extensions
+            .get::<CallerRole>()
+            .cloned()
+            .ok_or(StatusCode::UNAUTHORIZED)
     }
 }
 
@@ -752,12 +772,17 @@ async fn auth_middleware_with_permission(
                     // tenant from the authenticated key, independent of what the caller
                     // self-reports in query/body.
                     let bound_tenant = config.lookup_tenant(key);
+                    // Server-side authority of the authenticated key: handlers
+                    // must never take the caller's role from the request body
+                    // (audit follow-up B7-a).
+                    let permission = config.validate(key).unwrap_or(ApiKeyPermission::ReadOnly);
                     if config.has_permission(key, required) {
                         let mut request = request;
                         request.extensions_mut().insert(CallerId {
                             key_id: key_id.unwrap_or_else(|| "unknown".to_string()),
                         });
                         request.extensions_mut().insert(BoundTenant(bound_tenant));
+                        request.extensions_mut().insert(CallerRole(permission));
                         Ok(next.run(request).await)
                     } else {
                         Err(StatusCode::FORBIDDEN)

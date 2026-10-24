@@ -233,6 +233,13 @@ impl ApprovalEngine {
             return Err(ApprovalError::SelfApproval);
         }
 
+        // The approver's own authority must meet the level the operation
+        // requires. Otherwise a low-privilege approver could contribute a vote
+        // toward a high-privilege quorum (audit follow-up B7-a).
+        if approval_level < request.required_level {
+            return Err(ApprovalError::InsufficientApprovalLevel);
+        }
+
         // Check if already completed
         if request.status.isTerminal() {
             return Err(ApprovalError::RequestAlreadyCompleted);
@@ -271,7 +278,9 @@ impl ApprovalEngine {
         };
 
         request.approvals.push(record);
-        request.current_level = approval_level;
+        // Keep the highest level reached so far instead of the last approver's
+        // level, so a weaker approval cannot lower the recorded level.
+        request.current_level = request.current_level.max(approval_level);
 
         tracing::info!(
             approval_request_id = %request_id,
@@ -788,6 +797,96 @@ mod tests {
         assert_eq!(approved.status, ApprovalStatus::Approved);
         assert!(approved.completed_at.is_some());
         assert_eq!(approved.approvals.len(), 1);
+    }
+
+    /// An approver whose level is below the level the operation requires must
+    /// not be able to contribute a vote toward the quorum.
+    #[test]
+    fn test_approve_rejects_insufficient_level() {
+        let mut engine = ApprovalEngine::new();
+
+        // A key export requires `Triple` approval.
+        let request = engine
+            .create_request(
+                OperationType::KeyExport,
+                "key-123",
+                "key",
+                "tenant-1",
+                "user-1",
+                None,
+                ApprovalLevel::Triple,
+            )
+            .unwrap();
+
+        // `Role::User` only provides `Single` approval.
+        let result = engine.approve(request.id, "approver-1", Role::User, None);
+        assert!(
+            matches!(result, Err(ApprovalError::InsufficientApprovalLevel)),
+            "an under-privileged approver must be rejected, got {result:?}"
+        );
+
+        // The request must stay untouched (no vote recorded).
+        let stored = engine.get_request(request.id).unwrap();
+        assert!(stored.approvals.is_empty());
+        assert_eq!(stored.status, ApprovalStatus::Pending);
+    }
+
+    /// A sufficient approver is still accepted after the level gate.
+    #[test]
+    fn test_approve_accepts_sufficient_level() {
+        let mut engine = ApprovalEngine::new();
+
+        let request = engine
+            .create_request(
+                OperationType::KeyExport,
+                "key-123",
+                "key",
+                "tenant-1",
+                "user-1",
+                None,
+                ApprovalLevel::Triple,
+            )
+            .unwrap();
+
+        // `Role::Manager` provides `Triple` approval.
+        let partial = engine.approve(request.id, "approver-1", Role::Manager, None);
+        assert!(partial.is_ok(), "a sufficient approver must be accepted");
+        assert_eq!(partial.unwrap().status, ApprovalStatus::Pending);
+    }
+
+    /// The recorded level must not be lowered by a later, weaker approval.
+    #[test]
+    fn test_current_level_keeps_the_highest_level() {
+        let mut engine = ApprovalEngine::new();
+
+        let request = engine
+            .create_request(
+                OperationType::KeyDelete,
+                "key-123",
+                "key",
+                "tenant-1",
+                "user-1",
+                None,
+                ApprovalLevel::Double,
+            )
+            .unwrap();
+
+        // First an Admin-level approval, then a Double-level one.
+        engine
+            .approve(request.id, "approver-1", Role::Admin, None)
+            .unwrap();
+        let stored = engine.get_request(request.id).unwrap();
+        assert_eq!(stored.current_level, ApprovalLevel::Admin);
+
+        engine
+            .approve(request.id, "approver-2", Role::Operator, None)
+            .unwrap();
+        let stored = engine.get_request(request.id).unwrap();
+        assert_eq!(
+            stored.current_level,
+            ApprovalLevel::Admin,
+            "a weaker later approval must not lower the recorded level"
+        );
     }
 
     #[test]
