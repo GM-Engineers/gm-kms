@@ -4,7 +4,7 @@
 
 use crate::KmsMetrics;
 use kms_approval::{ApprovalEngine, ApprovalError, ApprovalLevel, OperationType, Role};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::sync::Arc;
 
 /// Approval Manager for handling approval workflow operations
@@ -228,94 +228,9 @@ fn level_to_string(level: ApprovalLevel) -> String {
     }
 }
 
-/// Create approval request
-#[derive(Debug, Deserialize)]
-pub struct CreateApprovalRequest {
-    pub operation: String,
-    pub resource_id: String,
-    pub resource_type: String,
-    pub tenant_id: String,
-    pub requestor_id: String,
-    pub justification: Option<String>,
-    pub required_level: Option<String>,
-}
-
-impl CreateApprovalRequest {
-    pub fn to_operation(&self) -> Option<OperationType> {
-        match self.operation.to_lowercase().as_str() {
-            "key_delete" | "keydelete" => Some(OperationType::KeyDelete),
-            "key_export" | "keyexport" => Some(OperationType::KeyExport),
-            "key_rotate" | "keyrotate" => Some(OperationType::KeyRotate),
-            "policy_change" | "policychange" => Some(OperationType::PolicyChange),
-            "high_value_key_create" | "highvaluekeycreate" => {
-                Some(OperationType::HighValueKeyCreate)
-            }
-            "audit_access" | "auditaccess" => Some(OperationType::AuditAccess),
-            "mfa_change" | "mfachange" => Some(OperationType::MfaChange),
-            "tenant_admin" | "tenantadmin" => Some(OperationType::TenantAdmin),
-            _ => None,
-        }
-    }
-
-    pub fn to_level(&self) -> Option<ApprovalLevel> {
-        self.required_level
-            .as_ref()
-            .and_then(|l| match l.to_lowercase().as_str() {
-                "none" => Some(ApprovalLevel::None),
-                "single" => Some(ApprovalLevel::Single),
-                "double" => Some(ApprovalLevel::Double),
-                "triple" => Some(ApprovalLevel::Triple),
-                "manager" => Some(ApprovalLevel::Manager),
-                "admin" => Some(ApprovalLevel::Admin),
-                _ => None,
-            })
-    }
-}
-
-/// Approve request
-#[derive(Debug, Deserialize)]
-pub struct ApproveRequest {
-    pub approver_id: String,
-    pub approver_role: String,
-    pub comment: Option<String>,
-}
-
-impl ApproveRequest {
-    pub fn to_role(&self) -> kms_approval::Role {
-        match self.approver_role.to_lowercase().as_str() {
-            "user" => kms_approval::Role::User,
-            "operator" => kms_approval::Role::Operator,
-            "manager" => kms_approval::Role::Manager,
-            "admin" => kms_approval::Role::Admin,
-            "security_officer" | "securityofficer" => kms_approval::Role::SecurityOfficer,
-            _ => kms_approval::Role::User,
-        }
-    }
-}
-
-/// Reject request
-#[derive(Debug, Deserialize)]
-pub struct RejectRequest {
-    pub rejector_id: String,
-    pub rejector_role: String,
-    pub reason: String,
-}
-
-impl RejectRequest {
-    pub fn to_role(&self) -> kms_approval::Role {
-        match self.rejector_role.to_lowercase().as_str() {
-            "user" => kms_approval::Role::User,
-            "operator" => kms_approval::Role::Operator,
-            "manager" => kms_approval::Role::Manager,
-            "admin" => kms_approval::Role::Admin,
-            "security_officer" | "securityofficer" => kms_approval::Role::SecurityOfficer,
-            _ => kms_approval::Role::User,
-        }
-    }
-}
-
-/// Cancel request
-#[derive(Debug, Deserialize)]
-pub struct CancelRequest {
-    pub requestor_id: String,
-}
+// The request DTOs that used to live here (`CreateApprovalRequest`,
+// `ApproveRequest`, `RejectRequest`, `CancelRequest`) and their `to_role()`
+// helpers were removed in audit follow-up B7-g: they took the approver's
+// identity and authority from the request body, which is exactly the forgery
+// the approval workflow must not allow. The server derives both from the
+// authenticated API key (see `rest::role_from_permission`).

@@ -29,10 +29,7 @@ mod proptests;
 #[cfg(test)]
 pub(crate) mod test_utils;
 
-pub use approval::{
-    ApprovalManager, ApprovalRequestResponse, ApproveRequest, CancelRequest, CreateApprovalRequest,
-    RejectRequest,
-};
+pub use approval::{ApprovalManager, ApprovalRequestResponse};
 pub use auth::ApiKey;
 pub use auth::ApiKeyConfig;
 pub use auth::{ApiKeyPermission, Permission};

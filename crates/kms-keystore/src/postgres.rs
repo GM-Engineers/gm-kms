@@ -532,12 +532,10 @@ impl PostgresKeystore {
         let row = self
             .get_key_version(key_id, version)
             .await?
-            .ok_or_else(|| {
-                Error::InvalidAlgorithm(format!("Key version {version} not found for key {key_id}"))
-            })?;
+            .ok_or_else(|| Error::KeyVersionNotFound(format!("{key_id} (version {version})")))?;
         let encrypted = row.encrypted_dek.ok_or_else(|| {
-            Error::InvalidAlgorithm(format!(
-                "Key version {version} of key {key_id} has no stored material"
+            Error::KeyVersionNotFound(format!(
+                "{key_id} (version {version} has no stored material)"
             ))
         })?;
         self.decrypt_material(key_id, &encrypted)

@@ -48,6 +48,10 @@ impl IntoApiError for ServiceError {
     fn into_api_error(self) -> ApiError {
         match self {
             ServiceError::KeyNotFound(id) => ApiError::KeyNotFound(id),
+            // A missing version is a missing resource: answer 404 with the
+            // sanitized "key not found" message, and keep the detail in the
+            // server log (audit follow-up B7-g).
+            ServiceError::KeyVersionNotFound(id) => ApiError::KeyNotFound(id),
             ServiceError::KeyOperationNotAllowed(msg) => ApiError::Forbidden(msg),
             ServiceError::InvalidCiphertext => {
                 ApiError::InvalidRequest("invalid ciphertext".to_string())

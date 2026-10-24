@@ -2218,3 +2218,61 @@ async fn b7g4_operator_cannot_approve() {
         "a key without the approve permission must not be able to approve: body={body}"
     );
 }
+
+// =============================================================================
+// Batch 7 / B7-g: version semantics
+//
+//  * a missing key version is a missing resource (404), not an invalid
+//    algorithm (400);
+//  * the REST channel normalises an explicit `version: 0` to the same default
+//    the gRPC channel uses, so both protocols behave identically.
+// =============================================================================
+
+/// A version that does not exist must be reported as "not found", not as an
+/// invalid algorithm.
+#[tokio::test]
+async fn b7g5_unknown_key_version_is_not_found() {
+    let (base, client, handle) = spawn_rest_server().await;
+    let tenant = "tenant-a";
+    let key_id = create_key(&client, &base, "key-b7g5-version", "sm4", tenant).await;
+
+    let (ct, nonce, tag) = encrypt(&client, &base, &key_id, tenant, b"payload").await;
+
+    // Version 99 was never created.
+    let (ok, _, body) =
+        decrypt_with_version(&client, &base, &key_id, tenant, &ct, &nonce, &tag, 2, 99).await;
+    handle.abort();
+    assert!(!ok, "an unknown version must not decrypt: body={body}");
+    assert_eq!(
+        body["error"], "key not found",
+        "an unknown key version must be reported as not found: body={body}"
+    );
+}
+
+/// An explicit `version: 0` means "unset" and must behave like the default
+/// (version 1) — the same normalisation the gRPC channel performs.
+#[tokio::test]
+async fn b7g5_rest_version_zero_behaves_like_the_default() {
+    let (base, client, handle) = spawn_rest_server().await;
+    let tenant = "tenant-a";
+    let key_id = create_key(&client, &base, "key-b7g5-zero", "sm4", tenant).await;
+
+    let plaintext = b"version zero";
+    let (ct, nonce, tag) = encrypt(&client, &base, &key_id, tenant, plaintext).await;
+
+    // The default (the field absent) works...
+    let (ok, got, body) =
+        decrypt_with_version(&client, &base, &key_id, tenant, &ct, &nonce, &tag, 2, 1).await;
+    assert!(ok, "decrypt with the default version failed: body={body}");
+    assert_eq!(got.expect("plaintext"), plaintext);
+
+    // ...and an explicit 0 must behave exactly the same.
+    let (ok, got, body) =
+        decrypt_with_version(&client, &base, &key_id, tenant, &ct, &nonce, &tag, 2, 0).await;
+    handle.abort();
+    assert!(
+        ok,
+        "an explicit version 0 must be normalised to the default, like the gRPC channel does: body={body}"
+    );
+    assert_eq!(got.expect("plaintext"), plaintext);
+}

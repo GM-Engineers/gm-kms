@@ -171,33 +171,102 @@ pub struct EncryptedMasterKey {
 
 /// Write `content` to `path` with owner-only permissions (audit B7-f).
 ///
-/// The restrictive mode is applied **at creation time** on unix, so the file
-/// is never briefly world-readable. An existing file is tightened *before* the
-/// new content is written.
+/// The content is written to a temporary file in the same directory and then
+/// renamed over the target:
+///
+/// * the restrictive mode is applied **at creation time**, so the file is
+///   never briefly world-readable;
+/// * the write is atomic — a reader never observes a half-written file;
+/// * the rename replaces a symlink instead of following it, so a symlinked
+///   path cannot redirect the write (or the permission change) to another
+///   file (audit follow-up B7-g).
+///
+/// The temporary file name carries random bytes so that it cannot be
+/// predicted (and pre-created) by another user of the same directory.
 #[cfg(unix)]
 fn write_owner_only(path: &std::path::Path, content: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    use std::os::unix::fs::OpenOptionsExt;
 
-    if path.exists() {
-        // Tighten an existing file first: `OpenOptions::mode` only applies
-        // when the file is created.
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let file_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "keyfile".to_string());
+
+    let mut nonce = [0u8; 8];
+    rand::Rng::fill_bytes(&mut rand::rng(), &mut nonce);
+    let tmp_path = parent.join(format!(".{}.{}.tmp", file_name, hex::encode(nonce)));
+
+    let result = (|| -> std::io::Result<()> {
+        // `create_new` fails if the path already exists, so a planted file or
+        // symlink can never be written through.
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&tmp_path)?;
+        file.write_all(content)?;
+        file.sync_all()?;
+        drop(file);
+        // `rename` replaces the destination atomically. If the destination is
+        // a symlink, the symlink itself is replaced — it is not followed.
+        std::fs::rename(&tmp_path, path)?;
+        // Best effort: make the rename itself durable.
+        if let Ok(dir) = std::fs::File::open(parent) {
+            let _ = dir.sync_all();
+        }
+        Ok(())
+    })();
+
+    if result.is_err() {
+        // Never leave the temporary file behind.
+        let _ = std::fs::remove_file(&tmp_path);
     }
-
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)?;
-    file.write_all(content)?;
-    file.sync_all()
+    result
 }
 
+/// Write `content` to `path` (non-unix platforms).
+///
+/// Owner-only permissions are a unix concept; on other platforms the file
+/// inherits the directory's default access control. The write is still done
+/// through a temporary file so the content is never half-written
+/// (audit follow-up B7-g).
 #[cfg(not(unix))]
 fn write_owner_only(path: &std::path::Path, content: &[u8]) -> std::io::Result<()> {
-    std::fs::write(path, content)
+    use std::io::Write;
+
+    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let file_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "keyfile".to_string());
+
+    let mut nonce = [0u8; 8];
+    rand::Rng::fill_bytes(&mut rand::rng(), &mut nonce);
+    let tmp_path = parent.join(format!(".{}.{}.tmp", file_name, hex::encode(nonce)));
+
+    let result = (|| -> std::io::Result<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp_path)?;
+        file.write_all(content)?;
+        file.sync_all()?;
+        drop(file);
+        // On non-unix `rename` does not replace an existing file, so the
+        // destination is removed first. The window this opens is unavoidable
+        // without platform-specific APIs.
+        if path.exists() {
+            std::fs::remove_file(path)?;
+        }
+        std::fs::rename(&tmp_path, path)
+    })();
+
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp_path);
+    }
+    result
 }
 
 /// Derive a 16-byte SM4 key from a passphrase + salt using SM3 iterated hashing.
@@ -968,6 +1037,48 @@ mod tests {
         assert_eq!(
             mode, 0o600,
             "rewriting the master key file must tighten its permissions, got {mode:o}"
+        );
+    }
+
+    /// audit B7-g: the write must not follow a symlink. Replacing the
+    /// destination with a temporary file and renaming it over the target
+    /// replaces the symlink itself, so the key material cannot be redirected
+    /// to another file (and the permissions of another file cannot be changed
+    /// either).
+    #[cfg(unix)]
+    #[test]
+    fn test_encrypted_master_key_write_does_not_follow_a_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let target = temp_dir.path().join("victim.txt");
+        let path = temp_dir.path().join("master_key.enc");
+
+        // The file the symlink points at, with content we can check later.
+        std::fs::write(&target, b"original-content").unwrap();
+        symlink(&target, &path).unwrap();
+
+        let master_key = MasterKey::generate().unwrap();
+        master_key
+            .save_encrypted(&path, "test-passphrase", 1000)
+            .expect("save_encrypted");
+
+        let victim = std::fs::read(&target).unwrap();
+        assert_eq!(
+            victim, b"original-content",
+            "the symlink target must not be written through"
+        );
+
+        // The symlink itself was replaced by the real key file.
+        let meta = std::fs::symlink_metadata(&path).unwrap();
+        assert!(
+            !meta.file_type().is_symlink(),
+            "the symlink must be replaced, not followed"
+        );
+        let content = std::fs::read(&path).unwrap();
+        assert!(
+            !content.is_empty(),
+            "the key file must contain the written content"
         );
     }
 

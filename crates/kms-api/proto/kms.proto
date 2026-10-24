@@ -284,12 +284,12 @@ message ExportKeyRequest {
 }
 
 message ExportKeyResponse {
-    // Fields 1 and 2 belonged to an earlier, unreleased shape
-    // (`bytes key_material`, `uint32 version`). Reusing those field numbers
-    // for a different wire type would make an old client mis-parse the
-    // response instead of failing cleanly (audit B7-f), so they are reserved
-    // and the new fields start at 4.
-    reserved 1, 2;
+    // Fields 1, 2 and 3 belonged to earlier, unreleased shapes
+    // (`bytes key_material`, `uint32 version`, and a removed field). Reusing
+    // those field numbers for a different wire type would make an old client
+    // mis-parse the response instead of failing cleanly (audit B7-f), so they
+    // are reserved and the new fields start at 4.
+    reserved 1, 2, 3;
 
     // Key material encrypted with an ephemeral transport key (never raw plaintext).
     string wrapped_key = 4;

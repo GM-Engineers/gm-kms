@@ -963,7 +963,11 @@ async fn decrypt(
         // AAD binds (key_id, tenant_id, version) and the keystore selects material
         // by version, so decrypting a ciphertext produced after a rotation requires
         // the real version rather than a hardcoded 1 (audit P2-3).
-        version: req.version,
+        //
+        // A version of 0 means "unset": the field defaults to 1 when it is
+        // absent, and an explicit 0 is normalised to the same value, so both
+        // channels behave identically (audit follow-up B7-g, cf. B7-d).
+        version: if req.version == 0 { 1 } else { req.version },
         // Echo the caller-supplied format so the keystore reproduces the exact
         // AAD used at encryption (format 2 binds AAD to key_id/tenant/version);
         // defaults to 2 for current ciphertexts, legacy 0/1 via explicit echo.

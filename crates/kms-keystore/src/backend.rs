@@ -123,8 +123,8 @@ pub trait KeystoreBackend: Send + Sync {
         if meta.version == version {
             return Ok(material);
         }
-        Err(Error::InvalidAlgorithm(format!(
-            "Key version {version} not found for key {key_id}"
+        Err(Error::KeyVersionNotFound(format!(
+            "{key_id} (version {version})"
         )))
     }
 

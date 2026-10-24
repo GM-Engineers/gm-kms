@@ -10,6 +10,12 @@ use std::fmt;
 pub enum ServiceError {
     /// Key not found
     KeyNotFound(String),
+    /// The requested version of a key does not exist.
+    ///
+    /// The key itself exists, but not the requested version — e.g. a
+    /// ciphertext refers to a version that was never created (audit follow-up
+    /// B7-g).
+    KeyVersionNotFound(String),
     /// Operation not allowed on key
     KeyOperationNotAllowed(String),
     /// Invalid ciphertext
@@ -42,6 +48,9 @@ impl fmt::Display for ServiceError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ServiceError::KeyNotFound(id) => write!(f, "key not found: {id}"),
+            ServiceError::KeyVersionNotFound(id) => {
+                write!(f, "key version not found: {id}")
+            }
             ServiceError::KeyOperationNotAllowed(msg) => write!(f, "{msg}"),
             ServiceError::InvalidCiphertext => write!(f, "invalid ciphertext"),
             ServiceError::InvalidAlgorithm(msg) => write!(f, "invalid algorithm: {msg}"),
@@ -69,7 +78,7 @@ impl From<Error> for ServiceError {
     fn from(e: Error) -> Self {
         match e {
             Error::KeyNotFound(id) => ServiceError::KeyNotFound(id),
-            Error::KeyVersionNotFound(id) => ServiceError::KeyNotFound(id),
+            Error::KeyVersionNotFound(id) => ServiceError::KeyVersionNotFound(id),
             Error::KeyOperationNotAllowed(msg) => ServiceError::KeyOperationNotAllowed(msg),
             Error::InvalidCiphertext => ServiceError::InvalidCiphertext,
             Error::InvalidAlgorithm(msg) => ServiceError::InvalidAlgorithm(msg),

@@ -893,9 +893,7 @@ impl super::KeystoreBackend for SoftwareKeystore {
             .iter()
             .find(|(v, _)| *v == version)
             .map(|(_, mat)| mat.as_slice().to_vec())
-            .ok_or_else(|| {
-                Error::InvalidAlgorithm(format!("Key version {version} not found for key {key_id}"))
-            })
+            .ok_or_else(|| Error::KeyVersionNotFound(format!("{key_id} (version {version})")))
     }
 
     async fn get_key_metadata(&self, key_id: &Uuid) -> Result<KeyMeta> {
@@ -1060,10 +1058,9 @@ impl super::KeystoreBackend for SoftwareKeystore {
                 .find(|(v, _)| *v == ciphertext.version)
                 .map(|(_, mat)| mat.as_slice())
                 .ok_or_else(|| {
-                    Error::InvalidAlgorithm(format!(
-                        "Key version {} not found for key {}",
-                        ciphertext.version, key_id
-                    ))
+                    // A version that does not exist is a missing resource, not
+                    // an invalid algorithm (audit follow-up B7-g).
+                    Error::KeyVersionNotFound(format!("{key_id} (version {})", ciphertext.version))
                 })?
         };
 
