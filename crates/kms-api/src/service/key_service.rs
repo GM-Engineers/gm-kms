@@ -11,6 +11,52 @@ use kms_core::sanitize::sanitize_for_log;
 use ring::rand::SecureRandom;
 use std::sync::Arc;
 
+/// Transport-key protection scheme for wrapped key export (audit P2-6).
+///
+/// Both schemes wrap the key material with an ephemeral symmetric transport key
+/// and then protect that transport key with the caller's public key. The scheme
+/// selects the AEAD used for the material wrap and the asymmetric algorithm used
+/// to encrypt the transport key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ExportProtection {
+    /// 32-byte transport key, AES-256-GCM material wrap, RSA-OAEP(SHA-256)
+    /// transport-key protection. This is the historical default and stays the
+    /// default so existing callers see no behaviour change.
+    #[default]
+    RsaOaep,
+    /// 16-byte transport key, SM4-GCM material wrap, SM2 transport-key
+    /// protection (GM/T 0003 ecosystem). `target_public_key` must be a 65-byte
+    /// uncompressed SEC1 public key.
+    Sm2,
+}
+
+impl ExportProtection {
+    /// Parse a caller-supplied protection scheme string.
+    ///
+    /// `None`, empty, and the RSA aliases resolve to [`ExportProtection::RsaOaep`]
+    /// so that omitting the field preserves backward compatibility. `"sm2"` (any
+    /// case) selects the SM2 path. Anything else is rejected.
+    pub fn parse(scheme: Option<&str>) -> Result<Self> {
+        let normalized = scheme.map(|s| s.trim().to_lowercase());
+        match normalized.as_deref() {
+            None | Some("") | Some("rsa") | Some("rsa-oaep") | Some("rsa_oaep")
+            | Some("rsaoaep") => Ok(Self::RsaOaep),
+            Some("sm2") => Ok(Self::Sm2),
+            Some(other) => Err(ApiError::InvalidRequest(format!(
+                "unsupported export protection scheme: {other}"
+            ))),
+        }
+    }
+}
+
+/// Options controlling a wrapped export (groups parameters so future additions
+/// such as `version` do not churn every `export_key` call site).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ExportOptions {
+    /// Transport-key protection scheme.
+    pub protection: ExportProtection,
+}
+
 /// Service for key lifecycle management
 pub struct KeyService {
     keystore: Arc<dyn kms_keystore::KeystoreBackend>,
@@ -250,10 +296,12 @@ impl KeyService {
         Ok(meta)
     }
 
-    /// Export key material wrapped with transport key
+    /// Export key material wrapped with a transport key.
     ///
-    /// Returns wrapped key (key material encrypted with transport key) and
-    /// encrypted transport key (transport key encrypted with target RSA public key).
+    /// Returns the wrapped key (material encrypted with an ephemeral transport
+    /// key) and the encrypted transport key (transport key protected with the
+    /// caller's `target_public_key`). The protection scheme is selected via
+    /// [`ExportOptions::protection`] (audit P2-6): RSA-OAEP (default) or SM2.
     pub async fn export_key(
         &self,
         key_id: &uuid::Uuid,
@@ -261,6 +309,7 @@ impl KeyService {
         purpose: &str,
         tenant_id: &str,
         _user_id: &str,
+        opts: ExportOptions,
     ) -> Result<ExportedKey> {
         // Verify tenant ownership before exporting. Cross-tenant and
         // missing-key responses are conflated (KeyNotFound for both).
@@ -279,11 +328,26 @@ impl KeyService {
             );
             return Err(ApiError::KeyNotFound(key_id.to_string()));
         }
-        // Validate target_public_key is at least 256 bytes (2048-bit RSA minimum)
-        if target_public_key.len() < 256 {
-            return Err(ApiError::InvalidRequest(
-                "target_public_key too small, expected at least 2048-bit RSA".to_string(),
-            ));
+        // Validate the target public key according to the chosen protection
+        // scheme, before touching key material (fail fast).
+        match opts.protection {
+            ExportProtection::RsaOaep => {
+                // At least 256 bytes (2048-bit RSA minimum).
+                if target_public_key.len() < 256 {
+                    return Err(ApiError::InvalidRequest(
+                        "target_public_key too small, expected at least 2048-bit RSA".to_string(),
+                    ));
+                }
+            }
+            ExportProtection::Sm2 => {
+                // 65-byte uncompressed SEC1 point (0x04 prefix).
+                if target_public_key.len() != 65 || target_public_key.first() != Some(&0x04) {
+                    return Err(ApiError::InvalidRequest(
+                        "SM2 export requires a 65-byte uncompressed SEC1 public key (0x04 prefix)"
+                            .to_string(),
+                    ));
+                }
+            }
         }
 
         // Export raw key material (validates key exists and is active)
@@ -308,63 +372,100 @@ impl KeyService {
         let digest = digest_ctx.finish();
         let key_fingerprint = hex::encode(digest.as_ref());
 
-        // Generate random transport key (32 bytes for AES-256)
-        let rng = ring::rand::SystemRandom::new();
-        let mut transport_key = vec![0u8; 32];
-        ring::rand::SecureRandom::fill(&rng, &mut transport_key)
-            .map_err(|e| ApiError::Internal(format!("failed to generate transport key: {e}")))?;
-
-        // Wrap key material with transport key using AES-256-GCM
-        use ring::aead::{AES_256_GCM, LessSafeKey, Nonce, UnboundKey};
-        let unbound_kek = UnboundKey::new(&AES_256_GCM, &transport_key)
-            .map_err(|e| ApiError::Internal(format!("failed to create KEK: {e}")))?;
-        let less_safe_kek = LessSafeKey::new(unbound_kek);
-
-        // Generate random nonce for each encryption (critical for AES-GCM security)
-        let mut nonce_bytes = [0u8; 12];
-        rng.fill(&mut nonce_bytes)
-            .map_err(|e| ApiError::Internal(format!("failed to generate nonce: {e}")))?;
-        let nonce = Nonce::assume_unique_for_key(nonce_bytes);
-
-        // PR-1.4: bind the export envelope to (key_id, tenant_id) so a
-        // stored export record cannot be replayed against another
-        // key/tenant. The AAD tag is the dedicated `ExportWrap` purpose
-        // (different from `UserData`), so an attacker cannot lift a
-        // user-data ciphertext and pass it off as an export envelope.
+        // Bind the export envelope to (key_id, tenant_id) so a stored export
+        // record cannot be replayed against another key/tenant. The AAD tag is
+        // the dedicated `ExportWrap` purpose (different from `UserData`), so an
+        // attacker cannot lift a user-data ciphertext and pass it off as an
+        // export envelope. Shared by both protection schemes.
         let export_aad = export_wrap_aad(*key_id, tenant_id);
-        let export_aad = ring::aead::Aad::from(export_aad.as_slice());
-        let mut in_out = key_material.clone();
-        let tag = less_safe_kek
-            .seal_in_place_separate_tag(nonce, export_aad, &mut in_out)
-            .map_err(|e| ApiError::Internal(format!("failed to wrap key: {e}")))?;
 
-        // Append tag to ciphertext (combined = wrapped_key)
-        let mut wrapped_key = in_out;
-        wrapped_key.extend_from_slice(tag.as_ref());
+        let rng = ring::rand::SystemRandom::new();
+        let (wrapped_key, encrypted_transport_key) = match opts.protection {
+            ExportProtection::RsaOaep => {
+                // AES-256-GCM material wrap + RSA-OAEP(SHA-256) transport-key
+                // protection. Wire format is unchanged from the historical RSA
+                // path so existing unwrap clients keep working.
+                let mut transport_key = vec![0u8; 32];
+                ring::rand::SecureRandom::fill(&rng, &mut transport_key).map_err(|e| {
+                    ApiError::Internal(format!("failed to generate transport key: {e}"))
+                })?;
 
-        // Encrypt transport key with target RSA public key (OAEP-SHA256)
-        use rsa::Oaep;
-        use rsa::pkcs1::DecodeRsaPublicKey;
-        use rsa::sha2::Sha256;
+                use ring::aead::{AES_256_GCM, LessSafeKey, Nonce, UnboundKey};
+                let unbound_kek = UnboundKey::new(&AES_256_GCM, &transport_key)
+                    .map_err(|e| ApiError::Internal(format!("failed to create KEK: {e}")))?;
+                let less_safe_kek = LessSafeKey::new(unbound_kek);
 
-        let rsa_public_key = rsa::RsaPublicKey::from_pkcs1_der(target_public_key)
-            .map_err(|_| ApiError::InvalidRequest("invalid RSA public key format".to_string()))?;
+                let mut nonce_bytes = [0u8; 12];
+                rng.fill(&mut nonce_bytes)
+                    .map_err(|e| ApiError::Internal(format!("failed to generate nonce: {e}")))?;
+                let nonce = Nonce::assume_unique_for_key(nonce_bytes);
 
-        // Use cryptographically secure OsRng for RSA encryption
-        let mut os_rng = rand_core::OsRng;
-        let padding = Oaep::new::<Sha256>();
-        let encrypted_transport_key = rsa_public_key
-            .encrypt(&mut os_rng, padding, &transport_key)
-            .map_err(|e| ApiError::Internal(format!("failed to encrypt transport key: {e}")))?;
+                let aad = ring::aead::Aad::from(export_aad.as_slice());
+                let mut in_out = key_material.clone();
+                let tag = less_safe_kek
+                    .seal_in_place_separate_tag(nonce, aad, &mut in_out)
+                    .map_err(|e| ApiError::Internal(format!("failed to wrap key: {e}")))?;
+                let mut wrapped = in_out;
+                wrapped.extend_from_slice(tag.as_ref());
+
+                use rsa::Oaep;
+                use rsa::pkcs1::DecodeRsaPublicKey;
+                use rsa::sha2::Sha256;
+                let rsa_public_key =
+                    rsa::RsaPublicKey::from_pkcs1_der(target_public_key).map_err(|_| {
+                        ApiError::InvalidRequest("invalid RSA public key format".to_string())
+                    })?;
+                let mut os_rng = rand_core::OsRng;
+                let padding = Oaep::new::<Sha256>();
+                let etk = rsa_public_key
+                    .encrypt(&mut os_rng, padding, &transport_key)
+                    .map_err(|e| {
+                        ApiError::Internal(format!("failed to encrypt transport key: {e}"))
+                    })?;
+                (wrapped, etk)
+            }
+            ExportProtection::Sm2 => {
+                // SM4-GCM material wrap + SM2 transport-key protection.
+                // wrapped_key layout: nonce (12B) || ciphertext || tag (16B).
+                let mut transport_key = vec![0u8; 16];
+                ring::rand::SecureRandom::fill(&rng, &mut transport_key).map_err(|e| {
+                    ApiError::Internal(format!("failed to generate transport key: {e}"))
+                })?;
+
+                let mut nonce_bytes = [0u8; 12];
+                rng.fill(&mut nonce_bytes)
+                    .map_err(|e| ApiError::Internal(format!("failed to generate nonce: {e}")))?;
+
+                let cipher = gm_crypto::sm4::Sm4Cipher::new(&transport_key)
+                    .map_err(|e| ApiError::Internal(format!("sm4 cipher init failed: {e}")))?;
+                let (ct, tag) = cipher
+                    .encrypt_gcm(&key_material, &nonce_bytes, &export_aad)
+                    .map_err(|e| ApiError::Internal(format!("sm4-gcm wrap failed: {e}")))?;
+                let mut wrapped = Vec::with_capacity(nonce_bytes.len() + ct.len() + tag.len());
+                wrapped.extend_from_slice(&nonce_bytes);
+                wrapped.extend_from_slice(&ct);
+                wrapped.extend_from_slice(&tag);
+
+                let encryptor =
+                    gm_crypto::sm2::Sm2Encryptor::new(target_public_key).map_err(|_| {
+                        ApiError::InvalidRequest("invalid SM2 public key format".to_string())
+                    })?;
+                let etk = encryptor.encrypt(&transport_key).map_err(|e| {
+                    ApiError::Internal(format!("sm2 transport-key encryption failed: {e}"))
+                })?;
+                (wrapped, etk)
+            }
+        };
+
+        tracing::info!(
+            "Key {} exported (purpose: {}, protection: {:?})",
+            key_id,
+            sanitize_for_log(purpose),
+            opts.protection
+        );
 
         let export_id = uuid::Uuid::new_v4().to_string();
         let expires_at = (chrono::Utc::now() + chrono::Duration::minutes(5)).to_rfc3339();
-
-        tracing::info!(
-            "Key {} exported (purpose: {})",
-            key_id,
-            sanitize_for_log(purpose)
-        );
 
         Ok(ExportedKey {
             wrapped_key: STANDARD.encode(&wrapped_key),
@@ -787,6 +888,123 @@ mod tests {
         assert!(
             matches!(result, Err(ApiError::KeyNotFound(_))),
             "non-existent get_key must return KeyNotFound, got {result:?}"
+        );
+    }
+
+    // ── B4-b: SM2 export protection path (audit P2-6) ──
+
+    #[test]
+    fn export_protection_parse_defaults_and_aliases() {
+        assert_eq!(
+            ExportProtection::parse(None).unwrap(),
+            ExportProtection::RsaOaep
+        );
+        assert_eq!(
+            ExportProtection::parse(Some("")).unwrap(),
+            ExportProtection::RsaOaep
+        );
+        assert_eq!(
+            ExportProtection::parse(Some("RSA-OAEP")).unwrap(),
+            ExportProtection::RsaOaep
+        );
+        assert_eq!(
+            ExportProtection::parse(Some(" rsa ")).unwrap(),
+            ExportProtection::RsaOaep
+        );
+        assert_eq!(
+            ExportProtection::parse(Some("SM2")).unwrap(),
+            ExportProtection::Sm2
+        );
+        assert_eq!(
+            ExportProtection::parse(Some("sm2")).unwrap(),
+            ExportProtection::Sm2
+        );
+        assert_eq!(ExportProtection::default(), ExportProtection::RsaOaep);
+    }
+
+    #[test]
+    fn export_protection_parse_rejects_unknown() {
+        assert!(ExportProtection::parse(Some("aes-kw")).is_err());
+        assert!(ExportProtection::parse(Some("ed25519")).is_err());
+    }
+
+    #[tokio::test]
+    async fn sm2_export_round_trip_unwraps_to_key_material() {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        let state = create_test_state();
+        let svc = KeyService::new(&state);
+        let key_id = create_aes_key(&svc, "sm2-exp", "tenant-sm2").await;
+
+        // Caller SM2 keypair; target public key is a 65-byte uncompressed SEC1 point.
+        let keypair = gm_crypto::sm2::Sm2KeyPair::generate().unwrap();
+        let target_pub = keypair.public_key_bytes_uncompressed();
+        assert_eq!(target_pub.len(), 65);
+        let decryptor = gm_crypto::sm2::Sm2Decryptor::new(keypair);
+
+        let exported = svc
+            .export_key(
+                &key_id,
+                &target_pub,
+                "migration",
+                "tenant-sm2",
+                "user-1",
+                ExportOptions {
+                    protection: ExportProtection::Sm2,
+                },
+            )
+            .await
+            .unwrap();
+
+        // Server-side truth: the raw material that was wrapped.
+        let expected = state
+            .keystore
+            .export_key_material(&key_id, "tenant-sm2")
+            .await
+            .unwrap();
+
+        // Unwrap: SM2-decrypt the transport key, then SM4-GCM open the material.
+        let etb = STANDARD.decode(&exported.encrypted_transport_key).unwrap();
+        let wb = STANDARD.decode(&exported.wrapped_key).unwrap();
+        let transport_key = decryptor.decrypt(&etb).unwrap();
+        assert_eq!(transport_key.len(), 16);
+
+        // wrapped_key layout: nonce(12) || ciphertext || tag(16).
+        assert_eq!(wb.len(), 12 + expected.len() + 16);
+        let nonce = &wb[..12];
+        let ct = &wb[12..wb.len() - 16];
+        let tag = &wb[wb.len() - 16..];
+        let aad = kms_core::aad::export_wrap_aad(key_id, "tenant-sm2");
+        let cipher = gm_crypto::sm4::Sm4Cipher::new(&transport_key).unwrap();
+        let recovered = cipher.decrypt_gcm(ct, nonce, &aad, tag).unwrap();
+        assert_eq!(recovered, expected);
+
+        // Fingerprint is SHA-256 over the exported material.
+        let d = ring::digest::digest(&ring::digest::SHA256, &expected);
+        assert_eq!(exported.key_fingerprint, hex::encode(d.as_ref()));
+    }
+
+    #[tokio::test]
+    async fn sm2_export_rejects_bad_pubkey_length() {
+        let state = create_test_state();
+        let svc = KeyService::new(&state);
+        let key_id = create_aes_key(&svc, "sm2-bad", "tenant-sm2b").await;
+        // 33-byte buffer is not a valid 65-byte uncompressed SEC1 point.
+        let bad = vec![0x04u8; 33];
+        let result = svc
+            .export_key(
+                &key_id,
+                &bad,
+                "migration",
+                "tenant-sm2b",
+                "user-1",
+                ExportOptions {
+                    protection: ExportProtection::Sm2,
+                },
+            )
+            .await;
+        assert!(
+            matches!(result, Err(ApiError::InvalidRequest(_))),
+            "bad SM2 pubkey must be rejected with InvalidRequest"
         );
     }
 }

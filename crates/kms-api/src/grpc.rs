@@ -1011,6 +1011,10 @@ impl KmsService for KmsGrpcService {
         // Wrapped-export semantics (audit P2-5): converge gRPC onto the SAME service-layer
         // method REST uses, so raw key material is never returned over the wire. The caller
         // supplies its public key; the server returns wrapped_key + encrypted_transport_key.
+        // The transport-key protection scheme (audit P2-6) mirrors REST.
+        let protection =
+            crate::service::ExportProtection::parse(Some(req.protection_scheme.as_str()))
+                .map_err(api_error_to_status)?;
         let key_svc = self.state.key_service();
         let exported = key_svc
             .export_key(
@@ -1019,6 +1023,7 @@ impl KmsService for KmsGrpcService {
                 &req.purpose,
                 tenant_id,
                 &caller_id,
+                crate::service::ExportOptions { protection },
             )
             .await
             .map_err(api_error_to_status)?;

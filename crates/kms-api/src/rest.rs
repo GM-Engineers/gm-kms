@@ -572,6 +572,10 @@ pub struct ExportKeyRequest {
     /// ID of a pre-approved approval request for this key export.
     /// Key export requires an approved `KeyExport` approval request.
     pub approval_id: Option<String>,
+    /// Transport-key protection scheme: `"rsa-oaep"` (default when omitted) or
+    /// `"sm2"` (audit P2-6). Selects how the ephemeral transport key is protected.
+    #[serde(default)]
+    pub protection_scheme: Option<String>,
 }
 
 /// Response containing wrapped key for secure export
@@ -2403,6 +2407,9 @@ async fn export_key(
     // so a bound key can no longer export another tenant's material by spoofing
     // `tenant_id` (replaces the previous reliance on the self-reported request value).
     let tenant_id = resolve_tenant(bound.as_deref(), &tenant_query.tenant_id);
+    // Resolve the transport-key protection scheme (audit P2-6). Omitted/"rsa-oaep"
+    // keeps the historical RSA path; "sm2" switches to SM4-GCM wrap + SM2.
+    let protection = crate::service::ExportProtection::parse(req.protection_scheme.as_deref())?;
     let exported = key_svc
         .export_key(
             &key_id,
@@ -2410,6 +2417,7 @@ async fn export_key(
             &req.purpose,
             &tenant_id,
             &caller_id,
+            crate::service::ExportOptions { protection },
         )
         .await?;
 

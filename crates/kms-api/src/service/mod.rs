@@ -35,7 +35,7 @@ pub use crypto_service::CryptoService;
 pub use envelope_service::{EnvelopeEncryptResponse, EnvelopeService, RewrapDekResponse};
 pub use error::ServiceError;
 pub use key_format::{KeyFormatError, KeyFormatParser};
-pub use key_service::{ExportedKey, KeyService};
+pub use key_service::{ExportOptions, ExportProtection, ExportedKey, KeyService};
 
 use crate::ApiError;
 

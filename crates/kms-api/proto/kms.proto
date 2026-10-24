@@ -249,6 +249,8 @@ message ExportKeyRequest {
     bytes target_public_key = 4;
     // Purpose of the export (migration, backup, ...) for audit.
     string purpose = 5;
+    // Transport-key protection scheme (audit P2-6): ""/"rsa-oaep" (default) or "sm2".
+    string protection_scheme = 6;
 }
 
 message ExportKeyResponse {
