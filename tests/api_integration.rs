@@ -64,10 +64,7 @@ async fn spawn_rest_server() -> (String, reqwest::Client, tokio::task::JoinHandl
 async fn spawn_rest_server_with_policies(
     extra_policies: Vec<Policy>,
 ) -> (String, reqwest::Client, tokio::task::JoinHandle<()>) {
-    // keystore
-    let keystore = Arc::new(SoftwareKeystore::new());
-
-    // PBAC：默认 deny，注入一条放行全部 subject/resource/action 的策略。
+    // PBAC：注入一条放行全部 subject/resource/action 的策略。
     let engine = PBACEngine::new();
     engine
         .add_policy(Policy {
@@ -84,6 +81,27 @@ async fn spawn_rest_server_with_policies(
     for policy in extra_policies {
         engine.add_policy(policy).await.expect("add extra policy");
     }
+
+    spawn_rest_server_with_engine(engine).await
+}
+
+/// Same as [`spawn_rest_server_with_policies`], but with **no** policy at all.
+///
+/// This mirrors a production deployment: the server starts with an empty PBAC
+/// engine and never loads policies at startup (audit follow-up B7-g). Before
+/// the fix, every protected endpoint answered 403 in this state, i.e. the KMS
+/// was unusable out of the box.
+async fn spawn_rest_server_without_policy() -> (String, reqwest::Client, tokio::task::JoinHandle<()>)
+{
+    spawn_rest_server_with_engine(PBACEngine::new()).await
+}
+
+/// Boot a REST server on top of the given PBAC engine.
+async fn spawn_rest_server_with_engine(
+    engine: PBACEngine,
+) -> (String, reqwest::Client, tokio::task::JoinHandle<()>) {
+    // keystore
+    let keystore = Arc::new(SoftwareKeystore::new());
 
     let audit = Arc::new(AuditLogger::default());
     let sm9 = Sm9State::from_key(gm_sm9_rs::KgcMasterKey::generate().expect("sm9 master key"));
@@ -1574,5 +1592,127 @@ async fn b7d_grpc_decrypt_without_version_uses_the_same_default_as_rest() {
         got2.expect("plaintext"),
         plaintext,
         "REST plaintext mismatch"
+    );
+}
+
+// =============================================================================
+// Batch 7 / B7-g: PBAC bootstrap semantics
+//
+// The PBAC engine denies every request that no policy covers. The server
+// starts with an EMPTY engine and loads no policies at startup, so with the
+// raw engine semantics every protected endpoint answered 403 — the KMS was
+// unusable out of the box (audit follow-up B7-g).
+//
+// The fix: while no policy is configured, attribute-based control is inactive
+// and the role-based check (the API key's permission bitmask) is the only
+// gate. As soon as the first policy is installed the default-deny applies
+// again.
+// =============================================================================
+
+/// With no policy configured the KMS must be usable: key creation and the
+/// crypto endpoints are PBAC-guarded, so they answered 403 before the fix.
+#[tokio::test]
+async fn b7g1_server_without_any_policy_is_usable() {
+    let (base, client, handle) = spawn_rest_server_without_policy().await;
+
+    let resp = client
+        .post(format!("{base}/v1/keys"))
+        .header(ADMIN_HEADER, ADMIN_SECRET)
+        .json(&json!({
+            "name": "key-b7g1",
+            "spec": "sm4",
+            "tenant_id": "tenant-a",
+        }))
+        .send()
+        .await
+        .expect("create_key send");
+    let status = resp.status();
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .unwrap_or_else(|_| json!({"__nonjson": true}));
+
+    assert_eq!(
+        status, 201,
+        "a deployment without PBAC policies must not lock every caller out: body={body}"
+    );
+
+    let key_id = body["id"].as_str().expect("key id").to_string();
+
+    // The crypto endpoints are PBAC-guarded as well.
+    let (ct, nonce, tag) = encrypt(&client, &base, &key_id, "tenant-a", b"out of the box").await;
+    let (ok, plaintext, body) =
+        decrypt(&client, &base, &key_id, "tenant-a", &ct, &nonce, &tag).await;
+    assert!(ok, "decrypt must succeed without policies: body={body}");
+    assert_eq!(plaintext.expect("plaintext"), b"out of the box");
+
+    handle.abort();
+}
+
+/// The role-based check is still the gate when no policy is configured: a key
+/// without the required permission is still refused.
+#[tokio::test]
+async fn b7g1_rbac_still_applies_without_any_policy() {
+    let (base, client, handle) = spawn_rest_server_without_policy().await;
+
+    // The security-officer key may not create keys (no CREATE_KEY bit).
+    let resp = client
+        .post(format!("{base}/v1/keys"))
+        .header(ADMIN_HEADER, OFFICER_SECRET)
+        .json(&json!({
+            "name": "key-b7g1-rbac-denied",
+            "spec": "sm4",
+            "tenant_id": "tenant-a",
+        }))
+        .send()
+        .await
+        .expect("create_key send");
+    let status = resp.status();
+    handle.abort();
+
+    assert_eq!(
+        status, 403,
+        "without policies the role-based check must still refuse the operation"
+    );
+}
+
+/// Once a policy is installed the default-deny applies again: a request that
+/// no policy covers is refused.
+#[tokio::test]
+async fn b7g1_installed_policy_restores_default_deny() {
+    // A single policy that matches nothing: every request falls through to
+    // the engine's default-deny.
+    let engine = PBACEngine::new();
+    engine
+        .add_policy(Policy {
+            id: uuid::Uuid::new_v4(),
+            name: "matches-nothing".to_string(),
+            effect: PolicyEffect::Allow,
+            condition: json!({ "operator": "always" }),
+            resources: vec!["no-such-resource".to_string()],
+            subjects: vec!["no-such-subject".to_string()],
+            enabled: true,
+        })
+        .await
+        .expect("add policy");
+    let (base, client, handle) = spawn_rest_server_with_engine(engine).await;
+
+    let resp = client
+        .post(format!("{base}/v1/keys"))
+        .header(ADMIN_HEADER, ADMIN_SECRET)
+        .json(&json!({
+            "name": "key-b7g1-denied",
+            "spec": "sm4",
+            "tenant_id": "tenant-a",
+        }))
+        .send()
+        .await
+        .expect("create_key send");
+    let status = resp.status();
+    handle.abort();
+
+    assert_eq!(
+        status, 403,
+        "with a policy installed, requests that no policy covers must be denied"
     );
 }

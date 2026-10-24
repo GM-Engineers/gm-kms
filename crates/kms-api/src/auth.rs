@@ -838,6 +838,54 @@ pub async fn require_permission(
     auth_middleware_with_permission(request, next, required).await
 }
 
+/// Outcome of an attribute-based (PBAC) access evaluation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PbacOutcome {
+    /// The request is allowed to proceed.
+    Allowed,
+    /// A policy denies the request.
+    Denied,
+}
+
+/// Evaluate the attribute-based policy for a single access request.
+///
+/// # Semantics
+///
+/// The PBAC engine denies every request that no policy covers. That is the
+/// right behaviour **once an operator has installed policies**: an allow-list
+/// policy then means "only what the policies cover is permitted".
+///
+/// An engine with **no policy at all** is a different situation: the
+/// deployment has not opted into attribute-based control yet, and the
+/// role-based check (the API key's permission bitmask) is the only gate.
+/// Denying every request in that state would make the KMS unusable out of the
+/// box — the server starts with an empty engine and loads no policies at
+/// startup (audit follow-up B7-g).
+///
+/// As soon as the first policy is installed the default-deny applies again,
+/// so an allow-list policy keeps its meaning.
+///
+/// Both protocol channels go through this function, so REST and gRPC can
+/// never disagree about what the policy allows.
+pub async fn evaluate_pbac(
+    engine: &kms_policy::PBACEngine,
+    subject_id: &str,
+    action: &str,
+    resource_id: &str,
+) -> Result<PbacOutcome, kms_core::Error> {
+    if engine.policy_count().await == 0 {
+        // No policy configured => attribute-based control is inactive; the
+        // role-based permission check remains the only gate.
+        return Ok(PbacOutcome::Allowed);
+    }
+    let ctx = kms_policy::AccessContext::new(subject_id, action, resource_id);
+    match engine.evaluate(&ctx).await {
+        Ok(kms_policy::Decision::Allow) => Ok(PbacOutcome::Allowed),
+        Ok(kms_policy::Decision::Deny) => Ok(PbacOutcome::Denied),
+        Err(e) => Err(e),
+    }
+}
+
 /// Evaluate PBAC policy for a REST access request.
 ///
 /// Returns Ok(()) if the policy allows access, or a 403 Forbidden StatusCode.
@@ -854,10 +902,9 @@ pub async fn check_rest_pbac(
     action: &str,
     resource_id: &str,
 ) -> Result<(), StatusCode> {
-    let ctx = kms_policy::AccessContext::new(subject_id, action, resource_id);
-    match engine.evaluate(&ctx).await {
-        Ok(kms_policy::Decision::Allow) => Ok(()),
-        Ok(kms_policy::Decision::Deny) => {
+    match evaluate_pbac(engine, subject_id, action, resource_id).await {
+        Ok(PbacOutcome::Allowed) => Ok(()),
+        Ok(PbacOutcome::Denied) => {
             tracing::warn!(%subject_id, %action, %resource_id, "REST PBAC denied");
             Err(StatusCode::FORBIDDEN)
         }
@@ -1356,5 +1403,126 @@ mod tests {
         assert!(!config.has_permission("aa-key", Permission::LIST_KEYS));
         assert!(!config.has_permission("aa-key", Permission::ENCRYPT));
         assert!(!config.has_permission("aa-key", Permission::CREATE_KEY));
+    }
+
+    // ── PBAC bootstrap semantics (audit follow-up B7-g) ──
+
+    /// Build a policy that matches everything (subject `*`, resource `*`).
+    fn matching_policy(effect: kms_core::PolicyEffect, name: &str) -> kms_policy::Policy {
+        kms_policy::Policy {
+            id: uuid::Uuid::new_v4(),
+            name: name.to_string(),
+            effect,
+            condition: serde_json::json!({ "operator": "always" }),
+            resources: vec!["*".to_string()],
+            subjects: vec!["*".to_string()],
+            enabled: true,
+        }
+    }
+
+    /// Build a policy that matches nothing (no subject, no resource).
+    fn unrelated_policy(effect: kms_core::PolicyEffect, name: &str) -> kms_policy::Policy {
+        kms_policy::Policy {
+            id: uuid::Uuid::new_v4(),
+            name: name.to_string(),
+            effect,
+            condition: serde_json::json!({ "operator": "always" }),
+            resources: vec!["no-such-resource".to_string()],
+            subjects: vec!["no-such-subject".to_string()],
+            enabled: true,
+        }
+    }
+
+    /// An engine without any policy must not deny everything: the deployment
+    /// has not opted into attribute-based control yet, and the role-based check
+    /// is the only gate. Before this was fixed the server answered 403 to
+    /// every protected request (audit follow-up B7-g).
+    #[tokio::test]
+    async fn test_evaluate_pbac_empty_engine_allows() {
+        let engine = kms_policy::PBACEngine::new();
+        assert_eq!(engine.policy_count().await, 0);
+
+        let outcome = evaluate_pbac(&engine, "admin", "encrypt", "key-1").await;
+        assert_eq!(
+            outcome.expect("evaluation must not fail"),
+            PbacOutcome::Allowed
+        );
+    }
+
+    /// Once at least one policy is installed the engine's default-deny applies:
+    /// a request that no policy covers is denied.
+    #[tokio::test]
+    async fn test_evaluate_pbac_unrelated_policy_denies() {
+        let engine = kms_policy::PBACEngine::new();
+        engine
+            .add_policy(unrelated_policy(kms_core::PolicyEffect::Allow, "unrelated"))
+            .await
+            .expect("add policy");
+        assert_eq!(engine.policy_count().await, 1);
+
+        let outcome = evaluate_pbac(&engine, "admin", "encrypt", "key-1").await;
+        assert_eq!(
+            outcome.expect("evaluation must not fail"),
+            PbacOutcome::Denied
+        );
+    }
+
+    /// A matching allow policy permits the request.
+    #[tokio::test]
+    async fn test_evaluate_pbac_matching_allow_allows() {
+        let engine = kms_policy::PBACEngine::new();
+        engine
+            .add_policy(matching_policy(kms_core::PolicyEffect::Allow, "allow-all"))
+            .await
+            .expect("add policy");
+
+        let outcome = evaluate_pbac(&engine, "admin", "encrypt", "key-1").await;
+        assert_eq!(
+            outcome.expect("evaluation must not fail"),
+            PbacOutcome::Allowed
+        );
+    }
+
+    /// A matching deny policy beats a matching allow policy (the engine
+    /// evaluates deny first), and the request is denied.
+    #[tokio::test]
+    async fn test_evaluate_pbac_deny_beats_allow() {
+        let engine = kms_policy::PBACEngine::new();
+        engine
+            .add_policy(matching_policy(kms_core::PolicyEffect::Allow, "allow-all"))
+            .await
+            .expect("add policy");
+        engine
+            .add_policy(matching_policy(kms_core::PolicyEffect::Deny, "deny-all"))
+            .await
+            .expect("add policy");
+
+        let outcome = evaluate_pbac(&engine, "admin", "encrypt", "key-1").await;
+        assert_eq!(
+            outcome.expect("evaluation must not fail"),
+            PbacOutcome::Denied
+        );
+    }
+
+    /// Removing the last policy returns the engine to the "inactive" state.
+    #[tokio::test]
+    async fn test_evaluate_pbac_policy_removal_restores_inactive_state() {
+        let engine = kms_policy::PBACEngine::new();
+        let policy = unrelated_policy(kms_core::PolicyEffect::Allow, "unrelated");
+        let policy_id = policy.id.to_string();
+        engine.add_policy(policy).await.expect("add policy");
+        assert_eq!(engine.policy_count().await, 1);
+
+        engine
+            .remove_policy(&policy_id)
+            .await
+            .expect("remove policy");
+        assert_eq!(engine.policy_count().await, 0);
+
+        let outcome = evaluate_pbac(&engine, "admin", "encrypt", "key-1").await;
+        assert_eq!(
+            outcome.expect("evaluation must not fail"),
+            PbacOutcome::Allowed
+        );
     }
 }

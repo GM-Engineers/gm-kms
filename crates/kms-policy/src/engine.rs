@@ -139,6 +139,18 @@ impl PBACEngine {
         Ok(policies.values().cloned().collect())
     }
 
+    /// Number of configured policies.
+    ///
+    /// The engine itself always denies a request that no policy covers
+    /// (default-deny). Callers that need to distinguish "no policy configured
+    /// at all" from "policies configured but none matches" use this counter:
+    /// an engine with zero policies imposes no attribute-level restriction, and
+    /// as soon as the first policy is installed the default-deny applies to
+    /// everything the policies do not cover (audit follow-up B7-g).
+    pub async fn policy_count(&self) -> usize {
+        self.policies.read().await.len()
+    }
+
     /// Check time skew between system clock and trusted time source
     pub async fn check_time_skew(&self) -> Result<TimeSkewStatus> {
         let status = self.time_validator.check_time_skew()?;
@@ -477,6 +489,31 @@ mod tests {
         let result = engine.evaluate(&ctx).await.unwrap();
 
         assert_eq!(result, Decision::Allow);
+    }
+
+    /// `policy_count` distinguishes "no policy configured" from "policies
+    /// configured but none matches" (audit follow-up B7-g).
+    #[tokio::test]
+    async fn test_policy_count_tracks_policies() {
+        let engine = PBACEngine::new();
+        assert_eq!(engine.policy_count().await, 0);
+
+        let policy = Policy {
+            id: uuid::Uuid::new_v4(),
+            name: "test".to_string(),
+            effect: PolicyEffect::Allow,
+            condition: serde_json::json!({ "operator": "always" }),
+            resources: vec!["*".to_string()],
+            subjects: vec!["*".to_string()],
+            enabled: true,
+        };
+        let policy_id = policy.id.to_string();
+
+        engine.add_policy(policy).await.unwrap();
+        assert_eq!(engine.policy_count().await, 1);
+
+        engine.remove_policy(&policy_id).await.unwrap();
+        assert_eq!(engine.policy_count().await, 0);
     }
 
     #[tokio::test]

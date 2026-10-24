@@ -31,16 +31,20 @@ impl KmsGrpcService {
     /// This is the gRPC counterpart of the REST PBAC middleware.
     /// Policy is evaluated ADDITIVELY: the API key role check (check_permission)
     /// is still required; PBAC can only FURTHER RESTRICT access, never grant it.
+    ///
+    /// Both channels share `auth::evaluate_pbac`, so a client cannot reach a
+    /// different decision by switching protocol (audit follow-up B7-g).
     async fn check_pbac(
         &self,
         subject_id: &str,
         action: &str,
         resource_id: &str,
     ) -> Result<(), Status> {
-        let ctx = kms_policy::AccessContext::new(subject_id, action, resource_id);
-        match self.state.policy_engine.evaluate(&ctx).await {
-            Ok(kms_policy::Decision::Allow) => Ok(()),
-            Ok(kms_policy::Decision::Deny) => {
+        match crate::auth::evaluate_pbac(&self.state.policy_engine, subject_id, action, resource_id)
+            .await
+        {
+            Ok(crate::auth::PbacOutcome::Allowed) => Ok(()),
+            Ok(crate::auth::PbacOutcome::Denied) => {
                 tracing::warn!(%subject_id, %action, %resource_id, "PBAC denied");
                 Err(Status::permission_denied("access denied by policy"))
             }
