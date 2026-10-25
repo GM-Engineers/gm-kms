@@ -1236,25 +1236,22 @@ impl super::KeystoreBackend for PostgresKeystore {
         tenant_id: &str,
         material: Vec<u8>,
     ) -> Result<KeyMeta> {
-        // Validate material size matches the spec
-        let expected_size = match spec {
-            KeySpec::Aes256Gcm | KeySpec::HmacSha256 | KeySpec::Sm3Hmac => 32,
-            KeySpec::Sm4 => 16,
-            KeySpec::Sm2 => 32,
-            KeySpec::Ed25519 => 32,
-            KeySpec::EcdsaP256 => 32,
-            KeySpec::EcdsaP384 => 48,
-            KeySpec::Ed448 => 57,
-            KeySpec::Rsa4096 => 512,
-            KeySpec::Sm9Signing | KeySpec::Sm9Encryption => 0,
-        };
-
-        if expected_size > 0 && material.len() != expected_size {
+        // Validate the material with the **shared, algorithm-aware** validator
+        // (audit P3-1) instead of a local hard-coded length table. The table
+        // demanded exactly 512 bytes for RSA-4096, which is the size of the
+        // modulus alone — a real RSA-4096 private key in DER (PKCS#8, ~2374
+        // bytes) could therefore never be imported through this backend. This
+        // is the *production* path (the software keystore only serves
+        // development), so the defect made real RSA-4096 keys unusable.
+        let validation = crate::validation::validate_key_material(spec, &material)
+            .map_err(|e| Error::InvalidAlgorithm(format!("key validation failed: {e}")))?;
+        if !validation.valid {
             return Err(Error::InvalidAlgorithm(format!(
-                "expected {} bytes for {:?}, got {}",
-                expected_size,
+                "invalid key material for {:?}: {}",
                 spec,
-                material.len()
+                validation
+                    .error
+                    .unwrap_or_else(|| "unknown error".to_string())
             )));
         }
 
@@ -1471,6 +1468,76 @@ mod tests {
         assert!(!versions.is_empty());
 
         println!("PostgreSQL keystore rotation test passed!");
+    }
+
+    /// Audit P3-1: the PostgreSQL backend must validate imported material with
+    /// the **shared, algorithm-aware** validator, exactly like the software
+    /// backend does.
+    ///
+    /// Before the fix this backend carried its own length table that demanded
+    /// exactly 512 bytes for RSA-4096 — the size of the modulus alone — so a
+    /// real RSA-4096 private key (PKCS#8 DER, ~2374 bytes) could never be
+    /// imported. The PostgreSQL backend is the *production* path (the software
+    /// keystore only serves development), so the defect made real RSA-4096
+    /// keys unusable.
+    #[tokio::test]
+    #[ignore] // Requires running server (PostgreSQL)
+    async fn pr418_pg_import_accepts_rsa4096_pkcs8() {
+        let database_url = std::env::var("DATABASE_URL")
+            .unwrap_or_else(|_| "postgres://kms:kms123@localhost:5432/kms".to_string());
+
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&database_url)
+            .await
+            .expect("Failed to connect to PostgreSQL");
+
+        let repo = PostgresKeyRepository::new(pool);
+        repo.migrate().await.expect("Migration failed");
+
+        let keystore = PostgresKeystore::new(repo)
+            .await
+            .expect("Failed to create keystore");
+
+        // A real RSA-4096 private key in PKCS#8 DER is ~2374 bytes. The shared
+        // validator accepts the 2300..=5000 byte interval and requires a
+        // DER SEQUENCE tag.
+        //
+        // `KMS_TEST_RSA4096_KEY_PATH` may point at a real DER key so the case
+        // can be exercised against genuine key material; without it a
+        // structurally equivalent stand-in keeps the test deterministic and
+        // offline (no private key is ever committed to the repository).
+        let material = match std::env::var("KMS_TEST_RSA4096_KEY_PATH") {
+            Ok(path) => std::fs::read(&path).expect("read RSA-4096 DER key"),
+            Err(_) => {
+                let mut stand_in = vec![0x30u8; 2374];
+                stand_in[1] = 0x82; // DER long-form length marker
+                stand_in
+            }
+        };
+        assert!(
+            material.len() > 512,
+            "the fixture must exceed the 512-byte cap the old table imposed"
+        );
+
+        let meta = keystore
+            .import_key_material(
+                &KeySpec::Rsa4096,
+                "rsa4096-imported",
+                "test-tenant",
+                material,
+            )
+            .await
+            .expect("a real RSA-4096 key must be importable");
+
+        assert_eq!(meta.spec, KeySpec::Rsa4096);
+        assert_eq!(meta.version, 1);
+        // The imported key must be readable back, not merely stored.
+        let stored = keystore
+            .get_key_metadata(&meta.id)
+            .await
+            .expect("imported key must be retrievable");
+        assert_eq!(stored.id, meta.id);
     }
 
     // PR-4.15 / P2-10: in-memory cap + FIFO eviction tests.
