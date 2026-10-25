@@ -234,8 +234,16 @@ impl PostgresKeyRepository {
     }
 
     /// Find encrypted key material by key ID
+    ///
+    /// Audit B8-f: `keys.encrypted_material` is a **nullable** column, so the
+    /// value has to be decoded as `Option<Vec<u8>>`. Decoding it into a plain
+    /// `Vec<u8>` turned "the row exists but carries no material" into a hard
+    /// sqlx decode error (`unexpected null`) instead of `Ok(None)`. That error
+    /// was propagated with `?` by the preload paths, so a single row without
+    /// material aborted the whole background preload and left the server
+    /// permanently unready.
     pub async fn find_encrypted_material(&self, id: &uuid::Uuid) -> Result<Option<Vec<u8>>, Error> {
-        let row: Option<(Vec<u8>,)> = sqlx::query_as(
+        let row: Option<(Option<Vec<u8>>,)> = sqlx::query_as(
             r#"
             SELECT encrypted_material
             FROM keys
@@ -247,7 +255,9 @@ impl PostgresKeyRepository {
         .await
         .map_err(|e| Error::Internal(e.to_string()))?;
 
-        Ok(row.map(|(material,)| material))
+        // `and_then` flattens "no row" and "row without material" into the
+        // single `None` the signature promises.
+        Ok(row.and_then(|(material,)| material))
     }
 
     /// Update encrypted key material for a key

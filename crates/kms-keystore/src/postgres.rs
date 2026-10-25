@@ -431,13 +431,22 @@ impl PostgresKeystore {
             let metas = repo.list_all_tenants(None, None).await?;
             let mut loaded = 0usize;
             for meta in metas {
-                let encrypted = match repo.find_encrypted_material(&meta.id).await? {
-                    Some(b) => b,
-                    None => {
+                let encrypted = match repo.find_encrypted_material(&meta.id).await {
+                    Ok(Some(b)) => b,
+                    Ok(None) => {
                         tracing::warn!(
                             "Preload: key {} found in DB but has no encrypted material",
                             meta.id
                         );
+                        continue;
+                    }
+                    // Audit B8-f: a single unreadable row must not abort the
+                    // whole preload. `load_keys()` skips such a key and
+                    // carries on; the background path has to behave the same
+                    // way, otherwise one bad row leaves the server permanently
+                    // unready — `keys_ready` is only set on the success path.
+                    Err(e) => {
+                        tracing::warn!("Preload: skipping key {}: {e}", meta.id);
                         continue;
                     }
                 };
@@ -1112,9 +1121,22 @@ impl super::KeystoreBackend for PostgresKeystore {
             )
             .ok_or_else(|| Error::KeyNotFound(key_id.to_string()))?;
 
+        // Audit B8-f: the new key's material has to be persisted, not only kept
+        // in the cache. `repo.insert()` does not write the `encrypted_material`
+        // column, so the new row used to stay NULL-material: the rotated key
+        // was silently lost on the next restart — and because the background
+        // preload propagated the resulting decode error, the server never
+        // became ready again after a single rotation. The envelope is bound
+        // to the key id (PR-1.4 AAD), so it is encrypted with `new_meta.id`.
+        let encrypted_new_material = self.encrypt_material(&new_meta.id, &new_material)?;
+
         // Persist new key metadata and update old key status
         self.repo
             .insert(&new_meta)
+            .await
+            .map_err(|e| Error::Internal(e.to_string()))?;
+        self.repo
+            .update_encrypted_material(&new_meta.id, &encrypted_new_material)
             .await
             .map_err(|e| Error::Internal(e.to_string()))?;
         self.repo
@@ -1468,6 +1490,141 @@ mod tests {
         assert!(!versions.is_empty());
 
         println!("PostgreSQL keystore rotation test passed!");
+    }
+
+    /// Audit B8-f: rotating a key must persist the **new** key's material.
+    ///
+    /// `repo.insert()` does not write the `encrypted_material` column, and the
+    /// rotation path never called `update_encrypted_material` for the new key
+    /// (unlike `generate_key` and `import_key_material`, which both do). The
+    /// new row therefore stayed NULL-material: the rotated key was lost on the
+    /// next restart — and because the background preload propagated the
+    /// resulting decode error, the server never became ready again.
+    #[tokio::test]
+    #[ignore] // Requires running server (PostgreSQL)
+    async fn pr420_pg_rotate_persists_material() {
+        let database_url = std::env::var("DATABASE_URL")
+            .unwrap_or_else(|_| "postgres://kms:kms123@localhost:5432/kms".to_string());
+
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&database_url)
+            .await
+            .expect("Failed to connect to PostgreSQL");
+
+        let repo = PostgresKeyRepository::new(pool);
+        repo.migrate().await.expect("Migration failed");
+
+        let keystore = PostgresKeystore::new(repo.clone())
+            .await
+            .expect("Failed to create keystore");
+
+        let original = keystore
+            .generate_key(&KeySpec::Aes256Gcm, "pr420-rotate", "test-tenant")
+            .await
+            .expect("Failed to generate key");
+
+        let rotated = keystore
+            .rotate_key(&original.id, "test-tenant")
+            .await
+            .expect("Failed to rotate key");
+
+        // The rotated-to row must carry the encrypted material.
+        let encrypted = repo
+            .find_encrypted_material(&rotated.id)
+            .await
+            .expect("material lookup failed")
+            .expect("the rotated key must have encrypted material in the database");
+        assert!(!encrypted.is_empty());
+
+        // A fresh keystore (empty cache) must be able to load and use it —
+        // that is the "survives a restart" property.
+        let fresh = PostgresKeystore::new(repo)
+            .await
+            .expect("Failed to create fresh keystore");
+
+        let plaintext = b"pr420 rotate persistence probe".to_vec();
+        let ciphertext = fresh
+            .encrypt(&rotated.id, &plaintext, None, "test-tenant")
+            .await
+            .expect("the rotated key must be usable after a restart");
+        let decrypted = fresh
+            .decrypt(&rotated.id, &ciphertext, None, "test-tenant")
+            .await
+            .expect("the rotated key must decrypt after a restart");
+        assert_eq!(decrypted, plaintext);
+    }
+
+    /// Audit B8-f: a key row **without** material must not abort the background
+    /// preload.
+    ///
+    /// `find_encrypted_material` decoded the nullable `encrypted_material`
+    /// column into a non-optional `Vec<u8>`, so a NULL turned into a hard
+    /// decode error (`unexpected null`) that the preload propagated with `?`.
+    /// The whole preload then aborted, `keys_ready` was never set, and
+    /// `/readyz` answered 503 for the rest of the process' life.
+    #[tokio::test]
+    #[ignore] // Requires running server (PostgreSQL)
+    async fn pr420_pg_preload_survives_null_material_row() {
+        let database_url = std::env::var("DATABASE_URL")
+            .unwrap_or_else(|_| "postgres://kms:kms123@localhost:5432/kms".to_string());
+
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&database_url)
+            .await
+            .expect("Failed to connect to PostgreSQL");
+
+        let repo = PostgresKeyRepository::new(pool.clone());
+        repo.migrate().await.expect("Migration failed");
+
+        // A row without material: `repo.insert()` does not write the
+        // `encrypted_material` column, so the row lands NULL-material.
+        let orphan = KeyMeta {
+            id: Uuid::new_v4(),
+            tenant_id: "test-tenant".to_string(),
+            name: "pr420-orphan".to_string(),
+            spec: KeySpec::Aes256Gcm,
+            status: KeyStatus::Active,
+            created_at: Utc::now(),
+            rotated_at: None,
+            version: 1,
+            description: None,
+            metadata: Default::default(),
+        };
+        repo.insert(&orphan).await.expect("insert orphan row");
+
+        // The precondition is checked with a direct query: the repository
+        // helper is the code under repair and must not be used to assert it.
+        let is_null: bool =
+            sqlx::query_scalar("SELECT encrypted_material IS NULL FROM keys WHERE id = $1")
+                .bind(orphan.id)
+                .fetch_one(&pool)
+                .await
+                .expect("precondition query failed");
+        assert!(is_null, "the orphan row must have no material");
+
+        let keystore = PostgresKeystore::new(repo)
+            .await
+            .expect("Failed to create keystore");
+
+        // A usable key, so the preload has something to load.
+        keystore
+            .generate_key(&KeySpec::Aes256Gcm, "pr420-good", "test-tenant")
+            .await
+            .expect("Failed to generate key");
+
+        // The preload must succeed and skip only the orphan.
+        let handle = keystore.spawn_load_keys();
+        let loaded = handle
+            .await
+            .expect("JoinHandle")
+            .expect("spawn_load_keys must not fail because of one bad row");
+        assert!(loaded > 0, "the usable keys must have been loaded");
+        assert!(
+            keystore.keys.get_cloned(&orphan.id).is_none(),
+            "the key without material must not be cached"
+        );
     }
 
     /// Audit P3-1: the PostgreSQL backend must validate imported material with
