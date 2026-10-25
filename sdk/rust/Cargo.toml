@@ -1,0 +1,44 @@
+[package]
+name = "gm-kms-sdk"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish = false
+description = "Rust SDK for the gm-kms 国密 key management service (REST/JSON)"
+
+[lib]
+name = "gm_kms_sdk"
+path = "src/lib.rs"
+
+[dependencies]
+# REST/JSON transport, matching the other three SDKs (Go, Python, JavaScript).
+# `rustls-tls` keeps the SDK free of a system OpenSSL dependency; no protoc,
+# no gRPC bindings.
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+base64 = { workspace = true }
+uuid = { workspace = true }
+thiserror = { workspace = true }
+url = { workspace = true }
+
+[dev-dependencies]
+# The drift guards compare the SDK's wire types against the server's own REST
+# DTOs and run the SDK against a real in-process server.
+kms-api = { path = "../../crates/kms-api" }
+kms-audit = { path = "../../crates/kms-audit" }
+kms-core = { path = "../../crates/kms-core" }
+kms-keystore = { path = "../../crates/kms-keystore" }
+kms-policy = { path = "../../crates/kms-policy" }
+# audit B8-e: the end-to-end guard builds an "approved but expired" approval
+# request, which needs the approval entity types.
+kms-approval = { path = "../../crates/kms-approval" }
+gm-sm9-rs = { workspace = true }
+axum = { workspace = true }
+chrono = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["full"] }

@@ -10,6 +10,9 @@ members = [
     "crates/kms-hsm",
     "crates/kms-mfa",
     "crates/kms-approval",
+    # The Rust SDK (audit B8-e). A workspace member so that `cargo test
+    # --workspace` and `cargo clippy --all-targets` cover it automatically.
+    "sdk/rust",
 ]
 
 [package]

@@ -1349,6 +1349,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "gm-kms-sdk"
+version = "0.2.7"
+dependencies = [
+ "axum",
+ "base64 0.22.1",
+ "chrono",
+ "gm-sm9-rs",
+ "kms-api",
+ "kms-approval",
+ "kms-audit",
+ "kms-core",
+ "kms-keystore",
+ "kms-policy",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+ "url",
+ "uuid",
+]
+
+[[package]]
 name = "gm-sm9-rs"
 version = "0.1.1"
 source = "git+https://github.com/GM-Engineers/gm?rev=c77f0d71eeb75b3500f8a80d20a3dfe3c221ebac#c77f0d71eeb75b3500f8a80d20a3dfe3c221ebac"
