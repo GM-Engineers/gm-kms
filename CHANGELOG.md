@@ -4,6 +4,73 @@ All notable changes to gm-kms will be documented in this file.
 
 ## [0.3.0] — Unreleased
 
+### 上游审计整改（upstream audit remediation）
+
+分支 `fix/upstream-audit-2026h2`（基线 `release/0.3.0` @ `51a8e16`）共 **36 个提交**，闭合上游审计报告复核确认的全部 **22 项**问题（21 项复核属实 + 1 项新发现的 P0 功能阻断），并追加两轮独立复核（B7-*）与缺口闭合（B8-*）。每项均带回归测试；每批提交前通过 `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`（nightly 与 CI 稳定版 1.88 双通道），以及 PostgreSQL/Redis 集成套件（`--ignored`，45 passed / 0 failed）。
+
+#### Security
+
+- **P0 — 接口层 AEAD 往返断裂（CRITICAL-NEW）**：REST/gRPC 的 decrypt 硬编码 `format_version: 0`，而 encrypt 产出 `format_version: 2`（AAD 绑定 `key_id`/`tenant_id`/`version`），GCM tag 校验必然失败——加解密在接口层完全不可用。`EncryptResponse` / `DecryptRequest` 增带 `format_version`，缺省按 v2 重算绑定 AAD，`format_version ∈ {0,1}` 的历史密文继续可解；REST 与 gRPC 两条通道对齐。
+- **P1-3 — 请求租户来自已认证身份**：gRPC 与 REST 两个入口都从认证后的 API key 推导租户，不再信任请求体自报的 `tenant_id`；gRPC 侧移除空值默认 `"default"` 的静默放行。
+- **P1-4 — fail-closed 启动**：PG 不可用 / init 失败 / `load_keys` 失败时生产模式启动失败，不再静默降级到内存密钥库；内存降级仅在显式 `dev_mode` / `allow_insecure` 下允许。`/v1/health`、`/readyz` 反映密钥库真实加载态。新增 `database.connect_timeout_secs`（默认 30，0 关闭）让拒绝在有限时间内可见。
+- **P1-1 — 导出透传可信租户**：REST `export_key` 原硬编码 `""`，改为透传可信租户。
+- **P1-2 / P2-8 — 审批绑定资源与有效期**：`is_approved` 增 `resource_id` 比对与 `Utc::now() <= expires_at` 判定；REST/gRPC 的 export/delete 传入被操作资源 id。基线对过期审批和绑定其他资源的审批一律返回 200 并交出 `wrapped_key`。
+- **P2-4 — 轮换补审批守卫**：REST/gRPC `rotate_key` 补 `KeyRotate`（Double）审批守卫，统一由 `require_approval(op, resource_id)` 驱动，消除"枚举级别 vs 接口强制"的不一致。
+- **P2-5 / P2-6 — 导出语义收敛与国密保护路径**：gRPC 导出改为与 REST 相同的包裹语义（返回 `wrapped_key` / `encrypted_transport_key`，明文材料不再直接回传）；导出保护新增 SM2 路径（SM2 加密传输密钥 + SM4-GCM 包裹），RSA-OAEP 保留为兼容选项。
+- **P2-2 / P2-3 / P3-4 — 导出/解密版本语义**：`ExportKeyRequest` 增 `version`，允许导出 Obsolete/历史版本；统一 Postgres 与 Software 后端的 decrypt 版本选择行为；移除 `export_id`/`expires_at` 死字段。
+- **B7-a — 审批身份来自已认证 key**：requestor/approver/rejector 与角色改由认证身份推导，body 自报字段仍接受但忽略并告警。此前单个 API key 可以用三个不同的 body 名字投三张票，满足导出所需的 Triple quorum。引擎同时拒绝低于操作所需级别的审批，并保留已达成的最高级别；审批请求的资源必须属于该请求的租户。
+- **B7-g — 审批资源类型由操作推导**：此前把 key 资源标成 `policy` 即可把审批绑到别的租户的 key。类型改由操作推导，body 中的冲突值记录后忽略。
+- **B7-g — 关闭 PBAC 的协议切换旁路**：gRPC 23 个方法全部评估属性策略，REST 侧 6 个 handler（`sign` / `verify` / `get_key` / `envelope_encrypt` / `envelope_decrypt` / `envelope_rewrap`）从不调用 `check_rest_pbac`——被 gRPC 拒绝的调用方换 REST 即可通过。补齐后两通道评估同一策略，动作名与 resource id 与 gRPC 逐字一致。
+- **B7-g — PBAC 未配置时不再全量 403**：服务器启动时构造空策略引擎且从不加载策略，`PBACEngine::evaluate` 的默认拒绝使每个 PBAC 端点一律 403（KMS 开箱不可用）。改为：未配置策略 → 属性控制不生效，仅以 API key 权限位掩码为门；配置了策略 → 恢复默认拒绝。REST/gRPC 共用 `auth::evaluate_pbac` 一个评估点，两协议不再可能分歧。
+- **B7-b — REST HMAC / DH derive 补齐 PBAC 与租户隔离**：REST `hmac`/`hmac_verify` 跳过 PBAC；DH derive 端点既无 PBAC 也无租户校验，可用他人私钥导出共享密钥。`derive_shared_secret` 改为接收操作租户并由各后端实现校验归属——校验进入 KeystoreBackend 契约而非 API 层约定（对实现方是破坏性变更；0.3.0 未发布前可接受）。
+- **B7-c — 未知版本 fail-closed**：trait 默认的 `get_key_material_version` 忽略请求版本、返回当前材料，版本化导出因此交出错误的密钥并附上按错误密钥算的指纹；Redis 包装器同样未覆写而遮蔽了软件后端正确的版本处理。默认实现改为只服务当前版本、旧版本 fail-closed。
+- **B7-f — 模拟 TPM 不再绕过生产门禁**：模拟 TPM 后端未走与内存软件降级相同的 fail-closed 判定，可能被误用于生产。
+- **B7-g — API key 配置校验**：启动时拒绝空/空白 secret、重复 secret 与重复 key id。此前一个已设置但为空的 secret 环境变量会注册一个**空**凭据，而 `x-api-key` 头为空即可通过常量时间比较认证。
+- **B7-f — 熵源失败不再 panic**：OS CSPRNG 助手改为返回错误，熵源故障不会在请求路径上变成拒绝服务。
+- **P3-2 — DRBG 与随机源**：DRBG 增实例化 KAT 自检与周期重播种；密钥材料与 nonce 统一走 OS CSPRNG，DRBG 仅限非密钥场景。
+- **P4-2 — 密钥销毁证明改用 HMAC-SM3**（原 HMAC-SHA256）。
+
+#### Fixed
+
+- **B8-d — 审批门的 400 / 403 语义统一**：REST 对审批门的拒绝答 400，而 gRPC 同一道门答 `permission_denied`——一个格式合法但未授权的请求被报成畸形调用，且两条通道在同一道安全门上分歧。拒绝统一为 `ApiError::Forbidden`（403）；400 保留给缺失或畸形的 `approval_id`（那是畸形调用，不是授权失败）。语义表 `docs/api-semantics.md` §8.5 补该区分。
+- **B8-b — 缓存条目一步解析**：每次操作都是"lazy-load 写回缓存 → 再从缓存读出"两步，而 `insert_with_eviction` 在插入后按上限淘汰，上限为 0 时写回即淘汰自己的条目——**专门用来少留密钥材料在内存的配置反而让每个密钥都报 `KeyNotFound`**。新增 `entry_for` helper 直接返回条目（命中取缓存，未命中取新加载），8 个读操作改用。
+- **B8-g — 写路径不再依赖缓存驻留**：轮换与删除改为在缓存修改闭包内做 `can_rotate()` 检查，而闭包无法返回错误，于是 panic（`rotate_key: can_rotate returned false after try_read success`）打挂请求；现在报 `KeyOperationNotAllowed`，与软件后端一致并由 API 层映射为 4xx。写入顺序改为"先落库、后刷新缓存"——旧顺序在数据库写失败时留下缓存声称 obsolete 而数据库仍称 active，且新密钥材料只存在于缓存中，一次失败的轮换会静默丢密钥。
+- **B8-f — 单条坏密钥行不再拖垮整个 KMS**：一条无法使用的密钥行不再导致启动/加载失败。
+- **B8-a — 导入走共享的算法感知校验器**：PG 后端的 RSA-4096 导入长度校验改按算法解析区间，与其他后端走同一校验器。
+- **B8-c — 启动时校验最近一次备份可打开**：`KeyBackupService::load_or_create` 只校验主密钥本身，从不打开备份文件，损坏或用另一把主密钥写入的备份要等到真正恢复时才暴露。新增 `verify_latest_backup()`，用与恢复相同的工作打开最新备份（SM3-HMAC 验签 + SM4-GCM 解密 + SM3 材料哈希），明文由 `zeroize::Zeroizing` 持有。文件级失败记 `tracing::error!` 但不阻断启动——主密钥本身已在 `load_or_create` 中 fail-closed，拒绝启动会让运维无法进入实例修复坏文件。
+- **B7-d — gRPC decrypt 版本缺省归一**：proto3 无法区分未设置与 0，gRPC 因此请求版本 0 并报 `key version 0 not found`，而 REST 缺省为版本 1。handler 现在把 0 映射到同一缺省。
+- **B7-f — 加密主密钥文件原子创建**：改用 owner-only 模式原子写入，关闭此前短暂全局可读的窗口。
+- **B7-g — 版本语义对齐 + 密钥文件原子写**（见上）。
+- **B7-f — `ExportKeyResponse` 使用新字段号**并保留被复用的旧号，避免旧客户端误解析新 wire 类型。
+
+#### Added
+
+- **P2-1 — 托管 HMAC-SM3 密钥规格与独立 RPC**：新增 `KeySpec::Sm3Hmac` 与独立的 `Hmac` / `HmacVerify` RPC（`{key_id,data,aad?} -> {mac,version}`），走 `gm_crypto::sm3::Sm3Hmac`，不复用 AES-GCM 分支。
+- **P2-7 — 备份主密钥跨重启持久化**：`MasterKey` 复用 KEK 的 `export_encrypted`/`import_encrypted` 机制接入启动流程；启动时校验能否解开上次备份，失败告警。
+- **B7-e — `[[api_keys]]` 配置段**：key_id、role、tenant、secret_env。密钥从**环境变量**读取而非配置文件；未知角色或缺失 secret 使启动失败；未绑定租户的 key 在启动时告警。部署指南与语义表同步说明该配置面。
+- **B8-e — Rust SDK（`sdk/rust`，包名 `gm-kms-sdk`）**：仓库原有 Go/Python/JavaScript SDK，Rust 消费方需自行拼装 REST 调用、base64 编码与逐端点的租户位置，且服务端 wire 格式变动时构建不会报警。新增为 workspace member（`publish = false`），`cargo test --workspace` 与 `cargo clippy --all-targets` 自动覆盖。REST/JSON 通道，无需 protoc、无 gRPC 绑定、无代码生成；`reqwest` + `rustls-tls` 不依赖系统 OpenSSL。
+  - 护栏：`tests/contract.rs` 形状护栏 26 例，双向断言服务端 DTO 接受 SDK body、SDK DTO 接受服务端应答，逐层比对字段名；`tests/e2e.rs` 语义护栏 5 例，跑真实 `kms-api` server（loopback）：密钥全生命周期（create → encrypt → decrypt → hmac → hmac/verify 篡改 tag → 三个**不同** key 的三次审批 → export）、无审批导出、过期审批解锁导出、未知 key；另有 5 个 client 单元测试与 3 个 doctest。
+  - 护栏当场查出两处缺陷：导出缺审批实际答 400（请求畸形）而非 403（语义见 `docs/api-semantics.md` §8.5）；`Client::endpoint` 在 base URL 以斜杠结尾时拼出 `https://host/api//v1/keys`。
+- **B8-d — 审批恢复钩子**：`ApprovalEngine::restore_request` / `ApprovalManager::restore_request`，供持久化层在不延长生命周期的前提下重新装载请求。`create_request` 始终由所需级别推导新的 `expires_at`，因此"已批准但已过期"的请求无法被构造；恢复的请求保留自己的截止时间与自己的投票，重复 id 被拒绝而非静默覆盖活跃请求。
+
+#### Changed
+
+- **P3-1 — 分离"可生成 / 可导入 / 可声明"三清单**：校验层只放行真正支持的类型；未实现类型返回明确的"暂不支持"，不再以别的算法的名义通过。
+- **P4-1 — 删除遗留 `Encryptor`/`Decryptor`/`AlgorithmFactory` 层**：避免与服务层出现两套 AAD 绑定的漂移实现。
+- **P3-3 — HSM/TPM 表述改为"适配架构预留（当前 stub/模拟器）"**：仓库与 GitHub 描述同步。
+- **B7-g — `tenant-admin` 角色**：映射到 `Role::Admin`，使 `tenant_admin` 操作可被审批。该角色只持 approve 权限，三名审批人的职责分离不受影响。
+- **B7-g — 审批请求的读取/列举限定为拥有它的租户**；拒绝路径的引擎错误不再一律压成 "not found"，自拒为 403。
+- **B7-g — Go SDK 不再发送服务端已忽略的身份字段**（`approver_id` / `approver_role` / `rejector_id` / `rejector_role` / `requestor_id`），这些字段改由服务端从 API key 推导。
+- **B7-g — PBAC 策略持久化（未实现，已登记为已知限制）**：策略仅存内存、不落盘、不在启动时加载，重启后属性限制全部消失。启动时打印 `warn` 说明该控制当前不生效且策略不跨重启存活，部署指南同步记录。
+- **B8-a — `create_software_keystore` / `create_software_keystore_inner`** 走共享校验器。
+
+#### Documentation
+
+- **P4-3 — `docs/api-semantics.md` REST/gRPC 语义对照表**：含租户缺省、错误映射、导出语义与版本行为，并以测试固化。
+- **B7-a / B7-b / B7-c / B7-d / B7-e / B7-g** 的语义同步写入该表；其中"两通道此处行为一致"的旧说法有误，已更正。
+- **`docs/api-semantics.md` §8.5** 增补审批门的 400-vs-403 区分表（B8-d）。
+- **README / `README.en.md`** 的仓库定位与 HSM/TPM 表述随 P3-3 更新。
+
 ### Added
 
 - **Opt-in background preload via `PostgresKeystore::spawn_load_keys()`** (PR-4.19 / PR-4.17 follow-up): new method returns a `tokio::task::JoinHandle<Result<usize>>` so callers can decouple startup blocking from DB preload. Pre-PR-4.19 callers used `await pg_keystore.load_keys()` which blocked the gRPC/HTTP listener by 5–10 seconds for 10k keys (O(N) DB queries + KEK decrypt × N). Post-PR-4.19 the server's `create_software_keystore` and `create_software_keystore_inner` helpers fire the preload in a background task and return immediately; PR-4.17's lazy-load covers any keys not yet cached when the first request lands. Internal refactor: extracted `decrypt_material_static(kek, key_id, encrypted)` from `decrypt_material` so the spawned task can decrypt without a `&self` borrow; added shared `load_one_into_cache` helper used by both sync (`load_keys`) and async (`spawn_load_keys`) paths. `PostgresKeyRepository` now derives `Clone` so the spawned task can take its own handle to the `sqlx::PgPool` (Arc-backed; zero-cost clone). Four new tests: 3 unit tests verifying the helper's type shape and early-return error path; 1 `#[ignore]` live-DB integration test verifying that sync and background preload agree on key count. Bumps the workspace to 0.2.7 (patch; new API, no breakage).
