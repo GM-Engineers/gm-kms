@@ -129,8 +129,8 @@ impl PostgresKeystore {
 
     /// Audit B8-b: resolve the key entry an operation has to work on.
     ///
-    /// The operations used to be a two-step dance: `verify_tenant` (which
-    /// lazy-loads the entry from the database on a cache miss and writes it
+    /// The operations used to be a two-step dance: a tenant check (which
+    /// lazy-loaded the entry from the database on a cache miss and wrote it
     /// back into the bounded cache) followed by a `get_cloned` that read the
     /// entry back **out of the cache**. `BoundedKeyCache::insert_with_eviction`
     /// evicts down to the cap *after* inserting, so with a cap of 0 the
@@ -185,14 +185,6 @@ impl PostgresKeystore {
         );
 
         Ok(entry)
-    }
-
-    /// Verify that the key identified by `key_id` exists and is owned
-    /// by `tenant_id`. Returns `Error::KeyNotFound` for both "missing
-    /// key" and "wrong tenant" — keystore cannot distinguish them
-    /// (consistent with PR-1.2 conflation).
-    async fn verify_tenant(&self, key_id: &Uuid, tenant_id: &str) -> Result<()> {
-        self.entry_for(key_id, tenant_id).await.map(|_| ())
     }
 
     /// Load KEK from the configured source.
@@ -340,7 +332,7 @@ impl PostgresKeystore {
     }
 
     /// PR-4.17 / P2-11: lazy-load a single `KeyEntry` from
-    /// PostgreSQL. Used by `verify_tenant` on cache miss so
+    /// PostgreSQL. Used by `entry_for` on cache miss so
     /// keys beyond `with_in_memory_cap(n)` remain accessible.
     /// Without this, the cap silently renders the rest of
     /// the keyspace unusable (only the first `n` keys loaded
@@ -1062,70 +1054,40 @@ impl super::KeystoreBackend for PostgresKeystore {
     }
 
     async fn rotate_key(&self, key_id: &Uuid, tenant_id: &str) -> Result<KeyMeta> {
-        self.verify_tenant(key_id, tenant_id).await?;
+        // Audit B8-g: the rotation must not depend on the entry being resident
+        // in the bounded cache. The old implementation read the entry back out
+        // of the cache (`try_read` / `mutate_and_insert`), so an entry that
+        // had been evicted — which under `with_in_memory_cap(0)` is *every*
+        // entry — made the rotation fail with `KeyNotFound`. `entry_for`
+        // resolves the entry from the database on a cache miss, so the
+        // operation works under any cap.
+        let entry = self.entry_for(key_id, tenant_id).await?;
 
-        // PR-4.15: BoundedKeyCache.mutate_and_insert
-        // performs the in-place status flip and the
-        // follow-up new-entry insert atomically with
-        // respect to the cache's FIFO cap. We pre-compute
-        // the new material OUTSIDE the closure (because the
-        // closure returns `(R, Vec<...>)` — not Result —
-        // since `?` inside the closure would lose the
-        // borrow on `entry` before the closures runs).
-        let new_material = {
-            let spec = self
-                .keys
-                .try_read(key_id, |e| e.meta.spec.clone())
-                .ok_or_else(|| Error::KeyNotFound(key_id.to_string()))?;
-            Self::generate_key_material(&spec)?
+        if !entry.meta.status.can_rotate() {
+            // Same error the software backend raises for a key in a
+            // non-rotatable state.
+            return Err(Error::KeyOperationNotAllowed(format!(
+                "Key {key_id} cannot be rotated"
+            )));
+        }
+
+        let new_material = Self::generate_key_material(&entry.meta.spec)?;
+
+        let old_meta = entry.meta.clone();
+        let old_material = entry.material.clone();
+
+        let new_meta = KeyMeta {
+            id: Uuid::new_v4(),
+            tenant_id: old_meta.tenant_id.clone(),
+            name: old_meta.name.clone(),
+            spec: old_meta.spec.clone(),
+            status: KeyStatus::Active,
+            created_at: Utc::now(),
+            rotated_at: Some(old_meta.created_at),
+            version: old_meta.version + 1,
+            description: old_meta.description.clone(),
+            metadata: old_meta.metadata.clone(),
         };
-        let (old_meta, new_meta, old_material) = self
-            .keys
-            .mutate_and_insert(
-                key_id,
-                |entry| -> (
-                    (KeyMeta, KeyMeta, Zeroizing<Vec<u8>>),
-                    Vec<(Uuid, KeyEntry)>,
-                ) {
-                    if !entry.meta.status.can_rotate() {
-                        // We can't propagate the error through the
-                        // closure's tuple return type; panic instead.
-                        // Pre-check via `try_read` above is the
-                        // recommended path; this is a defense-in-depth
-                        // assertion that should never fire.
-                        panic!("rotate_key: can_rotate returned false after try_read success");
-                    }
-
-                    entry.meta.status = KeyStatus::Obsolete;
-                    let old_meta = entry.meta.clone();
-                    let old_material = entry.material.clone();
-
-                    let new_id = Uuid::new_v4();
-                    let new_meta = KeyMeta {
-                        id: new_id,
-                        tenant_id: entry.meta.tenant_id.clone(),
-                        name: entry.meta.name.clone(),
-                        spec: entry.meta.spec.clone(),
-                        status: KeyStatus::Active,
-                        created_at: Utc::now(),
-                        rotated_at: Some(entry.meta.created_at),
-                        version: entry.meta.version + 1,
-                        description: entry.meta.description.clone(),
-                        metadata: entry.meta.metadata.clone(),
-                    };
-
-                    let new_entry = KeyEntry {
-                        meta: new_meta.clone(),
-                        material: Zeroizing::new(new_material.clone()),
-                    };
-
-                    (
-                        (old_meta, new_meta, old_material),
-                        vec![(new_id, new_entry)],
-                    )
-                },
-            )
-            .ok_or_else(|| Error::KeyNotFound(key_id.to_string()))?;
 
         // Audit B8-f: the new key's material has to be persisted, not only kept
         // in the cache. `repo.insert()` does not write the `encrypted_material`
@@ -1136,6 +1098,12 @@ impl super::KeystoreBackend for PostgresKeystore {
         // to the key id (PR-1.4 AAD), so it is encrypted with `new_meta.id`.
         let encrypted_new_material = self.encrypt_material(&new_meta.id, &new_material)?;
 
+        // Audit B8-g: persist first, refresh the cache afterwards. The old
+        // order (cache first, database second) left the cache claiming
+        // "obsolete" while the database still said "active" whenever a
+        // database write failed, and the new key material existed only in the
+        // cache — a failed rotation silently dropped the new key.
+        //
         // Persist new key metadata and update old key status
         self.repo
             .insert(&new_meta)
@@ -1171,22 +1139,41 @@ impl super::KeystoreBackend for PostgresKeystore {
             .await
             .map_err(|e| Error::Internal(e.to_string()))?;
 
+        // Refresh the cache — best effort. The database is the source of
+        // truth; an entry that was evicted (or never cached) simply gets
+        // reloaded from the database on the next access.
+        self.keys.mutate(key_id, |cached| {
+            cached.meta.status = KeyStatus::Obsolete;
+        });
+        self.keys.insert_with_eviction(
+            new_meta.id,
+            KeyEntry {
+                meta: new_meta.clone(),
+                material: Zeroizing::new(new_material),
+            },
+        );
+
         Ok(new_meta)
     }
 
     async fn delete_key(&self, key_id: &Uuid, tenant_id: &str) -> Result<()> {
-        self.verify_tenant(key_id, tenant_id).await?;
-        self.keys
-            .mutate(key_id, |entry| {
-                entry.meta.status = KeyStatus::PendingDeletion
-            })
-            .ok_or_else(|| Error::KeyNotFound(key_id.to_string()))?;
+        // Audit B8-g: resolve the entry (database fallback on a cache miss)
+        // instead of requiring it to be resident in the bounded cache. The
+        // old implementation flipped the cached status and failed with
+        // `KeyNotFound` when the entry had been evicted — under
+        // `with_in_memory_cap(0)` that was every key.
+        self.entry_for(key_id, tenant_id).await?;
 
         // Soft delete in PostgreSQL
         self.repo
             .soft_delete(key_id, "kms-system")
             .await
             .map_err(|e| Error::Internal(e.to_string()))?;
+
+        // Refresh the cache — best effort, see `rotate_key`.
+        self.keys.mutate(key_id, |cached| {
+            cached.meta.status = KeyStatus::PendingDeletion;
+        });
 
         Ok(())
     }
@@ -1624,6 +1611,238 @@ mod tests {
             keystore.keys.get_cloned(&orphan.id).is_none(),
             "the key without material must not be cached"
         );
+    }
+
+    /// Audit B8-g: rotating a key must not depend on the entry being resident
+    /// in the bounded cache.
+    ///
+    /// The rotation used to read the entry back out of the cache
+    /// (`try_read` + `mutate_and_insert`), so an evicted entry — which under
+    /// `with_in_memory_cap(0)` is *every* entry — made the rotation fail with
+    /// `KeyNotFound`. The write path now resolves the entry through the
+    /// database and only refreshes the cache afterwards.
+    #[tokio::test]
+    #[ignore] // Requires running server (PostgreSQL)
+    async fn pr421_pg_rotate_works_beyond_the_in_memory_cap() {
+        let database_url = std::env::var("DATABASE_URL")
+            .unwrap_or_else(|_| "postgres://kms:kms123@localhost:5432/kms".to_string());
+
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&database_url)
+            .await
+            .expect("Failed to connect to PostgreSQL");
+
+        let repo = PostgresKeyRepository::new(pool);
+        repo.migrate().await.expect("Migration failed");
+
+        let mut keystore = PostgresKeystore::new(repo.clone())
+            .await
+            .expect("Failed to create keystore");
+
+        let original = keystore
+            .generate_key(&KeySpec::Aes256Gcm, "pr421-rotate", "test-tenant")
+            .await
+            .expect("Failed to generate key");
+
+        // Applying the cap rebuilds the cache: nothing stays resident any
+        // more, not even the key that was just generated.
+        keystore = keystore.with_in_memory_cap(0);
+        assert!(
+            keystore.keys.get_cloned(&original.id).is_none(),
+            "cap=0 must not keep the key material resident"
+        );
+
+        let rotated = keystore
+            .rotate_key(&original.id, "test-tenant")
+            .await
+            .expect("rotation must work beyond the in-memory cap");
+        assert_eq!(rotated.version, original.version + 1);
+        assert_ne!(rotated.id, original.id, "the rotation must mint a new id");
+
+        // The new key's material must be persisted — a rotation that only
+        // lives in the cache loses the key on the next restart.
+        let encrypted = repo
+            .find_encrypted_material(&rotated.id)
+            .await
+            .expect("material lookup failed")
+            .expect("the rotated key must have encrypted material in the database");
+        assert!(!encrypted.is_empty());
+
+        // And the new key must be usable through the database, like every
+        // other key beyond the cap.
+        let plaintext = b"pr421 rotate beyond the cap".to_vec();
+        let ciphertext = keystore
+            .encrypt(&rotated.id, &plaintext, None, "test-tenant")
+            .await
+            .expect("the rotated key must be usable beyond the cap");
+        let decrypted = keystore
+            .decrypt(&rotated.id, &ciphertext, None, "test-tenant")
+            .await
+            .expect("the rotated key must decrypt beyond the cap");
+        assert_eq!(decrypted, plaintext);
+
+        // The old key must be obsolete now.
+        let old_meta = repo
+            .find_by_id(&original.id)
+            .await
+            .expect("lookup failed")
+            .expect("the old key must still exist");
+        assert_eq!(old_meta.status, KeyStatus::Obsolete);
+    }
+
+    /// Audit B8-g: deleting a key must not depend on the entry being resident
+    /// in the bounded cache either.
+    #[tokio::test]
+    #[ignore] // Requires running server (PostgreSQL)
+    async fn pr421_pg_delete_works_beyond_the_in_memory_cap() {
+        let database_url = std::env::var("DATABASE_URL")
+            .unwrap_or_else(|_| "postgres://kms:kms123@localhost:5432/kms".to_string());
+
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&database_url)
+            .await
+            .expect("Failed to connect to PostgreSQL");
+
+        let repo = PostgresKeyRepository::new(pool.clone());
+        repo.migrate().await.expect("Migration failed");
+
+        let mut keystore = PostgresKeystore::new(repo.clone())
+            .await
+            .expect("Failed to create keystore");
+
+        let meta = keystore
+            .generate_key(&KeySpec::Aes256Gcm, "pr421-delete", "test-tenant")
+            .await
+            .expect("Failed to generate key");
+
+        keystore = keystore.with_in_memory_cap(0);
+        assert!(
+            keystore.keys.get_cloned(&meta.id).is_none(),
+            "cap=0 must not keep the key material resident"
+        );
+
+        keystore
+            .delete_key(&meta.id, "test-tenant")
+            .await
+            .expect("deletion must work beyond the in-memory cap");
+
+        // The row must be soft-deleted in the database.
+        let deleted: bool =
+            sqlx::query_scalar("SELECT deleted_at IS NOT NULL FROM keys WHERE id = $1")
+                .bind(meta.id)
+                .fetch_one(&pool)
+                .await
+                .expect("precondition query failed");
+        assert!(deleted, "the key must be soft-deleted in the database");
+
+        // A deleted key must not be resolvable any more.
+        let result = keystore
+            .encrypt(&meta.id, b"hello", None, "test-tenant")
+            .await;
+        assert!(
+            result.is_err(),
+            "a deleted key must not be usable, got {result:?}"
+        );
+    }
+
+    /// Audit B8-g: a key in a state that forbids rotation must be rejected
+    /// with a proper error — not a panic.
+    ///
+    /// The old implementation checked `can_rotate()` *inside* the cache
+    /// mutation closure, which cannot return an error, so it panicked
+    /// ("rotate_key: can_rotate returned false after try_read success") and
+    /// took the whole process down. The check now happens before any
+    /// mutation and reports `KeyOperationNotAllowed`, which the API layer
+    /// maps to a 4xx.
+    #[tokio::test]
+    #[ignore] // Requires running server (PostgreSQL)
+    async fn pr421_pg_rotate_rejects_a_non_rotatable_key() {
+        let database_url = std::env::var("DATABASE_URL")
+            .unwrap_or_else(|_| "postgres://kms:kms123@localhost:5432/kms".to_string());
+
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&database_url)
+            .await
+            .expect("Failed to connect to PostgreSQL");
+
+        let repo = PostgresKeyRepository::new(pool);
+        repo.migrate().await.expect("Migration failed");
+
+        let mut keystore = PostgresKeystore::new(repo.clone())
+            .await
+            .expect("Failed to create keystore");
+
+        let meta = keystore
+            .generate_key(&KeySpec::Aes256Gcm, "pr421-non-rotatable", "test-tenant")
+            .await
+            .expect("Failed to generate key");
+
+        // Put the key into a state that forbids rotation.
+        repo.update_status(&meta.id, KeyStatus::PendingDeletion)
+            .await
+            .expect("failed to set the key status");
+
+        keystore = keystore.with_in_memory_cap(0);
+
+        let result = keystore.rotate_key(&meta.id, "test-tenant").await;
+        match result {
+            Err(kms_core::error::Error::KeyOperationNotAllowed(_)) => {}
+            other => panic!("expected KeyOperationNotAllowed, got {other:?}"),
+        }
+    }
+
+    /// Audit B8-g: rotating a key that was deleted must report an error — it
+    /// must never panic.
+    ///
+    /// The old implementation checked `can_rotate()` inside the cache
+    /// mutation closure, which cannot return an error, so it panicked
+    /// ("rotate_key: can_rotate returned false after try_read success") and
+    /// took the whole request down with it. The check now happens before any
+    /// mutation and reports `KeyOperationNotAllowed`, which the API layer
+    /// maps to a 4xx.
+    #[tokio::test]
+    #[ignore] // Requires running server (PostgreSQL)
+    async fn pr421_pg_rotate_after_delete_does_not_panic() {
+        let database_url = std::env::var("DATABASE_URL")
+            .unwrap_or_else(|_| "postgres://kms:kms123@localhost:5432/kms".to_string());
+
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&database_url)
+            .await
+            .expect("Failed to connect to PostgreSQL");
+
+        let repo = PostgresKeyRepository::new(pool);
+        repo.migrate().await.expect("Migration failed");
+
+        let keystore = PostgresKeystore::new(repo)
+            .await
+            .expect("Failed to create keystore");
+
+        let meta = keystore
+            .generate_key(
+                &KeySpec::Aes256Gcm,
+                "pr421-delete-then-rotate",
+                "test-tenant",
+            )
+            .await
+            .expect("Failed to generate key");
+
+        // The delete flips the key into `PendingDeletion`.
+        keystore
+            .delete_key(&meta.id, "test-tenant")
+            .await
+            .expect("Failed to delete key");
+
+        // Rotating it must be refused with an error, not a panic.
+        let result = keystore.rotate_key(&meta.id, "test-tenant").await;
+        match result {
+            Err(kms_core::error::Error::KeyOperationNotAllowed(_)) => {}
+            other => panic!("expected KeyOperationNotAllowed, got {other:?}"),
+        }
     }
 
     /// Audit P3-1: the PostgreSQL backend must validate imported material with
