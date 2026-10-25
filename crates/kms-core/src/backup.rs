@@ -528,6 +528,84 @@ impl KeyBackupService {
         Ok(())
     }
 
+    /// Open the most recent backup file and check that it could be restored
+    /// (audit B8-c / B5 P2-7).
+    ///
+    /// `load_or_create` only checks that the **master key** itself is usable
+    /// (an SM4-GCM round-trip plus an SM3-HMAC). It never opens a backup
+    /// file, so a corrupted file — or one written with a different master key
+    /// — surfaced only when a restore was actually attempted, long after the
+    /// incident that made the restore necessary.
+    ///
+    /// The newest backup file is selected by the timestamp in its name
+    /// (`{key_id}-{unix_timestamp}.json`), falling back to the file
+    /// modification time when the name carries no timestamp. The file is
+    /// checked end-to-end: the HMAC signature is verified, the material is
+    /// decrypted with the current master key and its SM3 integrity hash is
+    /// compared — the same work a restore does.
+    ///
+    /// Returns the path of the newest backup file, or `Ok(None)` when the
+    /// backup directory holds no backup file yet. An error means the newest
+    /// backup could **not** be opened.
+    pub fn verify_latest_backup(&self) -> Result<Option<std::path::PathBuf>> {
+        let dir = std::path::Path::new(&self.config.backup_path);
+        if !dir.exists() {
+            return Ok(None);
+        }
+
+        let entries = std::fs::read_dir(dir)
+            .with_context(|| format!("failed to read backup directory {}", dir.display()))?;
+
+        let mut newest: Option<(i64, std::path::PathBuf)> = None;
+        for entry in entries {
+            let entry = entry?;
+            let path = entry.path();
+            // The master key file is `master_key.enc`; only the signed
+            // backup files end in `.json`.
+            if path.extension().and_then(|s| s.to_str()) != Some("json") {
+                continue;
+            }
+            // The file name carries the backup timestamp.
+            let stamp = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .and_then(|s| s.rsplit('-').next())
+                .and_then(|s| s.parse::<i64>().ok())
+                .unwrap_or_else(|| {
+                    // No timestamp in the name: fall back to the
+                    // modification time, which is the same unix-second
+                    // scale and therefore comparable.
+                    std::fs::metadata(&path)
+                        .and_then(|m| m.modified())
+                        .ok()
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_secs() as i64)
+                        .unwrap_or(i64::MIN)
+                });
+            if newest.as_ref().is_none_or(|(best, _)| stamp > *best) {
+                newest = Some((stamp, path));
+            }
+        }
+
+        let Some((_, path)) = newest else {
+            return Ok(None);
+        };
+
+        // The same work a restore does: verify the signature, decrypt the
+        // material and check its integrity hash.
+        let backup = self
+            .verify_backup_file(&path)
+            .with_context(|| format!("failed to verify backup file {}", path.display()))?;
+        let material = zeroize::Zeroizing::new(
+            self.restore_key(&backup)
+                .with_context(|| format!("failed to decrypt backup file {}", path.display()))?,
+        );
+        // The plaintext is not needed any more; dropping it zeroizes it.
+        drop(material);
+
+        Ok(Some(path))
+    }
+
     /// Backup a key with SM4-GCM encryption and SM3-HMAC signing.
     ///
     /// Returns the `KeyBackup` metadata. The signed backup file is written
@@ -845,6 +923,130 @@ mod tests {
     }
 
     // -- Backup/restore roundtrip --
+
+    /// Audit B8-c: the startup check must find the most recent backup file
+    /// and confirm that it can actually be restored.
+    #[test]
+    fn test_verify_latest_backup_finds_the_newest_file() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = create_test_service(&temp_dir);
+
+        // No backup file yet.
+        assert!(
+            service.verify_latest_backup().unwrap().is_none(),
+            "an empty backup directory has no latest backup"
+        );
+
+        let key_meta = create_test_key_meta();
+        service
+            .backup_key(&key_meta, b"super_secret_key_material_32_bytes!!", None)
+            .unwrap();
+
+        let latest = service
+            .verify_latest_backup()
+            .unwrap()
+            .expect("the backup file must be found");
+        assert!(
+            latest
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with(&key_meta.id.to_string()),
+            "the file name must carry the key id, got {:?}",
+            latest.file_name()
+        );
+    }
+
+    /// Audit B8-c: a corrupted backup file must be reported instead of
+    /// silently passing the startup check.
+    #[test]
+    fn test_verify_latest_backup_reports_a_corrupted_file() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = create_test_service(&temp_dir);
+
+        let key_meta = create_test_key_meta();
+        service
+            .backup_key(&key_meta, b"super_secret_key_material_32_bytes!!", None)
+            .unwrap();
+
+        let latest = service
+            .verify_latest_backup()
+            .unwrap()
+            .expect("the backup file must be found");
+
+        // Corrupt the file: the HMAC signature no longer matches.
+        std::fs::write(&latest, b"{\"data\":\"tampered\",\"signature\":\"00\"}").unwrap();
+
+        let result = service.verify_latest_backup();
+        assert!(
+            result.is_err(),
+            "a corrupted backup file must be reported, got {result:?}"
+        );
+    }
+
+    /// Audit B8-c: a backup written with a different master key cannot be
+    /// restored with the current one — the startup check must say so.
+    #[test]
+    fn test_verify_latest_backup_reports_a_foreign_master_key() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = create_test_service(&temp_dir);
+
+        let key_meta = create_test_key_meta();
+        service
+            .backup_key(&key_meta, b"super_secret_key_material_32_bytes!!", None)
+            .unwrap();
+
+        // A service with a different master key, pointed at the same
+        // directory.
+        let other = KeyBackupService::with_random_master_key(BackupConfig {
+            backup_path: temp_dir.path().to_string_lossy().to_string(),
+            ..Default::default()
+        })
+        .unwrap();
+
+        let result = other.verify_latest_backup();
+        assert!(
+            result.is_err(),
+            "a backup from another master key must be reported, got {result:?}"
+        );
+    }
+
+    /// Audit B8-c: the production startup path uses a **persisted** master key
+    /// (`load_or_create`). With that key in place, a corrupted newest backup
+    /// file must still be reported — the master key being usable says nothing
+    /// about the file.
+    #[test]
+    fn test_verify_latest_backup_reports_a_corrupted_file_with_a_persisted_master_key() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = BackupConfig {
+            backup_path: temp_dir.path().to_string_lossy().to_string(),
+            ..Default::default()
+        };
+        let service = KeyBackupService::load_or_create(&config, "startup-passphrase").unwrap();
+        service
+            .backup_key(
+                &create_test_key_meta(),
+                b"super_secret_key_material_32_bytes!!",
+                None,
+            )
+            .unwrap();
+
+        let mut newest: Option<std::path::PathBuf> = None;
+        for entry in std::fs::read_dir(temp_dir.path()).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|s| s.to_str()) == Some("json") {
+                newest = Some(path);
+            }
+        }
+        let path = newest.expect("a backup file must exist");
+        std::fs::write(&path, r#"{"data":"tampered","signature":"00"}"#).unwrap();
+
+        let result = service.verify_latest_backup();
+        assert!(
+            result.is_err(),
+            "the startup check must report the unopenable backup, got {result:?}"
+        );
+    }
 
     #[test]
     fn test_backup_restore_roundtrip() {

@@ -171,6 +171,62 @@ fn tpm_backend_is_in_memory(tpm_backend: &str) -> bool {
     tpm_backend != "tpm2-tss"
 }
 
+/// Outcome of the B5 P2-7 startup check on the newest backup file.
+#[derive(Debug)]
+enum LatestBackupCheck {
+    /// The backup service is disabled — nothing to check.
+    Skipped,
+    /// No backup file exists yet — nothing to check.
+    Empty,
+    /// The newest backup file was opened and verified end-to-end.
+    Verified(std::path::PathBuf),
+    /// The newest backup file could NOT be opened.
+    Failed(anyhow::Error),
+}
+
+/// Open the newest backup file and report whether it could be restored
+/// (audit B5 P2-7).
+///
+/// A usable master key does not prove the last backup can be opened:
+/// `KeyBackupService::load_or_create` only exercises the master key itself, so
+/// a corrupted backup file — or one written under a different master key —
+/// surfaced only when a restore was actually attempted, long after the
+/// incident that made the restore necessary.
+fn check_latest_backup(
+    backup_service: Option<&Arc<kms_core::KeyBackupService>>,
+) -> LatestBackupCheck {
+    let Some(svc) = backup_service else {
+        return LatestBackupCheck::Skipped;
+    };
+    match svc.verify_latest_backup() {
+        Ok(Some(path)) => LatestBackupCheck::Verified(path),
+        Ok(None) => LatestBackupCheck::Empty,
+        Err(e) => LatestBackupCheck::Failed(e),
+    }
+}
+
+/// Report the outcome of the startup check to the operator.
+///
+/// This never fails: a file-level problem is logged, never fatal. The master
+/// key itself already fails closed in `load_or_create`, and refusing to boot
+/// on a broken backup file would keep operators from reaching the instance
+/// to repair it.
+fn report_latest_backup_check(check: &LatestBackupCheck) -> Result<()> {
+    match check {
+        LatestBackupCheck::Skipped => {}
+        LatestBackupCheck::Empty => {
+            tracing::info!("No backup file present yet at startup: nothing to verify");
+        }
+        LatestBackupCheck::Verified(path) => {
+            tracing::info!("Latest backup verified at startup: {}", path.display());
+        }
+        LatestBackupCheck::Failed(e) => {
+            tracing::error!("Latest backup could NOT be opened at startup (audit B5 P2-7): {e:#}");
+        }
+    }
+    Ok(())
+}
+
 /// Create a PgPool from the database configuration if available.
 /// Returns None if the database is not configured or connection fails.
 async fn maybe_create_mfa_pool(
@@ -900,6 +956,16 @@ pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()
         tracing::info!("Backup service: disabled");
         None
     };
+
+    // B5 P2-7: a usable master key does not prove that the last backup can be
+    // opened. Check the newest backup file end-to-end at startup so a
+    // corrupted (or foreign-key) file surfaces now rather than during the
+    // restore that needs it. A failure is logged as an error but does NOT
+    // block startup — see `report_latest_backup_check`.
+    if let Err(e) = report_latest_backup_check(&check_latest_backup(backup_service.as_ref())) {
+        // Unreachable by construction: the reporting path never fails.
+        tracing::error!("unexpected backup startup check failure: {e:#}");
+    }
 
     let state = if config.redis.enabled {
         match redis::Client::open(redis_url.as_str()) {
@@ -1841,6 +1907,143 @@ mod pr41_failfast_tests {
             let err = in_memory_fallback_permitted(false, "simulated tpm").unwrap_err();
             assert!(err.to_string().contains("refusing to start"));
         });
+    }
+}
+
+#[cfg(test)]
+mod b8c_backup_startup_check_tests {
+    use super::*;
+    use kms_core::Uuid;
+    use kms_core::key::{KeyMetadata, KeySpec, KeyStatus};
+
+    fn backup_service(dir: &std::path::Path) -> Arc<kms_core::KeyBackupService> {
+        let config = kms_core::BackupConfig {
+            enabled: true,
+            backup_path: dir.to_string_lossy().to_string(),
+            retention_count: 3,
+            retention_days: 365,
+            kdf_iterations: 1_000,
+        };
+        Arc::new(
+            kms_core::KeyBackupService::with_random_master_key(config)
+                .expect("backup service must be constructible"),
+        )
+    }
+
+    fn key_meta() -> kms_core::KeyMeta {
+        kms_core::KeyMeta {
+            id: Uuid::new_v4(),
+            tenant_id: "test-tenant".to_string(),
+            name: "startup-check-key".to_string(),
+            spec: KeySpec::Sm4,
+            status: KeyStatus::Active,
+            version: 1,
+            created_at: chrono::Utc::now(),
+            rotated_at: None,
+            description: None,
+            metadata: KeyMetadata::default(),
+        }
+    }
+
+    /// Tamper with every backup file in the directory.
+    fn corrupt_backup_files(dir: &std::path::Path) {
+        for entry in std::fs::read_dir(dir).expect("backup dir must be readable") {
+            let path = entry.expect("dir entry must be readable").path();
+            if path.extension().and_then(|s| s.to_str()) == Some("json") {
+                std::fs::write(&path, r#"{"data":"tampered","signature":"00"}"#)
+                    .expect("tampered file must be writable");
+            }
+        }
+    }
+
+    /// A disabled backup service has nothing to check.
+    #[test]
+    fn b8c_disabled_backup_service_is_skipped() {
+        assert!(matches!(
+            check_latest_backup(None),
+            LatestBackupCheck::Skipped
+        ));
+    }
+
+    /// An empty backup directory has nothing to check.
+    #[test]
+    fn b8c_empty_backup_directory_is_empty() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let svc = backup_service(dir.path());
+        assert!(matches!(
+            check_latest_backup(Some(&svc)),
+            LatestBackupCheck::Empty
+        ));
+    }
+
+    /// A healthy backup is opened and verified at startup.
+    #[test]
+    fn b8c_healthy_backup_is_verified() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let svc = backup_service(dir.path());
+        svc.backup_key(&key_meta(), &[0x11u8; 16], None)
+            .expect("backup must be written");
+        match check_latest_backup(Some(&svc)) {
+            LatestBackupCheck::Verified(path) => {
+                assert!(path.exists(), "verified backup file must exist");
+                assert!(
+                    path.to_string_lossy().ends_with(".json"),
+                    "verified path must be a backup file: {path:?}"
+                );
+            }
+            other => panic!("expected a verified backup, got {other:?}"),
+        }
+    }
+
+    /// A corrupted backup file must be detected at startup — this is the
+    /// whole point of the B5 P2-7 check: the master key was fine, the file
+    /// was not.
+    #[test]
+    fn b8c_corrupted_backup_is_detected() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let svc = backup_service(dir.path());
+        svc.backup_key(&key_meta(), &[0x22u8; 16], None)
+            .expect("backup must be written");
+        corrupt_backup_files(dir.path());
+        assert!(matches!(
+            check_latest_backup(Some(&svc)),
+            LatestBackupCheck::Failed(_)
+        ));
+    }
+
+    /// A broken backup file must NOT block startup: the operator has to be
+    /// able to reach the instance to repair it.
+    #[test]
+    fn b8c_broken_backup_never_blocks_startup() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let svc = backup_service(dir.path());
+        svc.backup_key(&key_meta(), &[0x33u8; 16], None)
+            .expect("backup must be written");
+        corrupt_backup_files(dir.path());
+        let check = check_latest_backup(Some(&svc));
+        assert!(matches!(check, LatestBackupCheck::Failed(_)));
+        // The reporting path logs the problem and returns Ok — the service
+        // keeps booting.
+        assert!(report_latest_backup_check(&check).is_ok());
+    }
+
+    /// The reporting path never fails for any outcome, so the startup wiring
+    /// can never turn a file-level problem into a boot failure.
+    #[test]
+    fn b8c_reporting_path_never_fails() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        assert!(report_latest_backup_check(&LatestBackupCheck::Skipped).is_ok());
+        assert!(report_latest_backup_check(&LatestBackupCheck::Empty).is_ok());
+        assert!(
+            report_latest_backup_check(&LatestBackupCheck::Verified(dir.path().join("x.json")))
+                .is_ok()
+        );
+        assert!(
+            report_latest_backup_check(&LatestBackupCheck::Failed(anyhow::anyhow!(
+                "cannot open backup"
+            )))
+            .is_ok()
+        );
     }
 }
 
