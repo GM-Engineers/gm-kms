@@ -127,49 +127,41 @@ impl PostgresKeystore {
         self
     }
 
-    /// Verify that the key identified by `key_id` exists and is owned
-    /// by `tenant_id`. Returns `Error::KeyNotFound` for both "missing
-    /// key" and "wrong tenant" — keystore cannot distinguish them
-    /// (consistent with PR-1.2 conflation).
-    async fn verify_tenant(&self, key_id: &Uuid, tenant_id: &str) -> Result<()> {
-        // Fast path: cache hit. PR-4.15 BoundedKeyCache.get_cloned
-        // returns `Option<KeyEntry>` directly — no async lock
-        // ceremony needed.
+    /// Audit B8-b: resolve the key entry an operation has to work on.
+    ///
+    /// The operations used to be a two-step dance: `verify_tenant` (which
+    /// lazy-loads the entry from the database on a cache miss and writes it
+    /// back into the bounded cache) followed by a `get_cloned` that read the
+    /// entry back **out of the cache**. `BoundedKeyCache::insert_with_eviction`
+    /// evicts down to the cap *after* inserting, so with a cap of 0 the
+    /// write-back evicted the entry it had just inserted and the second step
+    /// found nothing: every key that lived only in the database was reported
+    /// as `KeyNotFound` — the exact opposite of what the in-memory cap is
+    /// supposed to mean.
+    ///
+    /// This helper returns the entry itself: the cached one on a hit, the
+    /// freshly loaded one on a miss. The write-back into the cache stays
+    /// best-effort; the caller no longer depends on the entry surviving the
+    /// eviction.
+    ///
+    /// The tenant check is applied in both branches, and a key that belongs
+    /// to another tenant is reported as `KeyNotFound` (the PR-1.2
+    /// conflation): the keystore cannot distinguish "missing key" from
+    /// "wrong tenant".
+    async fn entry_for(&self, key_id: &Uuid, tenant_id: &str) -> Result<KeyEntry> {
+        // Fast path: cache hit.
         if let Some(entry) = self.keys.get_cloned(key_id) {
             if entry.meta.tenant_id != tenant_id {
                 return Err(Error::KeyNotFound(key_id.to_string()));
             }
-            return Ok(());
+            return Ok(entry);
         }
 
-        // PR-4.17: cache miss → try DB before declaring
-        // KeyNotFound. This is the path that lets
-        // `with_in_memory_cap(n)` work for keys beyond position
-        // n: those keys live only in DB and are pulled in on
-        // first access. The tenant check is performed on the
-        // fresh entry, so the same conflation semantics as
-        // PR-1.2 are preserved.
+        // PR-4.17: cache miss → try DB before declaring KeyNotFound. The
+        // tenant check is performed on the fresh entry, so the same
+        // conflation semantics as PR-1.2 are preserved.
         let entry = match self.load_entry_from_db(key_id).await {
-            Ok(entry) => {
-                // Insert before returning so a follow-up
-                // access from the same call path hits the
-                // cache. BoundedKeyCache handles eviction
-                // automatically if the cap is exceeded.
-                self.keys.insert_with_eviction(*key_id, entry.clone());
-                // PR-4.17: log every lazy load so operators
-                // can see in production logs when the cap
-                // is forcing DB round-trips. A metrics
-                // counter would also be appropriate but
-                // would require `kms-keystore` to depend on
-                // `metrics` (currently only `kms-api`
-                // depends on it; adding the dep here is out
-                // of scope for this PR).
-                tracing::debug!(
-                    key_id = %key_id,
-                    "lazy-loaded key from DB into bounded cache"
-                );
-                entry
-            }
+            Ok(entry) => entry,
             Err(Error::KeyNotFound(_)) => {
                 return Err(Error::KeyNotFound(key_id.to_string()));
             }
@@ -178,7 +170,29 @@ impl PostgresKeystore {
         if entry.meta.tenant_id != tenant_id {
             return Err(Error::KeyNotFound(key_id.to_string()));
         }
-        Ok(())
+
+        // Best-effort write-back: the caller already holds the entry, so an
+        // eviction caused by the cap cannot make the operation fail.
+        self.keys.insert_with_eviction(*key_id, entry.clone());
+        // PR-4.17: log every lazy load so operators can see in production
+        // logs when the cap is forcing DB round-trips. A metrics counter
+        // would also be appropriate but would require `kms-keystore` to
+        // depend on `metrics` (currently only `kms-api` depends on it;
+        // adding the dep here is out of scope for this PR).
+        tracing::debug!(
+            key_id = %key_id,
+            "lazy-loaded key from DB into bounded cache"
+        );
+
+        Ok(entry)
+    }
+
+    /// Verify that the key identified by `key_id` exists and is owned
+    /// by `tenant_id`. Returns `Error::KeyNotFound` for both "missing
+    /// key" and "wrong tenant" — keystore cannot distinguish them
+    /// (consistent with PR-1.2 conflation).
+    async fn verify_tenant(&self, key_id: &Uuid, tenant_id: &str) -> Result<()> {
+        self.entry_for(key_id, tenant_id).await.map(|_| ())
     }
 
     /// Load KEK from the configured source.
@@ -921,13 +935,10 @@ impl super::KeystoreBackend for PostgresKeystore {
         _aad: Option<&[u8]>,
         tenant_id: &str,
     ) -> Result<Ciphertext> {
-        self.verify_tenant(key_id, tenant_id).await?;
-
-        // Get key material from memory
-        let entry = self
-            .keys
-            .get_cloned(key_id)
-            .ok_or_else(|| Error::KeyNotFound(key_id.to_string()))?;
+        // Audit B8-b: resolve the entry in one step. The two-step form
+        // (tenant check, then read the entry back out of the cache) failed
+        // whenever the cache evicted the entry it had just written back.
+        let entry = self.entry_for(key_id, tenant_id).await?;
 
         if entry.meta.status != KeyStatus::Active {
             return Err(Error::KeyOperationNotAllowed(format!(
@@ -954,11 +965,10 @@ impl super::KeystoreBackend for PostgresKeystore {
         _aad: Option<&[u8]>,
         tenant_id: &str,
     ) -> Result<Vec<u8>> {
-        self.verify_tenant(key_id, tenant_id).await?;
-        let entry = self
-            .keys
-            .get_cloned(key_id)
-            .ok_or_else(|| Error::KeyNotFound(key_id.to_string()))?;
+        // Audit B8-b: resolve the entry in one step. The two-step form
+        // (tenant check, then read the entry back out of the cache) failed
+        // whenever the cache evicted the entry it had just written back.
+        let entry = self.entry_for(key_id, tenant_id).await?;
 
         if !entry.meta.status.can_decrypt() {
             return Err(Error::KeyOperationNotAllowed(format!(
@@ -1002,11 +1012,10 @@ impl super::KeystoreBackend for PostgresKeystore {
         version: u32,
         tenant_id: &str,
     ) -> Result<Vec<u8>> {
-        self.verify_tenant(key_id, tenant_id).await?;
-        let entry = self
-            .keys
-            .get_cloned(key_id)
-            .ok_or_else(|| Error::KeyNotFound(key_id.to_string()))?;
+        // Audit B8-b: resolve the entry in one step. The two-step form
+        // (tenant check, then read the entry back out of the cache) failed
+        // whenever the cache evicted the entry it had just written back.
+        let entry = self.entry_for(key_id, tenant_id).await?;
 
         if version == 0 || version == entry.meta.version {
             return Ok(entry.material.as_slice().to_vec());
@@ -1016,11 +1025,10 @@ impl super::KeystoreBackend for PostgresKeystore {
     }
 
     async fn sign(&self, key_id: &Uuid, data: &[u8], tenant_id: &str) -> Result<Signature> {
-        self.verify_tenant(key_id, tenant_id).await?;
-        let entry = self
-            .keys
-            .get_cloned(key_id)
-            .ok_or_else(|| Error::KeyNotFound(key_id.to_string()))?;
+        // Audit B8-b: resolve the entry in one step. The two-step form
+        // (tenant check, then read the entry back out of the cache) failed
+        // whenever the cache evicted the entry it had just written back.
+        let entry = self.entry_for(key_id, tenant_id).await?;
 
         if entry.meta.status != KeyStatus::Active {
             return Err(Error::KeyOperationNotAllowed(format!(
@@ -1045,12 +1053,10 @@ impl super::KeystoreBackend for PostgresKeystore {
         sig: &Signature,
         tenant_id: &str,
     ) -> Result<bool> {
-        self.verify_tenant(key_id, tenant_id).await?;
-
-        let entry = self
-            .keys
-            .get_cloned(key_id)
-            .ok_or_else(|| Error::KeyNotFound(key_id.to_string()))?;
+        // Audit B8-b: resolve the entry in one step. The two-step form
+        // (tenant check, then read the entry back out of the cache) failed
+        // whenever the cache evicted the entry it had just written back.
+        let entry = self.entry_for(key_id, tenant_id).await?;
 
         Self::crypto_verify(&entry.material, &entry.meta.spec, key_id, data, sig).await
     }
@@ -1320,12 +1326,10 @@ impl super::KeystoreBackend for PostgresKeystore {
     }
 
     async fn export_key_material(&self, key_id: &Uuid, tenant_id: &str) -> Result<Vec<u8>> {
-        self.verify_tenant(key_id, tenant_id).await?;
-        // Get key material from memory
-        let entry = self
-            .keys
-            .get_cloned(key_id)
-            .ok_or_else(|| Error::KeyNotFound(key_id.to_string()))?;
+        // Audit B8-b: resolve the entry in one step. The two-step form
+        // (tenant check, then read the entry back out of the cache) failed
+        // whenever the cache evicted the entry it had just written back.
+        let entry = self.entry_for(key_id, tenant_id).await?;
 
         if entry.meta.status != KeyStatus::Active {
             return Err(Error::KeyOperationNotAllowed(format!(
@@ -1337,12 +1341,10 @@ impl super::KeystoreBackend for PostgresKeystore {
     }
 
     async fn get_key_material(&self, key_id: &Uuid, tenant_id: &str) -> Result<Vec<u8>> {
-        self.verify_tenant(key_id, tenant_id).await?;
-        // Get key material from memory
-        let entry = self
-            .keys
-            .get_cloned(key_id)
-            .ok_or_else(|| Error::KeyNotFound(key_id.to_string()))?;
+        // Audit B8-b: resolve the entry in one step. The two-step form
+        // (tenant check, then read the entry back out of the cache) failed
+        // whenever the cache evicted the entry it had just written back.
+        let entry = self.entry_for(key_id, tenant_id).await?;
 
         Ok(entry.material.to_vec())
     }
@@ -1358,13 +1360,10 @@ impl super::KeystoreBackend for PostgresKeystore {
 
         // Tenant isolation (audit B7-b): the private key must belong to the
         // tenant the caller acts in.
-        self.verify_tenant(key_id, tenant_id).await?;
-
-        // Get key material from memory
-        let entry = self
-            .keys
-            .get_cloned(key_id)
-            .ok_or_else(|| Error::KeyNotFound(key_id.to_string()))?;
+        // Audit B8-b: resolve the entry in one step. The two-step form
+        // (tenant check, then read the entry back out of the cache) failed
+        // whenever the cache evicted the entry it had just written back.
+        let entry = self.entry_for(key_id, tenant_id).await?;
 
         // Use SoftwareKeystore's DH derivation methods
         let store = SoftwareKeystore::new();
@@ -1763,14 +1762,23 @@ mod tests {
     #[tokio::test]
     #[ignore] // Requires running server (PostgreSQL)
     async fn pr417_lazy_load_finds_key_beyond_cap() {
-        // PR-4.17: pre-load N keys via generate_key, then
-        // set a tight cap and request a key that was never
-        // inserted in-memory. The first cache miss should
-        // trigger a DB lookup that succeeds; the second
-        // access should hit the cache without another DB
-        // round-trip. We assert by inspecting cache size
-        // before / after the second access — it should not
-        // grow on the second access.
+        // PR-4.17: pre-load a key via generate_key, then set the
+        // tightest possible cap and request the key again. The access
+        // must succeed through the database even though the key is not
+        // resident in memory.
+        //
+        // Audit B8-b: the two-step access this test used to cover
+        // (tenant check, then read the entry back out of the cache)
+        // reported `KeyNotFound` here, because the cache evicted the
+        // entry the lazy load had just written back. The access no
+        // longer depends on the entry surviving the eviction.
+        //
+        // A cap of 0 means "no key material is kept resident": the cache
+        // is empty by construction and every insert is evicted
+        // immediately, so the lazy load cannot leave anything behind.
+        // Asserting that it did was unsatisfiable, and it is the
+        // companion test `pr417_lazy_load_populates_the_cache` that
+        // covers the caching behaviour with a cap that can hold an entry.
         let database_url = std::env::var("DATABASE_URL")
             .unwrap_or_else(|_| "postgres://kms:kms123@localhost:5432/kms".to_string());
         let pool = sqlx::postgres::PgPoolOptions::new()
@@ -1797,9 +1805,58 @@ mod tests {
         ks.encrypt(&meta.id, b"hello", None, "pr417-tenant")
             .await
             .expect("lazy-load via encrypt must succeed");
+
+        // The cap is still honoured: no key material stays resident.
+        assert!(
+            ks.keys.get_cloned(&meta.id).is_none(),
+            "cap=0 must not keep the key material resident"
+        );
+
+        // A second access must work as well — the key is still only in
+        // the database.
+        ks.encrypt(&meta.id, b"hello again", None, "pr417-tenant")
+            .await
+            .expect("the second lazy-load must succeed too");
+    }
+
+    /// Audit B8-b: with a cap that can actually hold an entry, the lazy
+    /// load populates the cache — the behaviour the PR-4.17 test
+    /// originally intended to assert, but could not under a cap of 0.
+    #[tokio::test]
+    #[ignore] // Requires running server (PostgreSQL)
+    async fn pr417_lazy_load_populates_the_cache() {
+        let database_url = std::env::var("DATABASE_URL")
+            .unwrap_or_else(|_| "postgres://kms:kms123@localhost:5432/kms".to_string());
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&database_url)
+            .await
+            .expect("Failed to connect to PostgreSQL");
+        let repo = PostgresKeyRepository::new(pool);
+        repo.migrate().await.expect("Migration failed");
+
+        let mut ks = PostgresKeystore::new(repo).await.expect("new");
+        let spec = KeySpec::Aes256Gcm;
+        let meta = ks
+            .generate_key(&spec, "pr417-cache-key", "pr417-tenant")
+            .await
+            .expect("generate_key");
+
+        // Applying the cap rebuilds the cache, so the key that was
+        // generated before is not resident any more.
+        ks = ks.with_in_memory_cap(1);
+        assert!(
+            ks.keys.get_cloned(&meta.id).is_none(),
+            "the key must not be resident before the lazy load"
+        );
+
+        ks.encrypt(&meta.id, b"hello", None, "pr417-tenant")
+            .await
+            .expect("lazy-load via encrypt must succeed");
+
         assert!(
             ks.keys.get_cloned(&meta.id).is_some(),
-            "lazy load must have populated the cache"
+            "the lazy load must have populated the cache"
         );
     }
 
