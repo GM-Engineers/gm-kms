@@ -2097,10 +2097,12 @@ struct CreateApprovalReq {
 /// (audit follow-up B7-g).
 fn resource_type_for(operation: OperationType) -> &'static str {
     match operation {
-        OperationType::KeyDelete
-        | OperationType::KeyExport
-        | OperationType::KeyRotate
-        | OperationType::HighValueKeyCreate => "key",
+        OperationType::KeyDelete | OperationType::KeyExport | OperationType::KeyRotate => "key",
+        // The key does not exist yet — the approval authorises its creation.
+        // Treating it as an existing "key" would make the tenant-ownership
+        // check look for a key that cannot be there yet, so the request could
+        // never be raised (audit follow-up B7-h).
+        OperationType::HighValueKeyCreate => "key-request",
         OperationType::PolicyChange => "policy",
         OperationType::AuditAccess => "audit",
         OperationType::MfaChange => "mfa",
@@ -2173,6 +2175,33 @@ async fn ensure_resource_tenant(
         return Err(ApiError::KeyNotFound(key_id.to_string()));
     }
     Ok(())
+}
+
+/// Verify that the caller may act on an approval request.
+///
+/// A tenant-bound key may only approve or reject the requests of its own
+/// tenant. Without this check a tenant-scoped approver could approve (or
+/// reject) the request of another tenant, and an approved request is what
+/// unlocks the export of that tenant's key material
+/// (audit follow-up B7-h).
+///
+/// A request that does not exist is left to the engine, which reports it as
+/// "not found" as well.
+fn ensure_approval_tenant(state: &KmsState, request_id: Uuid, bound: Option<&str>) -> Result<()> {
+    let Some(bound_tenant) = bound else {
+        return Ok(());
+    };
+    let tenant_id = {
+        let approval = state.approval_manager.read();
+        approval.get_request(request_id).map(|r| r.tenant_id)
+    };
+    match tenant_id {
+        // Sanitized: do not disclose that the request exists elsewhere.
+        Some(tenant) if tenant != bound_tenant => {
+            Err(ApiError::NotFound("Approval request not found".to_string()))
+        }
+        _ => Ok(()),
+    }
 }
 
 async fn create_approval_request(
@@ -2356,8 +2385,13 @@ async fn approve_request(
     Path(request_id): Path<Uuid>,
     CallerId { key_id: caller }: CallerId,
     CallerRole(permission): CallerRole,
+    BoundTenant(bound): BoundTenant,
     Json(req): Json<ApproveReq>,
 ) -> Result<Json<crate::approval::ApprovalRequestResponse>> {
+    // A tenant-bound key may only approve the requests of its own tenant
+    // (audit follow-up B7-h).
+    ensure_approval_tenant(&state, request_id, bound.as_deref())?;
+
     // The approver identity and its authority both come from the
     // authenticated API key. Taking them from the request body would let a
     // single key forge a multi-party quorum (audit follow-up B7-a).
@@ -2398,8 +2432,13 @@ async fn reject_request(
     Path(request_id): Path<Uuid>,
     CallerId { key_id: caller }: CallerId,
     CallerRole(permission): CallerRole,
+    BoundTenant(bound): BoundTenant,
     Json(req): Json<RejectReq>,
 ) -> Result<Json<crate::approval::ApprovalRequestResponse>> {
+    // A tenant-bound key may only reject the requests of its own tenant
+    // (audit follow-up B7-h).
+    ensure_approval_tenant(&state, request_id, bound.as_deref())?;
+
     // Identity and authority come from the credential, not the body
     // (audit follow-up B7-a).
     warn_ignored_identity("rejector_id", &req.rejector_id);

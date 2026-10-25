@@ -361,14 +361,12 @@ where
         };
         if seen_key_ids.contains(&key_id) {
             return Err(anyhow::anyhow!(
-                "api key '{}' is declared more than once: key ids must be unique",
-                key_id
+                "api key '{key_id}' is declared more than once: key ids must be unique"
             ));
         }
         if seen_secrets.contains(&secret) {
             return Err(anyhow::anyhow!(
-                "api key '{}' reuses the secret of another key: secrets must be unique",
-                key_id
+                "api key '{key_id}' reuses the secret of another key: secrets must be unique"
             ));
         }
         seen_key_ids.push(key_id.clone());
@@ -448,6 +446,20 @@ pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()
 
     // Initialize components
     let policy_engine = PBACEngine::new();
+
+    // The policy store lives in memory only: it is not persisted and no policy
+    // is loaded at startup. Attribute-based control is therefore *inactive*
+    // until an operator installs one, and any policy that was installed
+    // before a restart is gone (audit follow-up B7-h). Say so loudly at every
+    // startup — a silently inactive security control is worse than a noisy
+    // one.
+    tracing::warn!(
+        "PBAC is INACTIVE: no policy is configured and none is loaded at startup, so \
+         attribute-based control does not restrict anything. The role-based check \
+         (the API key's permission bits) is the only gate. Install a policy with \
+         POST /v1/policies to enable it — note that policies are held in memory and \
+         do not survive a restart."
+    );
 
     // TSA counters — created here so they can be shared between TimestampedAuditLogger
     // background task and KmsMetrics (for /v1/metrics endpoint).

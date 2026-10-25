@@ -151,12 +151,16 @@
 ### 8.1 资源类型由操作推导（audit B7-g）
 
 `resource_type` **不是**请求体字段的特权：它由 `operation` 推导（`key_delete`/`key_export`/
-`key_rotate`/`high_value_key_create` → `key`，`policy_change` → `policy`，`audit_access` →
+`key_rotate` → `key`，`high_value_key_create` → `key-request`（密钥尚不存在，批准的是创建
+行为，因此不做“已存在密钥”的归属校验），`policy_change` → `policy`，`audit_access` →
 `audit`，`mfa_change` → `mfa`，`tenant_admin` → `tenant`）。请求体里的 `resource_type`
 与推导值不一致时**告警并忽略**。
 
 > 原因：早期实现以请求体的 `resource_type` 决定是否做租户归属校验，调用方把密钥资源
 > 标成 `"policy"` 就能跳过校验，把审批绑定到别的租户的密钥上。
+>
+> 修正（audit B7-h）：`high_value_key_create` 最初也被推导为 `key`，于是它要求一个**尚未
+> 存在**的密钥，审批永远无法发起；改为 `key-request`。
 
 ### 8.2 `tenant_admin` 需要可达到的 `Admin` 级（audit B7-g）
 
@@ -170,6 +174,10 @@
 
 绑定租户的 Key 只能读取/列举**自己租户**的审批请求：跨租户读取返回脱敏 404，
 跨租户列举返回 403。未绑定租户的 Key 沿用本 API 其余部分的既有语义（自报租户）。
+
+> audit B7-h 补齐：最初只收紧了**读**路径（读取/列举），**写**路径（审批/驳回）未收紧。
+> 于是绑定租户的审批 Key 可以批准（或驳回）其它租户的请求，而被批准的请求正是导出该租户
+> 密钥材料的凭据。现在 `approve`/`reject` 同样做租户校验（跨租户 → 脱敏 404）。
 
 ### 8.4 错误不再被压平（audit B7-g）
 
@@ -206,11 +214,17 @@ sm9_sign    sm9_verify  sm9_encrypt  sm9_decrypt  query_audit_events
 | 策略数量 | 语义 |
 |----------|------|
 | 0（出厂状态） | 属性级控制**未启用**，RBAC（API Key 权限位）是唯一闸门 |
-| ≥ 1 | 引擎默认拒绝生效，未被覆盖的请求一律拒绝（allow-list 语义可用） |
+| ≥ 1 **已启用** | 引擎默认拒绝生效，未被覆盖的请求一律拒绝（allow-list 语义可用） |
 
-引擎自身的 `evaluate` 默认拒绝语义**未改动**；“空引擎不限制”只存在于 API 层的部署语义，
-两通道共用同一入口，因此不会出现一通道放行、另一通道拒绝的分叉。显式 `Deny` 策略始终优先
-于 `Allow`。
+> 引擎自身的 `evaluate` 默认拒绝语义**未改动**；“空引擎不限制”只存在于 API 层的部署语义，
+> 两通道共用同一入口，因此不会出现一通道放行、另一通道拒绝的分叉。显式 `Deny` 策略始终优先
+> 于 `Allow`。
+>
+> 计数只包含**已启用**的策略（audit B7-h）：被禁用的策略不匹配任何请求，若把它计入，
+> 就会在“什么都匹配不到”的状态下切到默认拒绝，把所有调用方锁在门外且无从查因。
+>
+> 策略只存在于内存中：**重启后全部丢失**，属性级限制随之失效。服务端每次启动都会打印
+> `warn` 提示这一点（audit B7-h）。
 
 ## 测试固化
 

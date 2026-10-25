@@ -33,11 +33,14 @@ const (
 
 // CreateApprovalRequest is the request to create an approval.
 type CreateApprovalRequest struct {
-	Operation     string `json:"operation"`
-	ResourceID    string `json:"resource_id"`
-	ResourceType  string `json:"resource_type"`
-	TenantID      string `json:"tenant_id"`
-	RequestorID   string `json:"requestor_id"`
+	Operation    string `json:"operation"`
+	ResourceID   string `json:"resource_id"`
+	ResourceType string `json:"resource_type"`
+	TenantID     string `json:"tenant_id"`
+	// Deprecated: the server derives the requestor from the authenticated
+	// API key and ignores this field (audit follow-up B7-a). It is kept for
+	// source compatibility but never sent.
+	RequestorID   string `json:"-"`
 	Justification string `json:"justification,omitempty"`
 }
 
@@ -83,8 +86,12 @@ func (c *Client) GetApproval(ctx context.Context, requestID string) (*ApprovalRe
 }
 
 // CancelApproval cancels an approval request. Requires any authenticated user.
+//
+// Deprecated: the requestorID parameter is ignored by the server, which
+// derives the requestor from the authenticated API key (audit follow-up
+// B7-a). It is kept for source compatibility but never sent.
 func (c *Client) CancelApproval(ctx context.Context, requestID, requestorID string) (*ApprovalRequest, error) {
-	body := map[string]string{"requestor_id": requestorID}
+	body := map[string]string{}
 
 	var result ApprovalRequest
 	if err := c.doJSON(ctx, http.MethodPost, "/v1/approvals/"+requestID+"/cancel", body, &result); err != nil {
@@ -94,21 +101,26 @@ func (c *Client) CancelApproval(ctx context.Context, requestID, requestorID stri
 }
 
 // ApproveActionRequest is the request to approve/reject an approval.
+//
+// The approver's identity and authority are derived from the authenticated
+// API key by the server, so the client-side fields are ignored (audit
+// follow-up B7-a). They are deprecated and never sent.
 type ApproveActionRequest struct {
-	ApproverID   string `json:"approver_id,omitempty"`
-	ApproverRole string `json:"approver_role,omitempty"`
-	RejectorID   string `json:"rejector_id,omitempty"`
-	RejectorRole string `json:"rejector_role,omitempty"`
+	// Deprecated: ignored by the server; the approver is the API key.
+	ApproverID string `json:"-"`
+	// Deprecated: ignored by the server; the role comes from the API key.
+	ApproverRole string `json:"-"`
+	// Deprecated: ignored by the server; the rejector is the API key.
+	RejectorID string `json:"-"`
+	// Deprecated: ignored by the server; the role comes from the API key.
+	RejectorRole string `json:"-"`
 	Comment      string `json:"comment,omitempty"`
 	Reason       string `json:"reason,omitempty"`
 }
 
 // ApproveAction approves an approval request. Requires security-officer role.
 func (c *Client) ApproveAction(ctx context.Context, requestID string, req *ApproveActionRequest) (*ApprovalRequest, error) {
-	body := map[string]interface{}{
-		"approver_id":   req.ApproverID,
-		"approver_role": req.ApproverRole,
-	}
+	body := map[string]interface{}{}
 	if req.Comment != "" {
 		body["comment"] = req.Comment
 	}
@@ -123,9 +135,7 @@ func (c *Client) ApproveAction(ctx context.Context, requestID string, req *Appro
 // RejectAction rejects an approval request. Requires security-officer role.
 func (c *Client) RejectAction(ctx context.Context, requestID string, req *ApproveActionRequest) (*ApprovalRequest, error) {
 	body := map[string]string{
-		"rejector_id":   req.RejectorID,
-		"rejector_role": req.RejectorRole,
-		"reason":        req.Reason,
+		"reason": req.Reason,
 	}
 
 	var result ApprovalRequest

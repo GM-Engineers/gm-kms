@@ -55,6 +55,10 @@ const OPERATOR_SECRET: &str = "integration-operator-key-secret";
 /// level, which the `tenant_admin` operation requires (audit follow-up B7-g).
 const TENANT_ADMIN_SECRET: &str = "integration-tenant-admin-key-secret";
 
+/// A tenant-bound approver: holds the approve permission, but only within its
+/// own tenant (audit follow-up B7-h).
+const ACME_OFFICER_SECRET: &str = "integration-acme-officer-key-secret";
+
 /// 起一个绑定随机 loopback 端口的 REST 服务器，返回 `http://addr` base URL 与
 /// 服务器后台任务句柄（调用方负责 abort）。
 async fn spawn_rest_server() -> (String, reqwest::Client, tokio::task::JoinHandle<()>) {
@@ -133,6 +137,11 @@ async fn spawn_rest_server_with_engine(
         // identity and ignores any self-reported tenant.
         ApiKey::key_admin(ACME_SECRET.to_string())
             .with_key_id("acme".to_string())
+            .with_tenant("acme".to_string()),
+        // Tenant-bound approver: it may approve, but only within its own
+        // tenant (audit follow-up B7-h).
+        ApiKey::security_officer(ACME_OFFICER_SECRET.to_string())
+            .with_key_id("acme-officer".to_string())
             .with_tenant("acme".to_string()),
     ]);
 
@@ -2187,8 +2196,14 @@ async fn b7g3_approval_request_is_not_readable_across_tenants() {
 // (`build_api_key_config`) and is covered by unit tests there.
 // =============================================================================
 
-/// A key without the approve permission must not be able to approve, not even
-/// when it is the requestor of the request.
+/// A key without the approve permission must not be able to approve.
+///
+/// Note that the refusal comes from the **route's** permission layer
+/// (`auth_layer!(Permission::APPROVE_ACTION)`), not from the handler: the
+/// request never reaches it. This test therefore guards the route wiring.
+/// The handler's own authority check (an approver whose level is below the
+/// required one) is covered by
+/// `b7g3_tenant_admin_request_rejects_lower_authority`.
 #[tokio::test]
 async fn b7g4_operator_cannot_approve() {
     let (base, client, handle) = spawn_rest_server().await;
@@ -2275,4 +2290,147 @@ async fn b7g5_rest_version_zero_behaves_like_the_default() {
         "an explicit version 0 must be normalised to the default, like the gRPC channel does: body={body}"
     );
     assert_eq!(got.expect("plaintext"), plaintext);
+}
+
+// =============================================================================
+// Batch 7 / B7-h: findings of the second independent review
+// =============================================================================
+
+/// A disabled policy must not switch the engine into the default-deny mode:
+/// it matches nothing, so counting it would lock every caller out with no
+/// visible cause.
+#[tokio::test]
+async fn b7h_disabled_policy_does_not_lock_out_the_data_plane() {
+    let engine = PBACEngine::new();
+    engine
+        .add_policy(Policy {
+            id: uuid::Uuid::new_v4(),
+            name: "disabled-policy".to_string(),
+            effect: PolicyEffect::Allow,
+            condition: json!({ "operator": "always" }),
+            resources: vec!["*".to_string()],
+            subjects: vec!["*".to_string()],
+            enabled: false,
+        })
+        .await
+        .expect("add policy");
+    let (base, client, handle) = spawn_rest_server_with_engine(engine).await;
+
+    let resp = client
+        .post(format!("{base}/v1/keys"))
+        .header(ADMIN_HEADER, ADMIN_SECRET)
+        .json(&json!({
+            "name": "key-b7h-disabled",
+            "spec": "sm4",
+            "tenant_id": "tenant-a",
+        }))
+        .send()
+        .await
+        .expect("create_key send");
+    let status = resp.status();
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .unwrap_or_else(|_| json!({"__nonjson": true}));
+    handle.abort();
+
+    assert_eq!(
+        status, 201,
+        "a disabled policy must not lock the data plane out: body={body}"
+    );
+}
+
+/// A tenant-bound approver must not approve the request of another tenant.
+#[tokio::test]
+async fn b7h_approval_is_tenant_scoped() {
+    let (base, client, handle) = spawn_rest_server().await;
+    let key_id = create_key(&client, &base, "b7h-tenant-key", "sm4", "tenant-a").await;
+
+    // A request owned by tenant-a...
+    let (status, body) = create_approval_with(
+        &client,
+        &base,
+        ADMIN_SECRET,
+        "key_export",
+        &key_id,
+        "key",
+        "tenant-a",
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, 201, "create request failed: body={body}");
+    let approval_id = body["id"].as_str().expect("approval id").to_string();
+
+    // ...must not be approved by the tenant-bound "acme" approver.
+    let (status, body) =
+        approve_with(&client, &base, &approval_id, ACME_OFFICER_SECRET, json!({})).await;
+    handle.abort();
+    assert_eq!(
+        status, 404,
+        "a tenant-bound approver must not approve another tenant's request: body={body}"
+    );
+}
+
+/// The same for the reject path.
+#[tokio::test]
+async fn b7h_rejection_is_tenant_scoped() {
+    let (base, client, handle) = spawn_rest_server().await;
+    let key_id = create_key(&client, &base, "b7h-reject-key", "sm4", "tenant-a").await;
+
+    let (status, body) = create_approval_with(
+        &client,
+        &base,
+        ADMIN_SECRET,
+        "key_export",
+        &key_id,
+        "key",
+        "tenant-a",
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, 201, "create request failed: body={body}");
+    let approval_id = body["id"].as_str().expect("approval id").to_string();
+
+    let resp = client
+        .post(format!("{base}/v1/approvals/{approval_id}/reject"))
+        .header(ADMIN_HEADER, ACME_OFFICER_SECRET)
+        .json(&json!({ "reason": "not mine" }))
+        .send()
+        .await
+        .expect("reject send");
+    let status = resp.status();
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .unwrap_or_else(|_| json!({"__nonjson": true}));
+    handle.abort();
+
+    assert_eq!(
+        status, 404,
+        "a tenant-bound rejector must not reject another tenant's request: body={body}"
+    );
+}
+
+/// A `high_value_key_create` approval authorises the creation of a key that
+/// does not exist yet, so it must not require an existing key.
+#[tokio::test]
+async fn b7h_high_value_key_create_approval_does_not_require_an_existing_key() {
+    let (base, client, handle) = spawn_rest_server().await;
+
+    let (status, body) = create_approval_with(
+        &client,
+        &base,
+        ADMIN_SECRET,
+        "high_value_key_create",
+        "the-name-of-the-key-to-be-created",
+        "key",
+        "tenant-a",
+        json!({}),
+    )
+    .await;
+    handle.abort();
+    assert_eq!(
+        status, 201,
+        "a high-value key creation must be approvable before the key exists: body={body}"
+    );
 }

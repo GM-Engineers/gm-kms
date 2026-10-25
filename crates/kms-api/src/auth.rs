@@ -509,25 +509,31 @@ impl ApiKeyConfig {
 
         // Dev mode: default key gets KeyAdmin role for full development access
         // Production: override via KMS_API_KEY_ROLE env var
-        let role = std::env::var("KMS_API_KEY_ROLE")
-            .ok()
-            .and_then(|r| match r.as_str() {
-                "read-only" => Some(ApiKeyPermission::ReadOnly),
-                "operator" => Some(ApiKeyPermission::Operator),
-                "key-admin" => Some(ApiKeyPermission::KeyAdmin),
-                "security-officer" => Some(ApiKeyPermission::SecurityOfficer),
-                "audit-admin" => Some(ApiKeyPermission::AuditAdmin),
-                _ => None,
-            })
-            .unwrap_or_else(|| {
-                if api_key == "dev-api-key" {
-                    // Dev mode default: KeyAdmin for full access (KMS_DEV_MODE=1 required above)
-                    ApiKeyPermission::KeyAdmin
-                } else {
-                    // Production default: Operator (least privilege for single-key setups)
-                    ApiKeyPermission::Operator
-                }
-            });
+        //
+        // The role name is parsed with `from_role_name`, so both configuration
+        // surfaces (this variable and the `[[api_keys]]` file section) accept
+        // the same names. An unknown name is a configuration error, not a
+        // silent downgrade to a weaker role (audit follow-up B7-h).
+        let role = match std::env::var("KMS_API_KEY_ROLE") {
+            Ok(requested) => {
+                Some(ApiKeyPermission::from_role_name(&requested).ok_or_else(|| {
+                    AuthError::Configuration(format!(
+                        "unknown KMS_API_KEY_ROLE '{requested}' (expected read-only, operator, \
+                     key-admin, security-officer, audit-admin or tenant-admin)"
+                    ))
+                })?)
+            }
+            Err(_) => None,
+        }
+        .unwrap_or_else(|| {
+            if api_key == "dev-api-key" {
+                // Dev mode default: KeyAdmin for full access (KMS_DEV_MODE=1 required above)
+                ApiKeyPermission::KeyAdmin
+            } else {
+                // Production default: Operator (least privilege for single-key setups)
+                ApiKeyPermission::Operator
+            }
+        });
 
         Ok(Self::with_role(header_name, &api_key, role))
     }
@@ -895,16 +901,13 @@ pub async fn evaluate_pbac(
     action: &str,
     resource_id: &str,
 ) -> Result<PbacOutcome, kms_core::Error> {
-    if engine.policy_count().await == 0 {
-        // No policy configured => attribute-based control is inactive; the
-        // role-based permission check remains the only gate.
-        return Ok(PbacOutcome::Allowed);
-    }
     let ctx = kms_policy::AccessContext::new(subject_id, action, resource_id);
-    match engine.evaluate(&ctx).await {
-        Ok(kms_policy::Decision::Allow) => Ok(PbacOutcome::Allowed),
-        Ok(kms_policy::Decision::Deny) => Ok(PbacOutcome::Denied),
-        Err(e) => Err(e),
+    match engine.evaluate_if_configured(&ctx).await? {
+        // No enabled policy configured => attribute-based control is inactive;
+        // the role-based permission check remains the only gate.
+        None => Ok(PbacOutcome::Allowed),
+        Some(kms_policy::Decision::Allow) => Ok(PbacOutcome::Allowed),
+        Some(kms_policy::Decision::Deny) => Ok(PbacOutcome::Denied),
     }
 }
 
@@ -1251,6 +1254,7 @@ mod tests {
         assert_ne!(ApiKeyPermission::KeyAdmin.permissions(), all);
         assert_ne!(ApiKeyPermission::SecurityOfficer.permissions(), all);
         assert_ne!(ApiKeyPermission::AuditAdmin.permissions(), all);
+        assert_ne!(ApiKeyPermission::TenantAdmin.permissions(), all);
     }
 
     // ── Security regression tests ──
@@ -1487,19 +1491,38 @@ mod tests {
         }
     }
 
-    /// An engine without any policy must not deny everything: the deployment
-    /// has not opted into attribute-based control yet, and the role-based check
-    /// is the only gate. Before this was fixed the server answered 403 to
-    /// every protected request (audit follow-up B7-g).
+    /// An engine without any **enabled** policy must not deny everything: the
+    /// deployment has not opted into attribute-based control yet, and the
+    /// role-based check is the only gate. Before this was fixed the server
+    /// answered 403 to every protected request (audit follow-up B7-g).
     #[tokio::test]
     async fn test_evaluate_pbac_empty_engine_allows() {
         let engine = kms_policy::PBACEngine::new();
-        assert_eq!(engine.policy_count().await, 0);
+        assert_eq!(engine.enabled_policy_count().await, 0);
 
         let outcome = evaluate_pbac(&engine, "admin", "encrypt", "key-1").await;
         assert_eq!(
             outcome.expect("evaluation must not fail"),
             PbacOutcome::Allowed
+        );
+    }
+
+    /// A **disabled** policy does not put the engine into the default-deny
+    /// mode: it matches nothing, so counting it would lock every caller out
+    /// with no visible cause (audit follow-up B7-h).
+    #[tokio::test]
+    async fn test_evaluate_pbac_disabled_policy_keeps_the_control_inactive() {
+        let engine = kms_policy::PBACEngine::new();
+        let mut disabled = unrelated_policy(kms_core::PolicyEffect::Allow, "disabled");
+        disabled.enabled = false;
+        engine.add_policy(disabled).await.expect("add policy");
+        assert_eq!(engine.enabled_policy_count().await, 0);
+
+        let outcome = evaluate_pbac(&engine, "admin", "encrypt", "key-1").await;
+        assert_eq!(
+            outcome.expect("evaluation must not fail"),
+            PbacOutcome::Allowed,
+            "a disabled policy must not switch the engine into the default-deny mode"
         );
     }
 
@@ -1512,7 +1535,7 @@ mod tests {
             .add_policy(unrelated_policy(kms_core::PolicyEffect::Allow, "unrelated"))
             .await
             .expect("add policy");
-        assert_eq!(engine.policy_count().await, 1);
+        assert_eq!(engine.enabled_policy_count().await, 1);
 
         let outcome = evaluate_pbac(&engine, "admin", "encrypt", "key-1").await;
         assert_eq!(
@@ -1565,13 +1588,13 @@ mod tests {
         let policy = unrelated_policy(kms_core::PolicyEffect::Allow, "unrelated");
         let policy_id = policy.id.to_string();
         engine.add_policy(policy).await.expect("add policy");
-        assert_eq!(engine.policy_count().await, 1);
+        assert_eq!(engine.enabled_policy_count().await, 1);
 
         engine
             .remove_policy(&policy_id)
             .await
             .expect("remove policy");
-        assert_eq!(engine.policy_count().await, 0);
+        assert_eq!(engine.enabled_policy_count().await, 0);
 
         let outcome = evaluate_pbac(&engine, "admin", "encrypt", "key-1").await;
         assert_eq!(

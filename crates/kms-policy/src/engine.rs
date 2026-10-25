@@ -139,18 +139,32 @@ impl PBACEngine {
         Ok(policies.values().cloned().collect())
     }
 
-    /// Number of configured policies.
+    /// Number of **enabled** policies.
     ///
     /// The engine itself always denies a request that no policy covers
     /// (default-deny). Callers that need to distinguish "no policy configured
     /// at all" from "policies configured but none matches" use this counter:
-    /// an engine with zero policies imposes no attribute-level restriction, and
-    /// as soon as the first policy is installed the default-deny applies to
-    /// everything the policies do not cover (audit follow-up B7-g).
-    pub async fn policy_count(&self) -> usize {
-        self.policies.read().await.len()
+    /// an engine with zero enabled policies imposes no attribute-level
+    /// restriction, and as soon as the first enabled policy is installed the
+    /// default-deny applies to everything the policies do not cover
+    /// (audit follow-up B7-g).
+    ///
+    /// Only **enabled** policies count, because that is exactly what
+    /// [`PBACEngine::evaluate`] takes into account. Counting disabled ones
+    /// would make a single disabled policy switch the engine into the
+    /// default-deny mode while it matches nothing — locking out every
+    /// request with no way to tell why (audit follow-up B7-h).
+    pub async fn enabled_policy_count(&self) -> usize {
+        self.policies
+            .read()
+            .await
+            .values()
+            .filter(|p| p.enabled)
+            .count()
     }
 
+    /// Evaluate an access request, taking the enabled policies into account.
+    ///
     /// Check time skew between system clock and trusted time source
     pub async fn check_time_skew(&self) -> Result<TimeSkewStatus> {
         let status = self.time_validator.check_time_skew()?;
@@ -197,9 +211,36 @@ impl PBACEngine {
         Ok(alerts.clone())
     }
 
+    /// Evaluate an access request, taking the enabled policies into account.
+    ///
+    /// Returns `None` when **no enabled policy** is configured. The caller
+    /// then knows that attribute-based control is not in force; once at least
+    /// one enabled policy exists the engine's default-deny applies to
+    /// everything the policies do not cover (audit follow-up B7-h).
+    ///
+    /// The count and the decision are taken under a single lock, so a policy
+    /// installed concurrently can neither be missed (which would allow a
+    /// request the policy denies) nor hide a policy that is already active.
+    pub async fn evaluate_if_configured(&self, ctx: &AccessContext) -> Result<Option<Decision>> {
+        let policies = self.policies.read().await;
+        if policies.values().all(|p| !p.enabled) {
+            return Ok(None);
+        }
+        Ok(Some(self.evaluate_locked(&policies, ctx)))
+    }
+
     /// Evaluate access request
     pub async fn evaluate(&self, ctx: &AccessContext) -> Result<Decision> {
         let policies = self.policies.read().await;
+        Ok(self.evaluate_locked(&policies, ctx))
+    }
+
+    /// The decision for one request, given an already-held policy snapshot.
+    fn evaluate_locked(
+        &self,
+        policies: &std::collections::HashMap<String, Policy>,
+        ctx: &AccessContext,
+    ) -> Decision {
         let policy_ctx = ctx.to_policy_context();
 
         // Sort policies: explicit deny first, then by priority
@@ -240,15 +281,15 @@ impl PBACEngine {
             let condition_result = self.evaluate_condition(&policy.condition, &policy_ctx);
 
             if condition_result {
-                return Ok(match policy.effect {
+                return match policy.effect {
                     PolicyEffect::Allow => Decision::Allow,
                     PolicyEffect::Deny => Decision::Deny,
-                });
+                };
             }
         }
 
         // Default deny
-        Ok(Decision::Deny)
+        Decision::Deny
     }
 
     fn evaluate_condition(&self, condition: &Value, ctx: &PolicyContext) -> bool {
@@ -491,12 +532,14 @@ mod tests {
         assert_eq!(result, Decision::Allow);
     }
 
-    /// `policy_count` distinguishes "no policy configured" from "policies
-    /// configured but none matches" (audit follow-up B7-g).
+    /// `enabled_policy_count` distinguishes "no policy configured" from
+    /// "policies configured but none matches" (audit follow-up B7-g), and it
+    /// counts only the policies `evaluate` actually takes into account
+    /// (audit follow-up B7-h).
     #[tokio::test]
-    async fn test_policy_count_tracks_policies() {
+    async fn test_enabled_policy_count_tracks_policies() {
         let engine = PBACEngine::new();
-        assert_eq!(engine.policy_count().await, 0);
+        assert_eq!(engine.enabled_policy_count().await, 0);
 
         let policy = Policy {
             id: uuid::Uuid::new_v4(),
@@ -510,10 +553,69 @@ mod tests {
         let policy_id = policy.id.to_string();
 
         engine.add_policy(policy).await.unwrap();
-        assert_eq!(engine.policy_count().await, 1);
+        assert_eq!(engine.enabled_policy_count().await, 1);
 
         engine.remove_policy(&policy_id).await.unwrap();
-        assert_eq!(engine.policy_count().await, 0);
+        assert_eq!(engine.enabled_policy_count().await, 0);
+    }
+
+    /// A disabled policy is invisible to `evaluate`, so it must not be counted
+    /// as an active policy either (audit follow-up B7-h).
+    #[tokio::test]
+    async fn test_disabled_policy_is_not_counted() {
+        let engine = PBACEngine::new();
+        let policy = Policy {
+            id: uuid::Uuid::new_v4(),
+            name: "disabled".to_string(),
+            effect: PolicyEffect::Allow,
+            condition: serde_json::json!({ "operator": "always" }),
+            resources: vec!["*".to_string()],
+            subjects: vec!["*".to_string()],
+            enabled: false,
+        };
+        engine.add_policy(policy).await.unwrap();
+
+        assert_eq!(engine.enabled_policy_count().await, 0);
+    }
+
+    /// `evaluate_if_configured` returns `None` while no enabled policy exists
+    /// and the decision once one does (audit follow-up B7-h).
+    #[tokio::test]
+    async fn test_evaluate_if_configured() {
+        let engine = PBACEngine::new();
+        let ctx = AccessContext::new("user1", "encrypt", "key:123");
+
+        // No policy => the control is not in force.
+        assert_eq!(engine.evaluate_if_configured(&ctx).await.unwrap(), None);
+
+        // A disabled policy is still "not in force".
+        let disabled = Policy {
+            id: uuid::Uuid::new_v4(),
+            name: "disabled".to_string(),
+            effect: PolicyEffect::Allow,
+            condition: serde_json::json!({ "operator": "always" }),
+            resources: vec!["*".to_string()],
+            subjects: vec!["*".to_string()],
+            enabled: false,
+        };
+        engine.add_policy(disabled).await.unwrap();
+        assert_eq!(engine.evaluate_if_configured(&ctx).await.unwrap(), None);
+
+        // An enabled, matching policy decides.
+        let enabled = Policy {
+            id: uuid::Uuid::new_v4(),
+            name: "enabled".to_string(),
+            effect: PolicyEffect::Allow,
+            condition: serde_json::json!({ "operator": "always" }),
+            resources: vec!["*".to_string()],
+            subjects: vec!["*".to_string()],
+            enabled: true,
+        };
+        engine.add_policy(enabled).await.unwrap();
+        assert_eq!(
+            engine.evaluate_if_configured(&ctx).await.unwrap(),
+            Some(Decision::Allow)
+        );
     }
 
     #[tokio::test]

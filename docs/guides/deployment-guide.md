@@ -350,7 +350,8 @@ Notes:
 
 - The secret is only read from `secret_env`; it is never stored in the configuration file.
 - A missing environment variable or an unknown role makes the **startup fail** rather than
-  silently running with a weaker key.
+  silently running with a weaker key. `KMS_API_KEY_ROLE` accepts the same role names and
+  fails the startup on an unknown one, too.
 - An **empty** secret makes the startup fail as well: an empty `x-api-key` header is a valid
   credential, so accepting one would let anybody authenticate.
 - Two keys must not share a secret, and two keys must not share a `key_id`; both make the
@@ -391,11 +392,19 @@ Two states matter:
 
 - **No policy configured** — the server starts with an empty policy engine and loads no policy
   at startup, so attribute-based control is *inactive* and the role check is the only gate. This
-  is the out-of-the-box state.
-- **At least one policy configured** — the engine denies every request that no policy covers, so
-  an allow-list policy means exactly that: only what the policies cover is permitted.
+  is the out-of-the-box state. The server logs a `warn` on every startup saying so.
+- **At least one enabled policy configured** — the engine denies every request that no policy
+  covers, so an allow-list policy means exactly that: only what the policies cover is permitted.
 
 A `Deny` policy always wins over an `Allow` policy for the same request.
+
+> **Policies are held in memory only.** They are not written to disk and are not loaded at
+> startup, so a policy disappears when the process restarts — and with it, every attribute-based
+> restriction. Re-install the policies after each restart, or provision them as part of the
+> deployment. The startup `warn` line is the reminder.
+>
+> A **disabled** policy (`"enabled": false`) does not count: it matches nothing, so it does not
+> switch the engine into the default-deny mode either. Only enabled policies count.
 
 ```bash
 # Install a policy: from then on the default-deny applies.
