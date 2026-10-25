@@ -64,6 +64,20 @@ impl ApprovalManager {
         self.engine.is_approved(request_id, operation, resource_id)
     }
 
+    /// Restore a persisted approval request into the engine.
+    ///
+    /// Mirrors [`ApprovalEngine::restore_request`]: the request keeps its own
+    /// `expires_at` and its own votes, so a request that was already expired
+    /// when it was persisted stays expired and is rejected by
+    /// [`Self::is_approved`]. This is the hook a persistence layer needs to
+    /// re-hydrate requests across a restart without extending their lifetime.
+    pub fn restore_request(
+        &mut self,
+        request: kms_approval::ApprovalRequestEntity,
+    ) -> Result<(), ApprovalError> {
+        self.engine.restore_request(request)
+    }
+
     /// Approve a request.
     ///
     /// Returns the engine error so the caller can distinguish a self-approval,

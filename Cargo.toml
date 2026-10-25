@@ -205,6 +205,10 @@ ring = "0.17"
 chrono = { workspace = true }
 gm-crypto = { version = "0.3" }
 gm-sm9-rs = { version = "0.1.0" }
+# audit B8-d: the interface-level expiry guard needs to build an
+# "approved but expired" approval request, which requires the approval
+# entity types.
+kms-approval = { path = "crates/kms-approval" }
 
 # gm-ca 0.2.2 + gm-tls 0.2.2 + gm-crypto 0.3.3 + gm-sm9-rs 0.1.1 + gm-tlcp 0.6.6 是
 # gm 仓库的协调版本（发布于 c77f0d7 — 2026-09-18 cert-verification audit 修复后）。

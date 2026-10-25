@@ -72,6 +72,21 @@ async fn spawn_rest_server() -> (String, reqwest::Client, tokio::task::JoinHandl
 async fn spawn_rest_server_with_policies(
     extra_policies: Vec<Policy>,
 ) -> (String, reqwest::Client, tokio::task::JoinHandle<()>) {
+    let (base, client, handle, _state) =
+        spawn_rest_server_with_policies_and_state(extra_policies).await;
+    (base, client, handle)
+}
+
+/// Same as [`spawn_rest_server_with_policies`], but also hands back the
+/// [`KmsState`] so a test can reach the approval engine directly.
+async fn spawn_rest_server_with_policies_and_state(
+    extra_policies: Vec<Policy>,
+) -> (
+    String,
+    reqwest::Client,
+    tokio::task::JoinHandle<()>,
+    Arc<KmsState>,
+) {
     // PBAC：注入一条放行全部 subject/resource/action 的策略。
     let engine = PBACEngine::new();
     engine
@@ -90,7 +105,18 @@ async fn spawn_rest_server_with_policies(
         engine.add_policy(policy).await.expect("add extra policy");
     }
 
-    spawn_rest_server_with_engine(engine).await
+    spawn_rest_server_with_engine_and_state(engine).await
+}
+
+/// Boot a REST server with the default allow-all policy and hand back the
+/// [`KmsState`] as well (audit B8-d).
+async fn spawn_rest_server_with_state() -> (
+    String,
+    reqwest::Client,
+    tokio::task::JoinHandle<()>,
+    Arc<KmsState>,
+) {
+    spawn_rest_server_with_policies_and_state(Vec::new()).await
 }
 
 /// Same as [`spawn_rest_server_with_policies`], but with **no** policy at all.
@@ -108,6 +134,25 @@ async fn spawn_rest_server_without_policy() -> (String, reqwest::Client, tokio::
 async fn spawn_rest_server_with_engine(
     engine: PBACEngine,
 ) -> (String, reqwest::Client, tokio::task::JoinHandle<()>) {
+    let (base, client, handle, _state) = spawn_rest_server_with_engine_and_state(engine).await;
+    (base, client, handle)
+}
+
+/// Same as [`spawn_rest_server_with_engine`], but also hands back the
+/// [`KmsState`] so a test can reach the approval engine directly.
+///
+/// Audit B8-d: an approval request that is *approved but already expired*
+/// cannot be produced through the REST API (`create_request` always derives a
+/// future `expires_at`), so the interface-level expiry guard needs this hook
+/// to inject one.
+async fn spawn_rest_server_with_engine_and_state(
+    engine: PBACEngine,
+) -> (
+    String,
+    reqwest::Client,
+    tokio::task::JoinHandle<()>,
+    Arc<KmsState>,
+) {
     // keystore
     let keystore = Arc::new(SoftwareKeystore::new());
 
@@ -145,7 +190,7 @@ async fn spawn_rest_server_with_engine(
             .with_tenant("acme".to_string()),
     ]);
 
-    let app = create_routes(state, api_key_config);
+    let app = create_routes(Arc::clone(&state), api_key_config);
 
     let listener = TcpListener::bind("127.0.0.1:0".parse::<SocketAddr>().unwrap())
         .await
@@ -172,7 +217,7 @@ async fn spawn_rest_server_with_engine(
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 
-    (base, client, handle)
+    (base, client, handle, state)
 }
 
 /// 建一把密钥，返回其 id（字符串）。
@@ -547,11 +592,82 @@ async fn export_key_rest_rejects_unbound_resource() {
     let (status, body) = export_key(&client, &base, &key_b, tenant, Some(&approval_id)).await;
     handle.abort();
 
-    // The approval gate answers with a plain 400 (InvalidRequest); assert the
-    // exact code so an internal error (500) cannot satisfy this test.
+    // The approval gate answers with 403 (Forbidden) — the same code the gRPC
+    // channel reports as PERMISSION_DENIED; assert the exact code so an
+    // internal error (500) cannot satisfy this test.
     assert_eq!(
-        status, 400,
+        status, 403,
         "cross-resource export must be rejected by the approval gate: body={body}"
+    );
+}
+
+/// Audit B8-d: an approval request that is **approved but already expired**
+/// must not unlock a key export at the interface level.
+///
+/// The engine's expiry rule (`is_approved`: `Utc::now() <= expires_at`) had
+/// unit-level coverage only. The interface layer is where key material
+/// actually leaves the KMS, so the guard needs its own case: a request that
+/// was approved while valid and expired afterwards must stop authorizing the
+/// export.
+#[tokio::test]
+async fn b8d_export_rejects_an_expired_approval() {
+    let (base, client, handle, state) = spawn_rest_server_with_state().await;
+    let tenant = "tenant-a";
+    let key_id = create_key(&client, &base, "expired-approval", "sm4", tenant).await;
+
+    // A fully approved (Triple quorum) KeyExport request bound to THIS key,
+    // whose deadline has already passed.
+    let approval_id = uuid::Uuid::new_v4();
+    let now = chrono::Utc::now();
+    let request = kms_approval::ApprovalRequestEntity {
+        id: approval_id,
+        operation: kms_approval::OperationType::KeyExport,
+        resource_id: key_id.clone(),
+        resource_type: "key".to_string(),
+        tenant_id: tenant.to_string(),
+        requestor_id: "requestor-user".to_string(),
+        justification: Some("interface-level expiry guard".to_string()),
+        status: kms_approval::ApprovalStatus::Approved,
+        required_level: kms_approval::ApprovalLevel::Triple,
+        current_level: kms_approval::ApprovalLevel::Triple,
+        approvals: (0..3)
+            .map(|i| kms_approval::ApprovalRecord {
+                approver_id: format!("officer-{i}"),
+                level: kms_approval::ApprovalLevel::Triple,
+                approved_at: now - chrono::Duration::hours(2),
+                comment: None,
+            })
+            .collect(),
+        rejections: Vec::new(),
+        created_at: now - chrono::Duration::hours(3),
+        expires_at: now - chrono::Duration::hours(1),
+        completed_at: Some(now - chrono::Duration::hours(2)),
+        metadata: serde_json::json!({}),
+    };
+    {
+        let mut guard = state.approval_manager.write();
+        guard
+            .restore_request(request)
+            .expect("the expired approval must be restorable");
+    }
+
+    let (status, body) = export_key(
+        &client,
+        &base,
+        &key_id,
+        tenant,
+        Some(&approval_id.to_string()),
+    )
+    .await;
+    handle.abort();
+
+    assert_eq!(
+        status, 403,
+        "an expired approval must not unlock a key export: body={body}"
+    );
+    assert!(
+        body.get("wrapped_key").is_none(),
+        "no key material may leave the KMS with an expired approval: body={body}"
     );
 }
 
@@ -581,7 +697,9 @@ async fn rotate_key_requires_approval() {
     let tenant = "tenant-a";
     let key_id = create_key(&client, &base, "rotate-me", "sm4", tenant).await;
 
-    // Without approval => rejected (400: approval gate).
+    // Without approval => rejected. A *missing* approval_id is a malformed
+    // call (400 Bad Request); an approval that exists but is not (yet) valid
+    // for this key is an authorization failure (403 Forbidden).
     let (no_appr_status, body1) = rotate_key(&client, &base, &key_id, tenant, None).await;
     assert_eq!(
         no_appr_status, 400,
@@ -1270,7 +1388,7 @@ async fn b7a_single_key_cannot_forge_multi_party_quorum() {
     let (status, body) = export_key(&client, &base, &key_id, tenant, Some(&approval_id)).await;
     handle.abort();
     assert_eq!(
-        status, 400,
+        status, 403,
         "export must stay blocked without a real three-party quorum: body={body}"
     );
 }

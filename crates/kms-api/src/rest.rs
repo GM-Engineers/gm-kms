@@ -1044,7 +1044,12 @@ fn require_approved(
             action,
             "{action} rejected: approval not found, not bound to this resource/operation, not fully approved, or expired"
         );
-        return Err(ApiError::InvalidRequest(format!(
+        // 403, not 400: the request itself is well-formed, the caller simply
+        // is not authorized (no/expired/unbound/not-fully-approved approval).
+        // The gRPC channel already answers the same gate with
+        // `Status::permission_denied` (grpc.rs::require_approved) — the two
+        // channels must not diverge on a security gate (audit B0).
+        return Err(ApiError::Forbidden(format!(
             "{action} requires a fully approved request bound to this resource"
         )));
     }

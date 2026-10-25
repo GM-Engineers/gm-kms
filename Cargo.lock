@@ -1916,6 +1916,7 @@ dependencies = [
  "gm-tls",
  "hex",
  "kms-api",
+ "kms-approval",
  "kms-audit",
  "kms-core",
  "kms-hsm",

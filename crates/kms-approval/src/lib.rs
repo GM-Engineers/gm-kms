@@ -212,6 +212,42 @@ impl ApprovalEngine {
         Ok(request)
     }
 
+    /// Restore a persisted approval request into the engine.
+    ///
+    /// Approval requests are held in memory only, so a restart loses them.
+    /// This hook re-hydrates a request that was persisted elsewhere (e.g. in a
+    /// database) **without** going through [`Self::create_request`], which
+    /// always derives a fresh `expires_at` from the required level and would
+    /// therefore silently extend the lifetime of an already-expired request.
+    ///
+    /// The restored request keeps its own timestamps and votes, so a request
+    /// that was already expired when it was persisted stays expired:
+    /// [`Self::is_approved`] rejects it (audit B0 / P2-8).
+    ///
+    /// Errors with [`ApprovalError::WorkflowError`] when a request with the
+    /// same id is already present — the persisted copy is not allowed to
+    /// silently overwrite the live one.
+    pub fn restore_request(&mut self, request: ApprovalRequestEntity) -> Result<()> {
+        if self.pending_requests.contains_key(&request.id) {
+            return Err(ApprovalError::WorkflowError(format!(
+                "approval request {} is already present",
+                request.id
+            )));
+        }
+
+        tracing::info!(
+            approval_request_id = %request.id,
+            operation = ?request.operation,
+            resource_id = %request.resource_id,
+            status = ?request.status,
+            expires_at = %request.expires_at,
+            "Approval request restored"
+        );
+
+        self.pending_requests.insert(request.id, request);
+        Ok(())
+    }
+
     /// Approve a request
     pub fn approve(
         &mut self,
@@ -1005,6 +1041,109 @@ mod tests {
             stored.expires_at = Utc::now() - chrono::Duration::hours(1);
         }
         assert!(!engine.is_approved(request.id, OperationType::KeyExport, "key-123"));
+    }
+
+    /// Audit B8-d: a restored request keeps its own deadline, so an
+    /// already-expired request stays expired.
+    #[test]
+    fn test_restore_request_keeps_an_expired_request_expired() {
+        let mut engine = ApprovalEngine::new();
+        let now = Utc::now();
+        let request = ApprovalRequestEntity {
+            id: Uuid::new_v4(),
+            operation: OperationType::KeyExport,
+            resource_id: "key-123".to_string(),
+            resource_type: "key".to_string(),
+            tenant_id: "tenant-1".to_string(),
+            requestor_id: "user-1".to_string(),
+            justification: None,
+            status: ApprovalStatus::Approved,
+            required_level: ApprovalLevel::Single,
+            current_level: ApprovalLevel::Single,
+            approvals: vec![ApprovalRecord {
+                approver_id: "approver-1".to_string(),
+                level: ApprovalLevel::Single,
+                approved_at: now - chrono::Duration::hours(2),
+                comment: None,
+            }],
+            rejections: Vec::new(),
+            created_at: now - chrono::Duration::hours(3),
+            expires_at: now - chrono::Duration::hours(1),
+            completed_at: Some(now - chrono::Duration::hours(2)),
+            metadata: serde_json::Value::Object(serde_json::Map::new()),
+        };
+        let id = request.id;
+        engine.restore_request(request).expect("restore");
+
+        assert!(
+            !engine.is_approved(id, OperationType::KeyExport, "key-123"),
+            "a restored request that was already expired must not authorize anything"
+        );
+        // It is still known to the engine (it was restored, not dropped).
+        assert!(engine.get_request(id).is_ok());
+    }
+
+    /// Audit B8-d: restoring the same id twice must not silently overwrite
+    /// the live request.
+    #[test]
+    fn test_restore_request_rejects_a_duplicate_id() {
+        let mut engine = ApprovalEngine::new();
+        let request = engine
+            .create_request(
+                OperationType::KeyExport,
+                "key-123",
+                "key",
+                "tenant-1",
+                "user-1",
+                None,
+                ApprovalLevel::Single,
+            )
+            .unwrap();
+
+        let mut clone = request.clone();
+        clone.expires_at = Utc::now() + chrono::Duration::hours(1);
+        let err = engine
+            .restore_request(clone)
+            .expect_err("a duplicate id must be rejected");
+        assert!(
+            matches!(err, ApprovalError::WorkflowError(_)),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    /// Audit B8-d: a restored request that is still within its deadline
+    /// authorizes normally — the restore hook must not break the happy path.
+    #[test]
+    fn test_restore_request_keeps_a_valid_request_usable() {
+        let mut engine = ApprovalEngine::new();
+        let now = Utc::now();
+        let request = ApprovalRequestEntity {
+            id: Uuid::new_v4(),
+            operation: OperationType::KeyExport,
+            resource_id: "key-123".to_string(),
+            resource_type: "key".to_string(),
+            tenant_id: "tenant-1".to_string(),
+            requestor_id: "user-1".to_string(),
+            justification: None,
+            status: ApprovalStatus::Approved,
+            required_level: ApprovalLevel::Single,
+            current_level: ApprovalLevel::Single,
+            approvals: vec![ApprovalRecord {
+                approver_id: "approver-1".to_string(),
+                level: ApprovalLevel::Single,
+                approved_at: now,
+                comment: None,
+            }],
+            rejections: Vec::new(),
+            created_at: now,
+            expires_at: now + chrono::Duration::hours(12),
+            completed_at: Some(now),
+            metadata: serde_json::Value::Object(serde_json::Map::new()),
+        };
+        let id = request.id;
+        engine.restore_request(request).expect("restore");
+
+        assert!(engine.is_approved(id, OperationType::KeyExport, "key-123"));
     }
 
     #[test]

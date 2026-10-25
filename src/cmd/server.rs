@@ -249,11 +249,7 @@ async fn maybe_create_mfa_pool(
         );
     }
 
-    match kms_api::sqlx::postgres::PgPoolOptions::new()
-        .max_connections(5)
-        .connect(&url)
-        .await
-    {
+    match connect_with_deadline(database_config, &url).await {
         Ok(pool) => {
             tracing::info!("PostgreSQL connected for MFA persistence");
             Some(pool)
@@ -265,6 +261,36 @@ async fn maybe_create_mfa_pool(
             );
             None
         }
+    }
+}
+
+/// Connect to PostgreSQL, bounded by `database.connect_timeout_secs`.
+///
+/// The pool creation waits for sqlx's own 30 s acquire timeout when the
+/// server is unreachable — the connection is retried in the background until
+/// the deadline expires. That would delay the fail-closed keystore gate
+/// (audit P1-4) by a full timeout per attempt and leave the operator staring
+/// at a hanging startup instead of a refusal, so the attempt gets its own
+/// deadline. `connect_timeout_secs == 0` leaves the wait to sqlx.
+async fn connect_with_deadline(
+    database_config: &crate::cmd::config::DatabaseConfig,
+    url: &str,
+) -> Result<kms_api::sqlx::PgPool, String> {
+    let connect = kms_api::sqlx::postgres::PgPoolOptions::new()
+        .max_connections(5)
+        .connect(url);
+
+    if database_config.connect_timeout_secs == 0 {
+        return connect.await.map_err(|e| e.to_string());
+    }
+
+    let deadline = std::time::Duration::from_secs(database_config.connect_timeout_secs);
+    match tokio::time::timeout(deadline, connect).await {
+        Ok(result) => result.map_err(|e| e.to_string()),
+        Err(_) => Err(format!(
+            "connection attempt timed out after {deadline:?} \
+             (database.connect_timeout_secs)"
+        )),
     }
 }
 
@@ -830,7 +856,10 @@ pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()
                 }
             }
         } else {
-            in_memory_fallback_permitted(allow_in_memory, "no PostgreSQL configured")?;
+            // The pool is `None` both when PostgreSQL was never configured and
+            // when the connection could not be established; the operator-facing
+            // reason must not claim the former when it is the latter.
+            in_memory_fallback_permitted(allow_in_memory, "no usable PostgreSQL connection")?;
             Ok(Arc::new(SoftwareKeystore::new()))
         }
     }
@@ -884,7 +913,7 @@ pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()
                 }
             }
         } else {
-            in_memory_fallback_permitted(allow_in_memory, "no PostgreSQL configured")?;
+            in_memory_fallback_permitted(allow_in_memory, "no usable PostgreSQL connection")?;
             Ok(Arc::new(RedisCachedKeystore::new(
                 SoftwareKeystore::new(),
                 redis_conn,

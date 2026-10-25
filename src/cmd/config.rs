@@ -910,6 +910,18 @@ pub struct DatabaseConfig {
     /// Database connection URL (overrides individual settings if provided)
     #[serde(default)]
     pub url: Option<String>,
+
+    /// Startup deadline (seconds) for the PostgreSQL connection attempt.
+    ///
+    /// sqlx keeps retrying the connection until its own 30 s pool acquire
+    /// timeout expires, so an unreachable PostgreSQL otherwise holds the
+    /// startup hostage: the fail-closed keystore gate (audit P1-4) is only
+    /// reached a full timeout later, and the operator sees a hang instead of a
+    /// refusal. The deadline bounds the *startup* attempt only — an
+    /// established pool is unaffected. `0` disables the bound and leaves the
+    /// wait to sqlx.
+    #[serde(default = "default_db_connect_timeout")]
+    pub connect_timeout_secs: u64,
 }
 
 fn default_db_host() -> String {
@@ -932,6 +944,10 @@ fn default_db_password() -> String {
     "kms_pass".to_string()
 }
 
+fn default_db_connect_timeout() -> u64 {
+    30
+}
+
 impl Default for DatabaseConfig {
     fn default() -> Self {
         Self {
@@ -941,6 +957,7 @@ impl Default for DatabaseConfig {
             username: default_db_username(),
             password: default_db_password(),
             url: None,
+            connect_timeout_secs: default_db_connect_timeout(),
         }
     }
 }
