@@ -43,6 +43,10 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 COPY src ./src
 COPY examples ./examples
+# The SDK is a workspace member, so cargo must be able to read its manifest
+# to resolve the workspace. The SDK is not compiled into the image: the build
+# below selects the `kms` binary only.
+COPY sdk ./sdk
 
 # Build release binary
 RUN cargo build --release --bin kms

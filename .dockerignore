@@ -1,6 +1,11 @@
 # Build context exclusions for the gm-kms Docker image.
 # The Dockerfile only needs: Cargo.toml, Cargo.lock, crates/, src/, examples/,
-# and kms.toml.example. Everything else is excluded to keep the build context small.
+# sdk/ and kms.toml.example. Everything else is excluded to keep the build
+# context small.
+#
+# `sdk/` is kept because the root manifest lists `sdk/rust` as a workspace
+# member: cargo has to read that member's manifest to resolve the workspace,
+# even though the SDK is not compiled into the image.
 
 target/
 .git/
@@ -8,7 +13,6 @@ target/
 docs/
 deploy/
 operators/
-sdk/
 fuzz/
 tests/
 benches/

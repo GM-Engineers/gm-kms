@@ -272,19 +272,31 @@ async fn maybe_create_mfa_pool(
 /// (audit P1-4) by a full timeout per attempt and leave the operator staring
 /// at a hanging startup instead of a refusal, so the attempt gets its own
 /// deadline. `connect_timeout_secs == 0` leaves the wait to sqlx.
+///
+/// The deadline has to reach sqlx's *own* retry loop, not only the `await`
+/// below: the pool retries in the background until its acquire timeout
+/// expires, and the abandoned pool then keeps the runtime alive while it
+/// does so. Without `acquire_timeout` the startup refused after two seconds
+/// but the process then lingered for another thirty, and on a loaded
+/// machine that tail was long enough to push the startup past any sensible
+/// deadline. `acquire_timeout` makes the retry give up at the same moment
+/// the configured deadline does.
 async fn connect_with_deadline(
     database_config: &crate::cmd::config::DatabaseConfig,
     url: &str,
 ) -> Result<kms_api::sqlx::PgPool, String> {
-    let connect = kms_api::sqlx::postgres::PgPoolOptions::new()
-        .max_connections(5)
-        .connect(url);
+    let deadline = std::time::Duration::from_secs(database_config.connect_timeout_secs);
+
+    let mut options = kms_api::sqlx::postgres::PgPoolOptions::new().max_connections(5);
+    if database_config.connect_timeout_secs != 0 {
+        options = options.acquire_timeout(deadline);
+    }
+    let connect = options.connect(url);
 
     if database_config.connect_timeout_secs == 0 {
         return connect.await.map_err(|e| e.to_string());
     }
 
-    let deadline = std::time::Duration::from_secs(database_config.connect_timeout_secs);
     match tokio::time::timeout(deadline, connect).await {
         Ok(result) => result.map_err(|e| e.to_string()),
         Err(_) => Err(format!(

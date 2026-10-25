@@ -28,6 +28,16 @@ const UNREACHABLE_PG_URL: &str = "postgres://kms:kms@127.0.0.1:1/kms";
 /// proving that the gate works.
 const CONNECT_TIMEOUT_SECS: u64 = 2;
 
+/// How long the server process may take to exit before the case fails.
+///
+/// The refusal itself is reached in a few seconds (two connection attempts
+/// of `CONNECT_TIMEOUT_SECS` each), but the process still has to shut its
+/// runtime down, and a shared CI runner can be slow enough to stretch that
+/// well past the work itself. The deadline therefore has to be generous: it
+/// exists to catch a startup that never gives up, not to police a few
+/// seconds of work.
+const EXIT_DEADLINE_SECS: u64 = 180;
+
 /// The marker the fail-closed keystore gate prints (audit P1-4).
 const REFUSAL_MARKER: &str = "refusing to start without a persistent keystore";
 
@@ -134,7 +144,7 @@ async fn run_server(config: &Path, work_dir: &Path) -> std::process::Output {
         .stderr(Stdio::piped());
     clean_env(&mut cmd, &ca_cert);
 
-    tokio::time::timeout(Duration::from_secs(60), cmd.output())
+    tokio::time::timeout(Duration::from_secs(EXIT_DEADLINE_SECS), cmd.output())
         .await
         .expect("the server must exit instead of running forever")
         .expect("the server process must be runnable")
