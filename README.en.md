@@ -173,7 +173,10 @@ gm-kms/
 | startup_failclosed (fail-closed startup) | 2 | passed |
 | integration_tests / kat_vectors | 81 | passed |
 | Rust SDK (sdk/rust: contract 26 + e2e 6 + unit 5 + doctest 3) | 40 | passed |
-| **Total** | **1269 passed** (plus 55 ignored) | |
+| Go SDK (sdk/go) | 20 | passed |
+| Python SDK (sdk/python) | 10 | passed |
+| JavaScript SDK (sdk/javascript) | 10 | passed |
+| **Total** | **1309 passed** (plus 55 ignored) | |
 
 > Ignored breakdown: kms-api 5 + kms-keystore 25 + kms binary 2 + api_pg_integration 7 + api_policy_pg_integration 8 + doctests 8.
 > The PostgreSQL / Redis backed cases need a real PostgreSQL and Redis; run them separately with `cargo test --workspace -- --ignored`. The suite is **safe to re-run** — every case uses a one-shot identifier, so no manual cleanup or `FLUSHALL` is needed between runs.

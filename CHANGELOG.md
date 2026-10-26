@@ -6,7 +6,7 @@ All notable changes to gm-kms will be documented in this file.
 
 ### 上游审计整改（upstream audit remediation）
 
-分支 `fix/upstream-audit-2026h2`（基线 `release/0.3.0` @ `51a8e16`）共 **42 个提交**，闭合上游审计报告复核确认的全部 **22 项**问题（21 项复核属实 + 1 项新发现的 P0 功能阻断），并追加两轮独立复核（B7-*）、缺口闭合（B8-*）与两项策略治理补齐（B9-*）。每项均带回归测试；每批提交前通过 `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`（nightly 与 CI 稳定版 1.88 双通道），以及 PostgreSQL/Redis 集成套件（`--ignored`，55 passed / 0 failed，且**可重复执行**——不再需要每次手工清库或 `FLUSHALL`）。
+分支 `fix/upstream-audit-2026h2`（基线 `release/0.3.0` @ `51a8e16`）共 **44 个提交**，闭合上游审计报告复核确认的全部 **22 项**问题（21 项复核属实 + 1 项新发现的 P0 功能阻断），并追加两轮独立复核（B7-*）、缺口闭合（B8-*）与三项策略治理补齐（B9-*）。每项均带回归测试；每批提交前通过 `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`（nightly 与 CI 稳定版 1.88 双通道），以及 PostgreSQL/Redis 集成套件（`--ignored`，55 passed / 0 failed，且**可重复执行**——不再需要每次手工清库或 `FLUSHALL`）。四个 SDK（Rust / Go / Python / JavaScript）各自带测试套件（40 / 20 / 10 / 10 例），并由 CI 的 `sdk-tests` job 统一执行。
 
 #### Security
 
@@ -45,7 +45,10 @@ All notable changes to gm-kms will be documented in this file.
 
 #### Fixed
 
-- **集成套件可重复执行**：三个 `--ignored` 用例把"数据库 / Redis 里没有旧状态"当成了前置条件，于是第二次执行必然失败。`mfa::tests::test_mfa_db_lockout_persistence` 断言失败计数恰好等于 `MAX_TOTP_ATTEMPTS`，而 `record_failed_totp_attempt` 只增不减（`ON CONFLICT … DO UPDATE SET failed_attempts = failed_attempts + 1`），固定 `user_id` 的计数会跨运行累加；`quota::tests::test_quota_tracker_basic` 与 `test_quota_exceeded` 同理，Redis 里的计数同样只增不减。三个用例改用**每次运行新生成**的用户 / 租户 id（`uuid::Uuid::new_v4()`），不再依赖"这套件只在干净库上跑过一次"这个前提。整套 `--ignored` 套件现在可连续执行多次且全部通过，不需要手工 `DELETE` 或 `FLUSHALL`。
+- **B9-d — Python / JavaScript SDK 此前**完全无法认证**：`sdk/python` 与 `sdk/javascript` 把 API key 放在 `Authorization: Bearer` 头里，而服务端只读 `x-api-key`（`ApiKeyConfig::header_name`，默认 `x-api-key`）——两个 SDK 的**每一个**请求都会被判为未认证并答 401。真实 server 实测：`x-api-key` 头 → 200，`Authorization: Bearer` 头 → 401，Python SDK 原样调用 → 401。两个 SDK 改为发送 `x-api-key`，与 Go / Rust SDK 一致。**该缺陷与“策略接口缺失”无关**：即使补齐了策略接口，携带错误认证头的 SDK 也只能拿到 401，因此两处一并修复。
+- **B9-d — 204 空应答不再让删除调用崩掉**：Python 的 `_make_request` 与 JavaScript 的 `request` 都无条件解析 JSON，而 `DELETE /v1/keys/{id}` 与 `DELETE /v1/policies/{id}` 答的是 204 No Content（无正文）——Python 的 `delete_key` 与 JavaScript 的 `deleteKey` 一调用就抛 JSON 解析错误，删除操作从来就没能完成过。改为先读正文，正文为空直接返回。
+- **B9-d — JavaScript SDK 此前**根本无法编译**：`npm run build`（`tsc`）在 HEAD 上就失败——缺 `@types/node`（`Buffer` / `fetch` / `AbortSignal` 共 6 处 TS2580 / TS2304），且 `export class Error extends Error` 触发 TS2506（类在自身基类表达式中被直接或间接引用），连带 TS2339。这个 SDK 从未被 CI 编译过，也从未有可运行的测试。补 `@types/node` 开发依赖，基类改为 `globalThis.Error`（对外导出的名字仍是 `Error`，调用方代码不变），`npm run build` 与 `npm test` 现在都能跑。
+- **集成套件可重复执行**：三个 `--ignored` 用例把"数据库 / Redis 里没有旧状态"当成了前置条件，于是第二次执行必然失败。`mfa::tests::test_mfa_db_lockout_persistence` 断言失败计数恰好等于 `MAX_TOTP_ATTEMPTS`，而 `record_failed_totp_attempt` 只增不减（`ON CONFLICT … DO UPDATE SET failed_attempts = failed_attempts + 1`）， 固定 `user_id` 的计数会跨运行累加；`quota::tests::test_quota_tracker_basic` 与 `test_quota_exceeded` 同理，Redis 里的计数同样只增不减。三个用例改用**每次运行新 生成**的用户 / 租户 id（`uuid::Uuid::new_v4()`），不再依赖"这套件只在干净库上跑 过一次"这个前提。整套 `--ignored` 套件现在可连续执行多次且全部通过，不需要手工 `DELETE` 或 `FLUSHALL`。
 - **B8-d — 审批门的 400 / 403 语义统一**：REST 对审批门的拒绝答 400，而 gRPC 同一道门答 `permission_denied`——一个格式合法但未授权的请求被报成畸形调用，且两条通道在同一道安全门上分歧。拒绝统一为 `ApiError::Forbidden`（403）；400 保留给缺失或畸形的 `approval_id`（那是畸形调用，不是授权失败）。语义表 `docs/api-semantics.md` §8.5 补该区分。
 - **B8-b — 缓存条目一步解析**：每次操作都是"lazy-load 写回缓存 → 再从缓存读出"两步，而 `insert_with_eviction` 在插入后按上限淘汰，上限为 0 时写回即淘汰自己的条目——**专门用来少留密钥材料在内存的配置反而让每个密钥都报 `KeyNotFound`**。新增 `entry_for` helper 直接返回条目（命中取缓存，未命中取新加载），8 个读操作改用。
 - **B8-g — 写路径不再依赖缓存驻留**：轮换与删除改为在缓存修改闭包内做 `can_rotate()` 检查，而闭包无法返回错误，于是 panic（`rotate_key: can_rotate returned false after try_read success`）打挂请求；现在报 `KeyOperationNotAllowed`，与软件后端一致并由 API 层映射为 4xx。写入顺序改为"先落库、后刷新缓存"——旧顺序在数据库写失败时留下缓存声称 obsolete 而数据库仍称 active，且新密钥材料只存在于缓存中，一次失败的轮换会静默丢密钥。
@@ -59,7 +62,12 @@ All notable changes to gm-kms will be documented in this file.
 
 #### Added
 
-- **B9-c — SDK 补齐策略撤销与租户维度**：`DELETE /v1/policies/{id}`（B9-a 新增的撤销路径）此前**没有任何 SDK 能调用**——Rust SDK 只有 `create_policy` / `list_policies` / `get_policy`，Go SDK 只有 `CreatePolicy` / `ListPolicies` / `GetPolicy`，所以"装得下、撤不掉"在 SDK 侧依然成立，运维只能绕过 SDK 手拼 REST。Rust SDK 增 `delete_policy`，Go SDK 增 `DeletePolicy`（204 成功；未知 id 报 404）。Go SDK 的 `CreatePolicyRequest` / `Policy` 同步补上 B9-b 的 `tenant` 字段（`Tenant *string`，请求侧 `omitempty`），此前 Go 侧**完全无法设置或读取**租户维度。字段为可选且向后兼容：旧 SDK 不发 `tenant` 时服务端按"不限租户"处理，服务端应答里的 `tenant` 也不会被旧客户端误解。
+- **B9-d — Python / JavaScript SDK 补齐策略接口**：`sdk/python` 与 `sdk/javascript` 此前**完全没有策略接口**（全仓库 grep “polic” 无命中）——B9-a 新增的 `DELETE /v1/policies/{id}` 与 B9-b 新增的 `tenant` 维度在这两个 SDK 上一律无法使用，运维只能绕过 SDK 手拼 REST。现在两个 SDK 都提供完整的策略生命周期：`create_policy` / `createPolicy`、`list_policies` / `listPolicies`、`get_policy` / `getPolicy`、`delete_policy` / `deletePolicy`，并支持 `tenant`（省略 = 不限租户，给定值 = 只命中该租户，支持 glob）。
+  - 错误对象带 HTTP 状态码：Python 的 `Error` 增 `status`、JavaScript 的 `Error` 增 `status`，404 与 403 可以区分（与 Rust SDK 的 `KmsError::Api { status }`、Go SDK 的 `APIError.StatusCode` 对齐）。
+  - Python 增 `PolicyEffect` 枚举（`ALLOW` / `DENY`）。服务端请求侧收 `"allow"` / `"deny"`、应答侧答 `"Allow"` / `"Deny"`，因此枚举查找**大小写不敏感**。
+  - 护栏：Python `tests/test_kms.py` 10 例、JavaScript `test/index.test.ts` 10 例。两套用例的假服务器都**强制要求 `x-api-key`**（与服务端一致），因此把凭据放错头的回归会被用例当场抓住，而不是留到用户项目里。
+  - 真实 server 实测（非仅 mock）：两个 SDK 均完成 装策略 → 列出 → 取出 → 撤销 → 再取报 404（带状态码）→ 二次撤销报 404 的全流程。
+- **B9-c — SDK 补齐策略撤销与租户维度**：`DELETE /v1/policies/{id}`（B9-a 新增的撤销路径）此前**没有任何 SDK 能调用**——Rust SDK 只有 `create_policy` / `list_policies` / `get_policy`，Go SDK 只有 `CreatePolicy` / `ListPolicies` / `GetPolicy`，所以"装得下、撤不掉"在 SDK 侧依然成立，运维只能绕过 SDK 手拼 REST。Rust SDK 增 `delete_policy`，Go SDK 增 `DeletePolicy`（204 成功；未知 id 报 404）。Go SDK  的 `CreatePolicyRequest` / `Policy` 同步补上 B9-b 的 `tenant` 字段（`Tenant *string`，请求侧 `omitempty`），此前 Go 侧**完全无法设置或读取**租户维度。字段为可选且向后兼容：旧 SDK 不发 `tenant` 时服务端按"不限租户"处理，服务端应答里的 `tenant` 也不会被旧客户端误解。
   - 护栏：Rust SDK `tests/e2e.rs` 增 1 例（真实 server 上装一条**限定租户**的策略 → 列出 → 取出 → 撤销 → 再取报 404 → 二次撤销报 404），Go SDK `kms_test.go` 增 2 例（`DeletePolicy` 的方法与路径、204 成功；未知策略报 404），并改写既有的 `TestCreatePolicy` 使其断言 `tenant` 既被发出去也被读回来。Go SDK 的 `policies.go` 同时成为该目录下 gofmt 干净的文件。
 - **P2-1 — 托管 HMAC-SM3 密钥规格与独立 RPC**：新增 `KeySpec::Sm3Hmac` 与独立的 `Hmac` / `HmacVerify` RPC（`{key_id,data,aad?} -> {mac,version}`），走 `gm_crypto::sm3::Sm3Hmac`，不复用 AES-GCM 分支。
 - **P2-7 — 备份主密钥跨重启持久化**：`MasterKey` 复用 KEK 的 `export_encrypted`/`import_encrypted` 机制接入启动流程；启动时校验能否解开上次备份，失败告警。
@@ -71,7 +79,8 @@ All notable changes to gm-kms will be documented in this file.
 
 #### Changed
 
-- **P3-1 — 分离"可生成 / 可导入 / 可声明"三清单**：校验层只放行真正支持的类型；未实现类型返回明确的"暂不支持"，不再以别的算法的名义通过。
+- **B9-d — CI 覆盖非 Rust SDK**：此前 CI 只有 Rust 一个 job，Go / Python / JavaScript 三个 SDK **没有任何门禁**——它们各自带测试（Go 20 例）却从不在流水线里执行，JavaScript SDK 甚至连 `tsc` 都过不了（见上）。新增 `sdk-tests` job：Go（`go vet` + `go test`）、Python（`python -m unittest discover -s tests`）、JavaScript（`npm ci` + `npm run typecheck` + `npm test`）。SDK 源码改动从此会在流水线里当场暴露，而不是留到用户项目里。
+- **P3-1 — 分离"可生成 / 可导入 / 可声明"三清单**：校验层只放行真正支持的类型； 未实现类型返回明确的"暂不支持"，不再以别的算法的名义通过。
 - **P4-1 — 删除遗留 `Encryptor`/`Decryptor`/`AlgorithmFactory` 层**：避免与服务层出现两套 AAD 绑定的漂移实现。
 - **P3-3 — HSM/TPM 表述改为"适配架构预留（当前 stub/模拟器）"**：仓库与 GitHub 描述同步。
 - **B7-g — `tenant-admin` 角色**：映射到 `Role::Admin`，使 `tenant_admin` 操作可被审批。该角色只持 approve 权限，三名审批人的职责分离不受影响。

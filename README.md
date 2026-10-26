@@ -174,7 +174,10 @@ gm-kms/
 | startup_failclosed（启动 fail-closed） | 2 | passed |
 | integration_tests / kat_vectors | 81 | passed |
 | Rust SDK（sdk/rust：contract 26 + e2e 6 + unit 5 + doctest 3） | 40 | passed |
-| **合计** | **1269 passed**（另 55 ignored） | |
+| Go SDK（sdk/go） | 20 | passed |
+| Python SDK（sdk/python） | 10 | passed |
+| JavaScript SDK（sdk/javascript） | 10 | passed |
+| **合计** | **1309 passed**（另 55 ignored） | |
 
 > ignored 分布：kms-api 5 + kms-keystore 25 + kms binary 2 + api_pg_integration 7 + api_policy_pg_integration 8 + doctest 8。
 > PG/Redis 相关的 ignored 用例需真实 PostgreSQL 与 Redis，按 `cargo test --workspace -- --ignored` 单独执行。该套件**可重复执行**——用例各自使用一次性标识，无需在两次运行之间清库或 `FLUSHALL`。
