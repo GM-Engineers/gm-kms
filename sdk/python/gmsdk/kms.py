@@ -24,9 +24,40 @@ class KeySpec(str, Enum):
     HMAC_SHA256 = "hmac-sha256"
 
 
+class PolicyEffect(str, Enum):
+    """PBAC policy effects
+
+    The server accepts ``"allow"`` and ``"deny"`` on the way in and answers
+    ``"Allow"`` and ``"Deny"`` on the way out, so the lookup is
+    case-insensitive.
+    """
+
+    ALLOW = "allow"
+    DENY = "deny"
+
+    @classmethod
+    def _missing_(cls, value: object) -> Optional["PolicyEffect"]:
+        if isinstance(value, str):
+            lowered = value.lower()
+            for member in cls:
+                if member.value == lowered:
+                    return member
+        return None
+
+
 class Error(Exception):
-    """GM-KMS Error"""
-    pass
+    """GM-KMS Error
+
+    ``status`` carries the HTTP status the server answered with, when the
+    failure came from the server rather than from the transport. A 404 and a
+    403 are different answers, and a caller has to be able to tell them
+    apart.
+    """
+
+    def __init__(self, message: str, status: Optional[int] = None):
+        super().__init__(message)
+        self.message = message
+        self.status = status
 
 
 @dataclass
@@ -67,6 +98,22 @@ class VerifyResult:
     valid: bool
 
 
+@dataclass
+class Policy:
+    """PBAC policy"""
+
+    id: str
+    name: str
+    effect: PolicyEffect
+    condition: Dict[str, Any]
+    resources: List[str]
+    subjects: List[str]
+    # The tenant the policy is restricted to, None when it applies to every
+    # tenant.
+    tenant: Optional[str] = None
+    enabled: bool = True
+
+
 class Client:
     """
     GM-KMS Python SDK Client
@@ -105,7 +152,7 @@ class Client:
         path: str,
         body: Optional[Dict[str, Any]] = None,
         tenant_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
+    ) -> Any:
         """Make an HTTP request to the KMS server"""
         url = f"{self.server_url}{path}"
         data = json.dumps(body).encode("utf-8") if body else None
@@ -114,7 +161,10 @@ class Client:
             "Content-Type": "application/json",
         }
         if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
+            # The server reads the API key from the `x-api-key` header. It does
+            # not look at `Authorization`, so a Bearer token there is simply
+            # not seen and every call is refused as unauthenticated.
+            headers["x-api-key"] = self.api_key
 
         req = urllib.request.Request(
             url,
@@ -125,14 +175,22 @@ class Client:
 
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as response:
-                return json.loads(response.read().decode("utf-8"))
+                raw = response.read()
+                # A 204 No Content carries no body: there is nothing to
+                # parse, and asking for JSON would fail on the empty payload.
+                if not raw:
+                    return None
+                return json.loads(raw.decode("utf-8"))
         except urllib.error.HTTPError as e:
             error_body = e.read().decode("utf-8")
             try:
                 error_data = json.loads(error_body)
-                raise Error(error_data.get("error", f"HTTP {e.code}: {error_body}"))
+                raise Error(
+                    error_data.get("error", f"HTTP {e.code}: {error_body}"),
+                    status=e.code,
+                )
             except json.JSONDecodeError:
-                raise Error(f"HTTP {e.code}: {error_body}")
+                raise Error(f"HTTP {e.code}: {error_body}", status=e.code)
         except urllib.error.URLError as e:
             raise Error(f"Connection error: {e.reason}")
 
@@ -333,6 +391,98 @@ class Client:
         """
         result = self._make_request("GET", "/v1/health")
         return result.get("status", "unknown")
+
+    def create_policy(
+        self,
+        name: str,
+        effect: PolicyEffect,
+        condition: Dict[str, Any],
+        resources: List[str],
+        subjects: List[str],
+        tenant: Optional[str] = None,
+        enabled: bool = True,
+    ) -> Policy:
+        """
+        Create a PBAC policy
+
+        Args:
+            name: Policy name
+            effect: PolicyEffect.ALLOW or PolicyEffect.DENY
+            condition: Condition expression, as a JSON document
+            resources: Resource patterns the policy applies to
+            subjects: Subject patterns the policy applies to
+            tenant: Restrict the policy to this tenant. None leaves the policy
+                unscoped, so it applies to every tenant; a glob pattern such
+                as "tenant-*" covers a family of tenants.
+            enabled: Whether the policy is active
+
+        Returns:
+            Policy: The created policy
+        """
+        body: Dict[str, Any] = {
+            "name": name,
+            "effect": effect.value if isinstance(effect, PolicyEffect) else effect,
+            "condition": condition,
+            "resources": resources,
+            "subjects": subjects,
+            "enabled": enabled,
+        }
+        if tenant:
+            body["tenant"] = tenant
+
+        result = self._make_request("POST", "/v1/policies", body)
+        return self._parse_policy(result)
+
+    def list_policies(self) -> List[Policy]:
+        """
+        List the PBAC policies
+
+        Returns:
+            List[Policy]: The installed policies
+        """
+        result = self._make_request("GET", "/v1/policies")
+        if isinstance(result, list):
+            return [self._parse_policy(p) for p in result]
+        return [self._parse_policy(result)]
+
+    def get_policy(self, policy_id: str) -> Policy:
+        """
+        Get a PBAC policy
+
+        Args:
+            policy_id: Policy ID
+
+        Returns:
+            Policy: The policy
+        """
+        result = self._make_request("GET", f"/v1/policies/{policy_id}")
+        return self._parse_policy(result)
+
+    def delete_policy(self, policy_id: str) -> None:
+        """
+        Remove a PBAC policy
+
+        Without this a policy that turns out to be wrong could never be
+        withdrawn, and now that policies are persisted it would outlive every
+        restart.
+
+        Args:
+            policy_id: Policy ID
+        """
+        self._make_request("DELETE", f"/v1/policies/{policy_id}")
+
+    def _parse_policy(self, data: Dict[str, Any]) -> Policy:
+        """Parse a policy from an API response"""
+        return Policy(
+            id=data["id"],
+            name=data["name"],
+            effect=PolicyEffect(data.get("effect", "allow")),
+            condition=data.get("condition", {}),
+            resources=data.get("resources", []),
+            subjects=data.get("subjects", []),
+            tenant=data.get("tenant"),
+            enabled=data.get("enabled", True),
+        )
 
     def _parse_key_meta(self, data: Dict[str, Any]) -> KeyMeta:
         """Parse key metadata from API response"""

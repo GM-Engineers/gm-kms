@@ -108,14 +108,55 @@ export interface VerifyResult {
   valid: boolean;
 }
 
+export enum PolicyEffect {
+  ALLOW = 'allow',
+  DENY = 'deny',
+}
+
+export interface Policy {
+  id: string;
+  name: string;
+  /** The server answers "Allow" and "Deny" while accepting "allow" and "deny". */
+  effect: PolicyEffect | string;
+  condition: Record<string, unknown>;
+  resources: string[];
+  subjects: string[];
+  /** The tenant the policy is restricted to, undefined when it applies to every tenant. */
+  tenant?: string;
+  enabled: boolean;
+}
+
+export interface CreatePolicyRequest {
+  name: string;
+  effect: PolicyEffect | string;
+  condition: Record<string, unknown>;
+  resources: string[];
+  subjects: string[];
+  /**
+   * Restrict the policy to a single tenant. Leaving it unset means the policy
+   * is not tenant-scoped and applies to every tenant. A glob pattern is
+   * accepted, so "tenant-*" covers a family of tenants.
+   */
+  tenant?: string;
+  enabled?: boolean;
+}
+
 export interface HealthResult {
   status: string;
 }
 
-export class Error extends Error {
-  constructor(message: string) {
+export class Error extends globalThis.Error {
+  /**
+   * The HTTP status the server answered with, when the failure came from the
+   * server rather than from the transport. A 404 and a 403 are different
+   * answers, and a caller has to be able to tell them apart.
+   */
+  status?: number;
+
+  constructor(message: string, status?: number) {
     super(message);
     this.name = 'KmsError';
+    this.status = status;
   }
 }
 
@@ -151,7 +192,10 @@ export class Client {
     };
 
     if (this.apiKey) {
-      headers['Authorization'] = `Bearer ${this.apiKey}`;
+      // The server reads the API key from the `x-api-key` header. It does not
+      // look at `Authorization`, so a Bearer token there is simply not seen
+      // and every call is refused as unauthenticated.
+      headers['x-api-key'] = this.apiKey;
     }
 
     const requestBody = body ? JSON.stringify(body) : undefined;
@@ -168,14 +212,23 @@ export class Client {
         const errorBody = await response.text();
         try {
           const errorData = JSON.parse(errorBody);
-          throw new Error(errorData.error || `HTTP ${response.status}: ${errorBody}`);
+          throw new Error(
+            errorData.error || `HTTP ${response.status}: ${errorBody}`,
+            response.status
+          );
         } catch (e) {
           if (e instanceof Error) throw e;
-          throw new Error(`HTTP ${response.status}: ${errorBody}`);
+          throw new Error(`HTTP ${response.status}: ${errorBody}`, response.status);
         }
       }
 
-      return response.json();
+      // A 204 No Content carries no body: there is nothing to parse, and
+      // asking for JSON would fail on the empty payload.
+      const text = await response.text();
+      if (!text) {
+        return undefined as T;
+      }
+      return JSON.parse(text);
     } catch (e) {
       if (e instanceof Error) throw e;
       throw new Error(`Connection error: ${e}`);
@@ -283,9 +336,67 @@ export class Client {
     await this.request('DELETE', `/v1/keys/${keyId}`);
   }
 
+  /**
+   * Install a PBAC policy.
+   *
+   * Requires the security-officer role.
+   */
+  async createPolicy(request: CreatePolicyRequest): Promise<Policy> {
+    const body: Record<string, unknown> = {
+      name: request.name,
+      effect: request.effect,
+      condition: request.condition,
+      resources: request.resources,
+      subjects: request.subjects,
+      enabled: request.enabled ?? true,
+    };
+    if (request.tenant) {
+      body.tenant = request.tenant;
+    }
+
+    const result = await this.request<any>('POST', '/v1/policies', body);
+    return this.parsePolicy(result);
+  }
+
+  /** List the installed PBAC policies. */
+  async listPolicies(): Promise<Policy[]> {
+    const result = await this.request<any[]>('GET', '/v1/policies');
+    return result.map((r) => this.parsePolicy(r));
+  }
+
+  /** Get a PBAC policy. */
+  async getPolicy(policyId: string): Promise<Policy> {
+    const result = await this.request<any>('GET', `/v1/policies/${policyId}`);
+    return this.parsePolicy(result);
+  }
+
+  /**
+   * Remove a PBAC policy.
+   *
+   * Without this a policy that turns out to be wrong could never be
+   * withdrawn, and now that policies are persisted it would outlive every
+   * restart.
+   */
+  async deletePolicy(policyId: string): Promise<void> {
+    await this.request('DELETE', `/v1/policies/${policyId}`);
+  }
+
   async health(): Promise<string> {
     const result = await this.request<HealthResult>('GET', '/v1/health');
     return result.status;
+  }
+
+  private parsePolicy(data: any): Policy {
+    return {
+      id: data.id,
+      name: data.name,
+      effect: data.effect,
+      condition: data.condition ?? {},
+      resources: data.resources ?? [],
+      subjects: data.subjects ?? [],
+      tenant: data.tenant ?? undefined,
+      enabled: data.enabled ?? true,
+    };
   }
 
   private parseKeyMeta(data: any): KeyMeta {

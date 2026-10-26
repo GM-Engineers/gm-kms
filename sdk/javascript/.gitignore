@@ -1,0 +1,9 @@
+# Build output
+dist/
+build-test/
+
+# Dependencies
+node_modules/
+
+# npm bookkeeping
+npm-debug.log*

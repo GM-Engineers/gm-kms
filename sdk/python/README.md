@@ -142,6 +142,38 @@ valid = client.verify(
 print(f"Valid: {valid.valid}")
 ```
 
+### Policy Management
+
+PBAC (policy-based access control) policies decide what a caller may do.
+Managing them requires the `security-officer` role.
+
+```python
+from gmsdk import Client, PolicyEffect
+
+client = Client("http://localhost:8080", api_key="your-api-key")
+
+# Create a policy. The tenant is optional: leave it out and the policy
+# applies to every tenant, give it a name such as "tenant-*" to cover a
+# family of tenants.
+policy = client.create_policy(
+    name="tenant-scoped-allow",
+    effect=PolicyEffect.ALLOW,
+    condition={"operator": "always"},
+    resources=["*"],
+    subjects=["*"],
+    tenant="tenant-1",
+)
+
+# List the installed policies
+policies = client.list_policies()
+
+# Get one policy
+policy = client.get_policy(policy_id=policy.id)
+
+# Remove a policy
+client.delete_policy(policy_id=policy.id)
+```
+
 ### Health Check
 
 ```python
@@ -160,6 +192,7 @@ try:
     key = client.get_key(key_id="nonexistent-key")
 except Error as e:
     print(f"KMS Error: {e}")
+    print(f"Status: {e.status}")  # 404, 403, ...
 ```
 
 ## License

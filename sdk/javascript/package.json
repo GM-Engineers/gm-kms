@@ -4,9 +4,13 @@
   "description": "GM-KMS JavaScript/TypeScript SDK",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc",
-    "test": "jest"
+    "typecheck": "tsc --noEmit -p tsconfig.test.json",
+    "test": "tsc -p tsconfig.test.json && node --test \"build-test/test/**/*.test.js\""
   },
   "keywords": [
     "kms",
@@ -17,6 +21,7 @@
   "author": "GM-KMS Team",
   "license": "MIT",
   "devDependencies": {
+    "@types/node": "^22.20.5",
     "typescript": "^5.3.0"
   }
 }

@@ -24,6 +24,6 @@ Usage:
 
 __version__ = "0.1.0"
 
-from .kms import Client, KeySpec, Error
+from .kms import Client, KeySpec, Policy, PolicyEffect, Error
 
-__all__ = ["Client", "KeySpec", "Error", "__version__"]
+__all__ = ["Client", "KeySpec", "Policy", "PolicyEffect", "Error", "__version__"]

@@ -131,7 +131,7 @@ const client = new Client({
 const key = await client.createKey({
   name: 'key-name',
   spec: KeySpec.AES_256_GCM,
-  tenantId: 'tenant-1',  // optional
+  tenant_id: 'tenant-1',  // optional
   description: 'Optional description',
 });
 
@@ -184,6 +184,41 @@ const valid = await client.verify({
 });
 ```
 
+### Policy Management
+
+PBAC (policy-based access control) policies decide what a caller may do.
+Managing them requires the `security-officer` role.
+
+```typescript
+import { Client, PolicyEffect } from '@gm-kms/sdk';
+
+const client = new Client({
+  serverUrl: 'http://localhost:8080',
+  apiKey: 'your-api-key',
+});
+
+// Create a policy. The tenant is optional: leave it out and the policy
+// applies to every tenant, give it a pattern such as 'tenant-*' to cover a
+// family of tenants.
+const policy = await client.createPolicy({
+  name: 'tenant-scoped-allow',
+  effect: PolicyEffect.ALLOW,
+  condition: { operator: 'always' },
+  resources: ['*'],
+  subjects: ['*'],
+  tenant: 'tenant-1',
+});
+
+// List the installed policies
+const policies = await client.listPolicies();
+
+// Get one policy
+const fetched = await client.getPolicy(policy.id);
+
+// Remove a policy
+await client.deletePolicy(policy.id);
+```
+
 ### Health Check
 
 ```typescript
@@ -203,6 +238,7 @@ try {
 } catch (e) {
   if (e instanceof Error) {
     console.error(`KMS Error: ${e.message}`);
+    console.error(`Status: ${e.status}`);  // 404, 403, ...
   } else {
     throw e;
   }
