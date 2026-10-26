@@ -19,6 +19,18 @@ ignore = [
     #   deadpool-redis -> gm-tls. Upstream (redis) must migrate to rustls-pki-types;
     #   this repo does not call rustls-pemfile directly.
     "RUSTSEC-2025-0134",
+    # RUSTSEC-2026-0387: crypto-bigint timing variability
+    #   Patched only in >=0.7.6, a breaking jump the rsa crate does not allow. gm-kms
+    #   reaches crypto-bigint solely via rsa OAEP *encryption* (public-key side) and holds
+    #   no RSA private key, so the secret-dependent branches cannot leak local material.
+    "RUSTSEC-2026-0387",
+    # RUSTSEC-2026-0367/0368/0369: zip extraction flaws
+    #   Patched only in >=9.0.0, incompatible with the 3.x pinned by utoipa-swagger-ui.
+    #   zip is a build-dependency that unpacks the vendored (trusted) Swagger UI asset at
+    #   compile time; gm-kms never extracts attacker-controlled archives at runtime.
+    "RUSTSEC-2026-0367",
+    "RUSTSEC-2026-0368",
+    "RUSTSEC-2026-0369",
 ]
 
 [licenses]
