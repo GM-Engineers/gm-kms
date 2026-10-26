@@ -34,22 +34,34 @@ impl KmsGrpcService {
     ///
     /// Both channels share `auth::evaluate_pbac`, so a client cannot reach a
     /// different decision by switching protocol (audit follow-up B7-g).
+    ///
+    /// The tenant is the effective one — the tenant of the API key when it is
+    /// bound to one, the self-reported tenant otherwise. It is resolved before
+    /// the call, so a tenant-scoped policy is matched against the very tenant
+    /// the operation is performed for (audit follow-up B9-b).
     async fn check_pbac(
         &self,
         subject_id: &str,
+        tenant: &str,
         action: &str,
         resource_id: &str,
     ) -> Result<(), Status> {
-        match crate::auth::evaluate_pbac(&self.state.policy_engine, subject_id, action, resource_id)
-            .await
+        match crate::auth::evaluate_pbac(
+            &self.state.policy_engine,
+            subject_id,
+            tenant,
+            action,
+            resource_id,
+        )
+        .await
         {
             Ok(crate::auth::PbacOutcome::Allowed) => Ok(()),
             Ok(crate::auth::PbacOutcome::Denied) => {
-                tracing::warn!(%subject_id, %action, %resource_id, "PBAC denied");
+                tracing::warn!(%subject_id, %tenant, %action, %resource_id, "PBAC denied");
                 Err(Status::permission_denied("access denied by policy"))
             }
             Err(e) => {
-                tracing::error!(%subject_id, %action, %resource_id, error = %e, "PBAC evaluation error");
+                tracing::error!(%subject_id, %tenant, %action, %resource_id, error = %e, "PBAC evaluation error");
                 Err(Status::internal("policy evaluation error"))
             }
         }
@@ -279,12 +291,15 @@ impl KmsService for KmsGrpcService {
         let req = request.into_inner();
 
         // PBAC: evaluate policy for key creation
-        self.check_pbac(&caller_id, "create_key", &req.name).await?;
+        // The effective tenant is resolved before the policy decision: a
+        // tenant-scoped policy is matched against it (audit follow-up B9-b).
+        let tenant_id = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
+
+        self.check_pbac(&caller_id, &tenant_id, "create_key", &req.name)
+            .await?;
 
         let spec =
             crate::service::KeyService::parse_spec(&req.spec).map_err(api_error_to_status)?;
-
-        let tenant_id = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
 
         let key_svc = self.state.key_service();
         let meta = key_svc
@@ -342,11 +357,13 @@ impl KmsService for KmsGrpcService {
         let req = request.into_inner();
         let id = uuid::Uuid::parse_str(&req.id)
             .map_err(|_| Status::invalid_argument("invalid key id"))?;
-        self.check_pbac(&caller_id, "get_key", &id.to_string())
-            .await?;
-
+        // The effective tenant is resolved before the policy decision: a
+        // tenant-scoped policy is matched against it (audit follow-up B9-b).
         let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
         let tenant_id: &str = &tenant_id_owned;
+
+        self.check_pbac(&caller_id, tenant_id, "get_key", &id.to_string())
+            .await?;
 
         let key_svc = self.state.key_service();
         let meta = key_svc
@@ -379,14 +396,16 @@ impl KmsService for KmsGrpcService {
         let req = request.into_inner();
         let id = uuid::Uuid::parse_str(&req.key_id)
             .map_err(|_| Status::invalid_argument("invalid key id"))?;
-        self.check_pbac(&caller_id, "encrypt", &id.to_string())
+        // The effective tenant is resolved before the policy decision: a
+        // tenant-scoped policy is matched against it (audit follow-up B9-b).
+        let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
+        let tenant_id: &str = &tenant_id_owned;
+
+        self.check_pbac(&caller_id, tenant_id, "encrypt", &id.to_string())
             .await?;
 
         // plaintext is now bytes type in proto (not base64 encoded string)
         let plaintext = req.plaintext;
-
-        let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
-        let tenant_id: &str = &tenant_id_owned;
 
         let crypto = self.state.crypto_service();
         let ciphertext = crypto
@@ -416,7 +435,12 @@ impl KmsService for KmsGrpcService {
         let req = request.into_inner();
         let id = uuid::Uuid::parse_str(&req.key_id)
             .map_err(|_| Status::invalid_argument("invalid key id"))?;
-        self.check_pbac(&caller_id, "decrypt", &id.to_string())
+        // The effective tenant is resolved before the policy decision: a
+        // tenant-scoped policy is matched against it (audit follow-up B9-b).
+        let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
+        let tenant_id: &str = &tenant_id_owned;
+
+        self.check_pbac(&caller_id, tenant_id, "decrypt", &id.to_string())
             .await?;
 
         use base64::{Engine, engine::general_purpose::STANDARD};
@@ -445,9 +469,6 @@ impl KmsService for KmsGrpcService {
                 .map_err(|_| Status::invalid_argument("invalid base64 tag"))?,
         };
 
-        let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
-        let tenant_id: &str = &tenant_id_owned;
-
         let crypto = self.state.crypto_service();
         let plaintext = crypto
             .decrypt(&id, &ciphertext, None, tenant_id, &caller_id)
@@ -471,7 +492,12 @@ impl KmsService for KmsGrpcService {
         let req = request.into_inner();
         let id = uuid::Uuid::parse_str(&req.id)
             .map_err(|_| Status::invalid_argument("invalid key id"))?;
-        self.check_pbac(&caller_id, "rotate_key", &id.to_string())
+        // The effective tenant is resolved before the policy decision: a
+        // tenant-scoped policy is matched against it (audit follow-up B9-b).
+        let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
+        let tenant_id: &str = &tenant_id_owned;
+
+        self.check_pbac(&caller_id, tenant_id, "rotate_key", &id.to_string())
             .await?;
 
         // Security: KeyRotate is a dual-approval operation (workflow.rs:
@@ -484,9 +510,6 @@ impl KmsService for KmsGrpcService {
             &id.to_string(),
             "key rotation",
         )?;
-
-        let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
-        let tenant_id: &str = &tenant_id_owned;
 
         let key_svc = self.state.key_service();
         let meta = key_svc
@@ -519,7 +542,12 @@ impl KmsService for KmsGrpcService {
         let req = request.into_inner();
         let id = uuid::Uuid::parse_str(&req.id)
             .map_err(|_| Status::invalid_argument("invalid key id"))?;
-        self.check_pbac(&caller_id, "delete_key", &id.to_string())
+        // The effective tenant is resolved before the policy decision: a
+        // tenant-scoped policy is matched against it (audit follow-up B9-b).
+        let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
+        let tenant_id: &str = &tenant_id_owned;
+
+        self.check_pbac(&caller_id, tenant_id, "delete_key", &id.to_string())
             .await?;
 
         // Security: enforce dual-control approval bound to THIS key for deletion
@@ -530,9 +558,6 @@ impl KmsService for KmsGrpcService {
             &id.to_string(),
             "key deletion",
         )?;
-
-        let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
-        let tenant_id: &str = &tenant_id_owned;
 
         let key_svc = self.state.key_service();
         key_svc
@@ -553,10 +578,13 @@ impl KmsService for KmsGrpcService {
     ) -> Result<Response<ListKeysResponse>, Status> {
         let (_, caller_id, caller_tenant) = check_permission(&request, Permission::LIST_KEYS)?;
         let req = request.into_inner();
-        self.check_pbac(&caller_id, "list_keys", "keys").await?;
-
+        // The effective tenant is resolved before the policy decision: a
+        // tenant-scoped policy is matched against it (audit follow-up B9-b).
         let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
         let tenant_id: &str = &tenant_id_owned;
+
+        self.check_pbac(&caller_id, tenant_id, "list_keys", "keys")
+            .await?;
 
         let key_svc = self.state.key_service();
         let keys = key_svc
@@ -600,16 +628,19 @@ impl KmsService for KmsGrpcService {
         let req = request.into_inner();
         let id = uuid::Uuid::parse_str(&req.key_id)
             .map_err(|_| Status::invalid_argument("invalid key id"))?;
-        self.check_pbac(&caller_id, "sign", &id.to_string()).await?;
+        // The effective tenant is resolved before the policy decision: a
+        // tenant-scoped policy is matched against it (audit follow-up B9-b).
+        let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
+        let tenant_id: &str = &tenant_id_owned;
+
+        self.check_pbac(&caller_id, tenant_id, "sign", &id.to_string())
+            .await?;
 
         use base64::{Engine, engine::general_purpose::STANDARD};
 
         let data = STANDARD
             .decode(&req.data)
             .map_err(|_| Status::invalid_argument("invalid base64 data"))?;
-
-        let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
-        let tenant_id: &str = &tenant_id_owned;
 
         let crypto = self.state.crypto_service();
         let signature = crypto
@@ -635,7 +666,12 @@ impl KmsService for KmsGrpcService {
         let req = request.into_inner();
         let id = uuid::Uuid::parse_str(&req.key_id)
             .map_err(|_| Status::invalid_argument("invalid key id"))?;
-        self.check_pbac(&caller_id, "verify", &id.to_string())
+        // The effective tenant is resolved before the policy decision: a
+        // tenant-scoped policy is matched against it (audit follow-up B9-b).
+        let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
+        let tenant_id: &str = &tenant_id_owned;
+
+        self.check_pbac(&caller_id, tenant_id, "verify", &id.to_string())
             .await?;
 
         use base64::{Engine, engine::general_purpose::STANDARD};
@@ -653,9 +689,6 @@ impl KmsService for KmsGrpcService {
             version: 1,
             signature: signature_bytes,
         };
-
-        let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
-        let tenant_id: &str = &tenant_id_owned;
 
         let crypto = self.state.crypto_service();
         let valid = crypto
@@ -678,7 +711,13 @@ impl KmsService for KmsGrpcService {
         let req = request.into_inner();
         let id = uuid::Uuid::parse_str(&req.key_id)
             .map_err(|_| Status::invalid_argument("invalid key id"))?;
-        self.check_pbac(&caller_id, "hmac", &id.to_string()).await?;
+        // The effective tenant is resolved before the policy decision: a
+        // tenant-scoped policy is matched against it (audit follow-up B9-b).
+        let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
+        let tenant_id: &str = &tenant_id_owned;
+
+        self.check_pbac(&caller_id, tenant_id, "hmac", &id.to_string())
+            .await?;
 
         // data/aad are proto `bytes`, already Vec<u8> (no base64 on the gRPC channel).
         let aad = if req.aad.is_empty() {
@@ -686,9 +725,6 @@ impl KmsService for KmsGrpcService {
         } else {
             Some(req.aad.as_slice())
         };
-
-        let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
-        let tenant_id: &str = &tenant_id_owned;
 
         let crypto = self.state.crypto_service();
         let (mac, version) = crypto
@@ -711,7 +747,12 @@ impl KmsService for KmsGrpcService {
         let req = request.into_inner();
         let id = uuid::Uuid::parse_str(&req.key_id)
             .map_err(|_| Status::invalid_argument("invalid key id"))?;
-        self.check_pbac(&caller_id, "hmac_verify", &id.to_string())
+        // The effective tenant is resolved before the policy decision: a
+        // tenant-scoped policy is matched against it (audit follow-up B9-b).
+        let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
+        let tenant_id: &str = &tenant_id_owned;
+
+        self.check_pbac(&caller_id, tenant_id, "hmac_verify", &id.to_string())
             .await?;
 
         let aad = if req.aad.is_empty() {
@@ -719,9 +760,6 @@ impl KmsService for KmsGrpcService {
         } else {
             Some(req.aad.as_slice())
         };
-
-        let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
-        let tenant_id: &str = &tenant_id_owned;
 
         let crypto = self.state.crypto_service();
         let valid = crypto
@@ -740,10 +778,15 @@ impl KmsService for KmsGrpcService {
         &self,
         request: Request<pb::Sm9SignRequest>,
     ) -> Result<Response<Sm9SignResponse>, Status> {
-        let (_, caller_id, _caller_tenant) = check_permission(&request, Permission::SIGN)?;
+        let (_, caller_id, caller_tenant) = check_permission(&request, Permission::SIGN)?;
         let req = request.into_inner();
-        self.check_pbac(&caller_id, "sm9_sign", &req.identity)
-            .await?;
+        self.check_pbac(
+            &caller_id,
+            caller_tenant.as_deref().unwrap_or(""),
+            "sm9_sign",
+            &req.identity,
+        )
+        .await?;
         use base64::{Engine, engine::general_purpose::STANDARD};
 
         let data = STANDARD
@@ -786,10 +829,15 @@ impl KmsService for KmsGrpcService {
         &self,
         request: Request<pb::Sm9VerifyRequest>,
     ) -> Result<Response<Sm9VerifyResponse>, Status> {
-        let (_, caller_id, _caller_tenant) = check_permission(&request, Permission::VERIFY)?;
+        let (_, caller_id, caller_tenant) = check_permission(&request, Permission::VERIFY)?;
         let req = request.into_inner();
-        self.check_pbac(&caller_id, "sm9_verify", &req.identity)
-            .await?;
+        self.check_pbac(
+            &caller_id,
+            caller_tenant.as_deref().unwrap_or(""),
+            "sm9_verify",
+            &req.identity,
+        )
+        .await?;
         use base64::{Engine, engine::general_purpose::STANDARD};
 
         let data = STANDARD
@@ -832,10 +880,15 @@ impl KmsService for KmsGrpcService {
         &self,
         request: Request<pb::Sm9EncryptRequest>,
     ) -> Result<Response<Sm9EncryptResponse>, Status> {
-        let (_, caller_id, _caller_tenant) = check_permission(&request, Permission::ENCRYPT)?;
+        let (_, caller_id, caller_tenant) = check_permission(&request, Permission::ENCRYPT)?;
         let req = request.into_inner();
-        self.check_pbac(&caller_id, "sm9_encrypt", &req.identity)
-            .await?;
+        self.check_pbac(
+            &caller_id,
+            caller_tenant.as_deref().unwrap_or(""),
+            "sm9_encrypt",
+            &req.identity,
+        )
+        .await?;
         use base64::{Engine, engine::general_purpose::STANDARD};
 
         let plaintext = req.plaintext;
@@ -873,10 +926,15 @@ impl KmsService for KmsGrpcService {
         &self,
         request: Request<pb::Sm9DecryptRequest>,
     ) -> Result<Response<Sm9DecryptResponse>, Status> {
-        let (_, caller_id, _caller_tenant) = check_permission(&request, Permission::DECRYPT)?;
+        let (_, caller_id, caller_tenant) = check_permission(&request, Permission::DECRYPT)?;
         let req = request.into_inner();
-        self.check_pbac(&caller_id, "sm9_decrypt", &req.identity)
-            .await?;
+        self.check_pbac(
+            &caller_id,
+            caller_tenant.as_deref().unwrap_or(""),
+            "sm9_decrypt",
+            &req.identity,
+        )
+        .await?;
         use base64::{Engine, engine::general_purpose::STANDARD};
 
         let ciphertext_bytes = STANDARD
@@ -924,11 +982,18 @@ impl KmsService for KmsGrpcService {
 
         let kek_id = uuid::Uuid::parse_str(&req.kek_id)
             .map_err(|_| Status::invalid_argument("invalid kek_id format"))?;
-        self.check_pbac(&caller_id, "envelope_encrypt", &kek_id.to_string())
-            .await?;
-
+        // The effective tenant is resolved before the policy decision: a
+        // tenant-scoped policy is matched against it (audit follow-up B9-b).
         let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
         let tenant_id: &str = &tenant_id_owned;
+
+        self.check_pbac(
+            &caller_id,
+            tenant_id,
+            "envelope_encrypt",
+            &kek_id.to_string(),
+        )
+        .await?;
 
         let envelope_svc = crate::service::EnvelopeService::new(&self.state);
         let result = envelope_svc
@@ -958,11 +1023,18 @@ impl KmsService for KmsGrpcService {
 
         let kek_id = uuid::Uuid::parse_str(&req.kek_id)
             .map_err(|_| Status::invalid_argument("invalid kek_id format"))?;
-        self.check_pbac(&caller_id, "envelope_decrypt", &kek_id.to_string())
-            .await?;
-
+        // The effective tenant is resolved before the policy decision: a
+        // tenant-scoped policy is matched against it (audit follow-up B9-b).
         let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
         let tenant_id: &str = &tenant_id_owned;
+
+        self.check_pbac(
+            &caller_id,
+            tenant_id,
+            "envelope_decrypt",
+            &kek_id.to_string(),
+        )
+        .await?;
 
         let envelope_svc = crate::service::EnvelopeService::new(&self.state);
         let plaintext = envelope_svc
@@ -998,11 +1070,18 @@ impl KmsService for KmsGrpcService {
 
         let kek_id = uuid::Uuid::parse_str(&req.kek_id)
             .map_err(|_| Status::invalid_argument("invalid kek_id format"))?;
-        self.check_pbac(&caller_id, "envelope_rewrap", &kek_id.to_string())
-            .await?;
-
+        // The effective tenant is resolved before the policy decision: a
+        // tenant-scoped policy is matched against it (audit follow-up B9-b).
         let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
         let tenant_id: &str = &tenant_id_owned;
+
+        self.check_pbac(
+            &caller_id,
+            tenant_id,
+            "envelope_rewrap",
+            &kek_id.to_string(),
+        )
+        .await?;
 
         let envelope_svc = crate::service::EnvelopeService::new(&self.state);
         let result = envelope_svc
@@ -1033,13 +1112,16 @@ impl KmsService for KmsGrpcService {
     ) -> Result<Response<pb::ImportKeyResponse>, Status> {
         let (_, caller_id, caller_tenant) = check_permission(&request, Permission::IMPORT_KEY)?;
         let req = request.into_inner();
-        self.check_pbac(&caller_id, "import_key", &req.name).await?;
+        // The effective tenant is resolved before the policy decision: a
+        // tenant-scoped policy is matched against it (audit follow-up B9-b).
+        let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
+        let tenant_id: &str = &tenant_id_owned;
+
+        self.check_pbac(&caller_id, tenant_id, "import_key", &req.name)
+            .await?;
 
         let spec =
             crate::service::KeyService::parse_spec(&req.spec).map_err(api_error_to_status)?;
-
-        let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
-        let tenant_id: &str = &tenant_id_owned;
 
         let meta = self
             .state
@@ -1076,7 +1158,12 @@ impl KmsService for KmsGrpcService {
 
         let key_id = uuid::Uuid::parse_str(&req.id)
             .map_err(|_| Status::invalid_argument("invalid key id format"))?;
-        self.check_pbac(&caller_id, "export_key", &key_id.to_string())
+        // The effective tenant is resolved before the policy decision: a
+        // tenant-scoped policy is matched against it (audit follow-up B9-b).
+        let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
+        let tenant_id: &str = &tenant_id_owned;
+
+        self.check_pbac(&caller_id, tenant_id, "export_key", &key_id.to_string())
             .await?;
 
         // Enforce approval gate: an approved, un-expired KeyExport request bound to
@@ -1087,9 +1174,6 @@ impl KmsService for KmsGrpcService {
             &key_id.to_string(),
             "key export",
         )?;
-
-        let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
-        let tenant_id: &str = &tenant_id_owned;
 
         // Wrapped-export semantics (audit P2-5): converge gRPC onto the SAME service-layer
         // method REST uses, so raw key material is never returned over the wire. The caller
@@ -1136,9 +1220,15 @@ impl KmsService for KmsGrpcService {
         &self,
         request: Request<pb::HashRequest>,
     ) -> Result<Response<pb::HashResponse>, Status> {
-        let (_, caller_id, _caller_tenant) = check_permission(&request, Permission::HASH)?;
+        let (_, caller_id, caller_tenant) = check_permission(&request, Permission::HASH)?;
         let req = request.into_inner();
-        self.check_pbac(&caller_id, "hash", "hash").await?;
+        self.check_pbac(
+            &caller_id,
+            caller_tenant.as_deref().unwrap_or(""),
+            "hash",
+            "hash",
+        )
+        .await?;
 
         let digest = match req.algorithm.to_lowercase().as_str() {
             "sm3" => {
@@ -1171,15 +1261,18 @@ impl KmsService for KmsGrpcService {
 
         let key_id = uuid::Uuid::parse_str(&req.key_id)
             .map_err(|_| Status::invalid_argument("invalid key_id format"))?;
-        self.check_pbac(&caller_id, "dh_derive", &key_id.to_string())
+        // The effective tenant is resolved before the policy decision: a
+        // tenant-scoped policy is matched against it (audit follow-up B9-b).
+        let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
+        let tenant_id: &str = &tenant_id_owned;
+
+        self.check_pbac(&caller_id, tenant_id, "dh_derive", &key_id.to_string())
             .await?;
 
         // Tenant isolation (audit B7-b): the private key belongs to exactly one
         // tenant, so the derived secret must not be handed to a caller acting
         // for another one. The keystore enforces it too; the check here gives
         // the same sanitized NOT_FOUND answer as the other key operations.
-        let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
-        let tenant_id: &str = &tenant_id_owned;
         let meta = self
             .state
             .keystore
@@ -1226,10 +1319,15 @@ impl KmsService for KmsGrpcService {
         &self,
         request: Request<pb::QueryAuditEventsRequest>,
     ) -> Result<Response<pb::QueryAuditEventsResponse>, Status> {
-        let (_, caller_id, _caller_tenant) = check_permission(&request, Permission::VIEW_AUDIT)?;
+        let (_, caller_id, caller_tenant) = check_permission(&request, Permission::VIEW_AUDIT)?;
         let req = request.into_inner();
-        self.check_pbac(&caller_id, "query_audit_events", "audit")
-            .await?;
+        self.check_pbac(
+            &caller_id,
+            caller_tenant.as_deref().unwrap_or(""),
+            "query_audit_events",
+            "audit",
+        )
+        .await?;
 
         let event_types: Option<Vec<kms_core::event::EventType>> = if req.event_type.is_empty() {
             None

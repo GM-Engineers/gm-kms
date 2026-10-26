@@ -61,6 +61,18 @@ pub struct Policy {
     pub condition: serde_json::Value,
     pub resources: Vec<String>,
     pub subjects: Vec<String>,
+    /// The tenant this policy applies to.
+    ///
+    /// `None` (the default) means the policy is **not** tenant-scoped: it
+    /// applies to every tenant. `Some(t)` restricts it to the tenant `t`,
+    /// and a glob pattern is accepted, so `tenant-*` covers a family of
+    /// tenants.
+    ///
+    /// A request that carries no tenant matches no tenant-scoped policy —
+    /// a caller that does not know which tenant it is in must not reach a
+    /// tenant-scoped rule.
+    #[serde(default)]
+    pub tenant: Option<String>,
     pub enabled: bool,
 }
 
@@ -91,6 +103,11 @@ pub struct AccessContext {
     resource_id: String,
     resource_type: String,
     action: String,
+    /// The tenant the request operates in.
+    ///
+    /// `None` means the request carries no tenant. A tenant-scoped policy
+    /// matches no such request.
+    tenant_id: Option<String>,
     environment: std::collections::HashMap<String, serde_json::Value>,
 }
 
@@ -104,8 +121,27 @@ impl AccessContext {
             resource_id: resource_id.to_string(),
             resource_type: "key".to_string(),
             action: action.to_string(),
+            tenant_id: None,
             environment: std::collections::HashMap::new(),
         }
+    }
+
+    /// Attach the tenant the request operates in.
+    ///
+    /// An empty tenant is normalized to "no tenant", so a caller cannot
+    /// accidentally claim an empty tenant that happens to match a policy.
+    pub fn with_tenant(mut self, tenant: &str) -> Self {
+        self.tenant_id = if tenant.is_empty() {
+            None
+        } else {
+            Some(tenant.to_string())
+        };
+        self
+    }
+
+    /// The tenant of the request, if it carries one.
+    pub fn tenant(&self) -> Option<&str> {
+        self.tenant_id.as_deref()
     }
 
     pub fn with_subject_type(mut self, subject_type: &str) -> Self {
@@ -153,6 +189,11 @@ impl AccessContext {
         );
         ctx.attributes
             .insert("action".to_string(), serde_json::json!(self.action));
+
+        if let Some(tenant) = &self.tenant_id {
+            ctx.attributes
+                .insert("tenant".to_string(), serde_json::json!(tenant));
+        }
 
         if let Ok(roles) = serde_json::to_value(&self.subject_roles) {
             ctx.attributes.insert("subject.roles".to_string(), roles);

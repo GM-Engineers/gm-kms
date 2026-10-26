@@ -783,6 +783,7 @@ fn policy_request_and_response_are_understood_by_both_sides() {
             condition: json!({ "operator": "always" }),
             resources: vec!["*".to_string()],
             subjects: vec!["*".to_string()],
+            tenant: None,
             enabled: true,
         },
     );
@@ -794,6 +795,7 @@ fn policy_request_and_response_are_understood_by_both_sides() {
         condition: json!({ "operator": "always" }),
         resources: vec!["*".to_string()],
         subjects: vec!["*".to_string()],
+        tenant: None,
         enabled: true,
     };
     let sdk: Policy = serde_json::from_value(serde_json::to_value(&server).unwrap()).unwrap();

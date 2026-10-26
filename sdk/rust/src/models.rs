@@ -792,6 +792,13 @@ pub struct CreatePolicyRequest {
     pub resources: Vec<String>,
     /// The subject patterns the policy applies to.
     pub subjects: Vec<String>,
+    /// The tenant the policy is restricted to.
+    ///
+    /// `None` means the policy is not tenant-scoped and applies to every
+    /// tenant. A value restricts it to that tenant; a glob pattern is
+    /// accepted, so `tenant-*` covers a family of tenants.
+    #[serde(default)]
+    pub tenant: Option<String>,
     /// Whether the policy is active.
     #[serde(default = "default_enabled")]
     pub enabled: bool,
@@ -819,6 +826,9 @@ pub struct Policy {
     pub resources: Vec<String>,
     /// The subject patterns the policy applies to.
     pub subjects: Vec<String>,
+    /// The tenant the policy is restricted to, if any.
+    #[serde(default)]
+    pub tenant: Option<String>,
     /// Whether the policy is active.
     pub enabled: bool,
 }

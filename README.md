@@ -158,25 +158,25 @@ gm-kms/
 
 | Crate | 测试数 | 状态 |
 |-------|--------|------|
-| kms-core | 340 | passed |
-| kms-api | 294 (+ 5 ignored) | passed |
-| kms-policy | 40 | passed |
+| kms-core | 339 | passed |
+| kms-api | 295 (+ 5 ignored) | passed |
+| kms-policy | 45 | passed |
 | kms-audit | 101 | passed |
 | kms-hsm | 52 | passed |
 | kms-mfa | 46 | passed |
 | kms-approval | 24 | passed |
 | kms-keystore | 117 (+ 25 ignored) | passed |
 | kms-cli | 8 | passed |
-| kms binary（单元测试，含 tlcp_listener / config） | 66 | passed |
-| interface integration（api_integration） | 48 | passed |
+| kms binary（单元测试，含 tlcp_listener / config） | 67 (+ 2 ignored) | passed |
+| interface integration（api_integration） | 51 | passed |
 | api_pg_integration（PostgreSQL 后端） | 0 (+ 7 ignored) | passed |
-| api_policy_pg_integration（PostgreSQL 策略持久化） | 0 (+ 6 ignored) | passed |
+| api_policy_pg_integration（PostgreSQL 策略持久化） | 0 (+ 8 ignored) | passed |
 | startup_failclosed（启动 fail-closed） | 2 | passed |
 | integration_tests / kat_vectors | 81 | passed |
 | Rust SDK（sdk/rust：contract 26 + e2e 5 + unit 5 + doctest 3） | 39 | passed |
-| **合计** | **1259 passed**（另 53 ignored） | |
+| **合计** | **1268 passed**（另 55 ignored） | |
 
-> ignored 分布：kms-api 5 + kms-keystore 25 + api_pg_integration 7 + api_policy_pg_integration 6 + doctest 8。
+> ignored 分布：kms-api 5 + kms-keystore 25 + kms binary 2 + api_pg_integration 7 + api_policy_pg_integration 8 + doctest 8。
 > PG/Redis 相关的 ignored 用例需真实 PostgreSQL 与 Redis，按 `cargo test --workspace -- --ignored` 单独执行。
 
 ## 第三方组件

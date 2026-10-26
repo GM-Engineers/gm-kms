@@ -82,6 +82,7 @@ impl PolicyRepository for PostgresPolicyRepository {
                 condition JSONB NOT NULL,
                 resources TEXT[] NOT NULL DEFAULT '{}',
                 subjects TEXT[] NOT NULL DEFAULT '{}',
+                tenant TEXT,
                 enabled BOOLEAN NOT NULL DEFAULT TRUE,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -101,13 +102,26 @@ impl PolicyRepository for PostgresPolicyRepository {
         .await
         .map_err(|e| PolicyStoreError::Unavailable(format!("create policies index: {e}")))?;
 
+        // The tenant column arrived after the first release of the store
+        // (audit follow-up B9-b). `CREATE TABLE IF NOT EXISTS` does not add
+        // a column to a table that already exists, so the column is added
+        // separately.
+        sqlx::query(
+            r#"
+            ALTER TABLE policies ADD COLUMN IF NOT EXISTS tenant TEXT
+            "#,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| PolicyStoreError::Unavailable(format!("add policies tenant column: {e}")))?;
+
         Ok(())
     }
 
     async fn load_all(&self) -> Result<Vec<Policy>, PolicyStoreError> {
         let rows = sqlx::query(
             r#"
-            SELECT id, name, effect, condition, resources, subjects, enabled
+            SELECT id, name, effect, condition, resources, subjects, tenant, enabled
             FROM policies
             ORDER BY created_at, id
             "#,
@@ -124,14 +138,15 @@ impl PolicyRepository for PostgresPolicyRepository {
 
         sqlx::query(
             r#"
-            INSERT INTO policies (id, name, effect, condition, resources, subjects, enabled, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+            INSERT INTO policies (id, name, effect, condition, resources, subjects, tenant, enabled, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
             ON CONFLICT (id) DO UPDATE SET
                 name = EXCLUDED.name,
                 effect = EXCLUDED.effect,
                 condition = EXCLUDED.condition,
                 resources = EXCLUDED.resources,
                 subjects = EXCLUDED.subjects,
+                tenant = EXCLUDED.tenant,
                 enabled = EXCLUDED.enabled,
                 updated_at = NOW()
             "#,
@@ -142,6 +157,7 @@ impl PolicyRepository for PostgresPolicyRepository {
         .bind(&policy.condition)
         .bind(&policy.resources)
         .bind(&policy.subjects)
+        .bind(&policy.tenant)
         .bind(policy.enabled)
         .execute(&self.pool)
         .await
@@ -203,6 +219,9 @@ fn row_to_policy(row: &PgRow) -> Result<Policy, PolicyStoreError> {
     let subjects: Vec<String> = row
         .try_get("subjects")
         .map_err(|e| PolicyStoreError::Malformed(format!("read subjects: {e}")))?;
+    let tenant: Option<String> = row
+        .try_get("tenant")
+        .map_err(|e| PolicyStoreError::Malformed(format!("read tenant: {e}")))?;
     let enabled: bool = row
         .try_get("enabled")
         .map_err(|e| PolicyStoreError::Malformed(format!("read enabled: {e}")))?;
@@ -214,6 +233,7 @@ fn row_to_policy(row: &PgRow) -> Result<Policy, PolicyStoreError> {
         condition,
         resources,
         subjects,
+        tenant,
         enabled,
     })
 }

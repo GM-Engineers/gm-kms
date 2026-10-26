@@ -895,13 +895,19 @@ pub enum PbacOutcome {
 ///
 /// Both protocol channels go through this function, so REST and gRPC can
 /// never disagree about what the policy allows.
+///
+/// The `tenant` is the effective tenant of the request — the one derived
+/// from the authenticated identity, not a self-reported value (audit P1-3).
+/// It is what a tenant-scoped policy is matched against (audit follow-up
+/// B9-b); a policy without a tenant constraint applies to every tenant.
 pub async fn evaluate_pbac(
     engine: &kms_policy::PBACEngine,
     subject_id: &str,
+    tenant: &str,
     action: &str,
     resource_id: &str,
 ) -> Result<PbacOutcome, kms_core::Error> {
-    let ctx = kms_policy::AccessContext::new(subject_id, action, resource_id);
+    let ctx = kms_policy::AccessContext::new(subject_id, action, resource_id).with_tenant(tenant);
     match engine.evaluate_if_configured(&ctx).await? {
         // No enabled policy configured => attribute-based control is inactive;
         // the role-based permission check remains the only gate.
@@ -924,17 +930,18 @@ pub async fn evaluate_pbac(
 pub async fn check_rest_pbac(
     engine: &kms_policy::PBACEngine,
     subject_id: &str,
+    tenant: &str,
     action: &str,
     resource_id: &str,
 ) -> Result<(), StatusCode> {
-    match evaluate_pbac(engine, subject_id, action, resource_id).await {
+    match evaluate_pbac(engine, subject_id, tenant, action, resource_id).await {
         Ok(PbacOutcome::Allowed) => Ok(()),
         Ok(PbacOutcome::Denied) => {
-            tracing::warn!(%subject_id, %action, %resource_id, "REST PBAC denied");
+            tracing::warn!(%subject_id, %tenant, %action, %resource_id, "REST PBAC denied");
             Err(StatusCode::FORBIDDEN)
         }
         Err(e) => {
-            tracing::error!(%subject_id, %action, %resource_id, error = %e, "REST PBAC evaluation error");
+            tracing::error!(%subject_id, %tenant, %action, %resource_id, error = %e, "REST PBAC evaluation error");
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
@@ -1474,6 +1481,7 @@ mod tests {
             condition: serde_json::json!({ "operator": "always" }),
             resources: vec!["*".to_string()],
             subjects: vec!["*".to_string()],
+            tenant: None,
             enabled: true,
         }
     }
@@ -1487,8 +1495,65 @@ mod tests {
             condition: serde_json::json!({ "operator": "always" }),
             resources: vec!["no-such-resource".to_string()],
             subjects: vec!["no-such-subject".to_string()],
+            tenant: None,
             enabled: true,
         }
+    }
+
+    /// Build a policy that matches everything but is restricted to one tenant.
+    fn tenant_policy(
+        effect: kms_core::PolicyEffect,
+        name: &str,
+        tenant: &str,
+    ) -> kms_policy::Policy {
+        kms_policy::Policy {
+            id: uuid::Uuid::new_v4(),
+            name: name.to_string(),
+            effect,
+            condition: serde_json::json!({ "operator": "always" }),
+            resources: vec!["*".to_string()],
+            subjects: vec!["*".to_string()],
+            tenant: Some(tenant.to_string()),
+            enabled: true,
+        }
+    }
+
+    /// The tenant handed to the evaluation decides which policy applies: a
+    /// tenant-scoped policy covers its own tenant only (audit follow-up
+    /// B9-b).
+    #[tokio::test]
+    async fn test_evaluate_pbac_honours_the_tenant_dimension() {
+        let engine = kms_policy::PBACEngine::new();
+        engine
+            .add_policy(tenant_policy(
+                kms_core::PolicyEffect::Allow,
+                "tenant-a-only",
+                "tenant-a",
+            ))
+            .await
+            .expect("add policy");
+
+        let own = evaluate_pbac(&engine, "admin", "tenant-a", "encrypt", "key-1").await;
+        assert_eq!(
+            own.expect("evaluation must not fail"),
+            PbacOutcome::Allowed,
+            "the tenant of the policy must be allowed"
+        );
+
+        let other = evaluate_pbac(&engine, "admin", "tenant-b", "encrypt", "key-1").await;
+        assert_eq!(
+            other.expect("evaluation must not fail"),
+            PbacOutcome::Denied,
+            "another tenant must not be covered by the policy"
+        );
+
+        // A request without a tenant reaches no tenant-scoped policy.
+        let anonymous = evaluate_pbac(&engine, "admin", "", "encrypt", "key-1").await;
+        assert_eq!(
+            anonymous.expect("evaluation must not fail"),
+            PbacOutcome::Denied,
+            "a request without a tenant must not reach a tenant-scoped policy"
+        );
     }
 
     /// An engine without any **enabled** policy must not deny everything: the
@@ -1500,7 +1565,7 @@ mod tests {
         let engine = kms_policy::PBACEngine::new();
         assert_eq!(engine.enabled_policy_count().await, 0);
 
-        let outcome = evaluate_pbac(&engine, "admin", "encrypt", "key-1").await;
+        let outcome = evaluate_pbac(&engine, "admin", "", "encrypt", "key-1").await;
         assert_eq!(
             outcome.expect("evaluation must not fail"),
             PbacOutcome::Allowed
@@ -1518,7 +1583,7 @@ mod tests {
         engine.add_policy(disabled).await.expect("add policy");
         assert_eq!(engine.enabled_policy_count().await, 0);
 
-        let outcome = evaluate_pbac(&engine, "admin", "encrypt", "key-1").await;
+        let outcome = evaluate_pbac(&engine, "admin", "", "encrypt", "key-1").await;
         assert_eq!(
             outcome.expect("evaluation must not fail"),
             PbacOutcome::Allowed,
@@ -1537,7 +1602,7 @@ mod tests {
             .expect("add policy");
         assert_eq!(engine.enabled_policy_count().await, 1);
 
-        let outcome = evaluate_pbac(&engine, "admin", "encrypt", "key-1").await;
+        let outcome = evaluate_pbac(&engine, "admin", "", "encrypt", "key-1").await;
         assert_eq!(
             outcome.expect("evaluation must not fail"),
             PbacOutcome::Denied
@@ -1553,7 +1618,7 @@ mod tests {
             .await
             .expect("add policy");
 
-        let outcome = evaluate_pbac(&engine, "admin", "encrypt", "key-1").await;
+        let outcome = evaluate_pbac(&engine, "admin", "", "encrypt", "key-1").await;
         assert_eq!(
             outcome.expect("evaluation must not fail"),
             PbacOutcome::Allowed
@@ -1574,7 +1639,7 @@ mod tests {
             .await
             .expect("add policy");
 
-        let outcome = evaluate_pbac(&engine, "admin", "encrypt", "key-1").await;
+        let outcome = evaluate_pbac(&engine, "admin", "", "encrypt", "key-1").await;
         assert_eq!(
             outcome.expect("evaluation must not fail"),
             PbacOutcome::Denied
@@ -1596,7 +1661,7 @@ mod tests {
             .expect("remove policy");
         assert_eq!(engine.enabled_policy_count().await, 0);
 
-        let outcome = evaluate_pbac(&engine, "admin", "encrypt", "key-1").await;
+        let outcome = evaluate_pbac(&engine, "admin", "", "encrypt", "key-1").await;
         assert_eq!(
             outcome.expect("evaluation must not fail"),
             PbacOutcome::Allowed

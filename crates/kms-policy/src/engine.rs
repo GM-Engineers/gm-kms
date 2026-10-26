@@ -337,6 +337,11 @@ impl PBACEngine {
                     return false;
                 }
 
+                // Check tenant match
+                if !tenant_matches(p, ctx) {
+                    return false;
+                }
+
                 // Check resource match
                 p.resources.iter().any(|r| glob_match(r, &ctx.resource_id))
             })
@@ -532,6 +537,24 @@ impl Default for PBACEngine {
     }
 }
 
+/// Whether a policy applies to the request's tenant (audit follow-up B9-b).
+///
+/// A policy without a tenant constraint applies to every tenant. A policy
+/// with one applies only to the tenants its pattern matches — and a request
+/// that carries **no** tenant matches none of them: a caller that does not
+/// know which tenant it is in must not reach a tenant-scoped rule.
+fn tenant_matches(policy: &Policy, ctx: &AccessContext) -> bool {
+    let Some(pattern) = policy.tenant.as_deref() else {
+        return true;
+    };
+
+    let Some(tenant) = ctx.tenant_id.as_deref() else {
+        return false;
+    };
+
+    glob_match(pattern, tenant)
+}
+
 /// Simple glob matching
 fn glob_match(pattern: &str, text: &str) -> bool {
     if pattern == "*" {
@@ -600,6 +623,7 @@ mod tests {
             }),
             resources: vec!["*".to_string()],
             subjects: vec!["*".to_string()],
+            tenant: None,
             enabled: true,
         };
 
@@ -609,6 +633,185 @@ mod tests {
         let result = engine.evaluate(&ctx).await.unwrap();
 
         assert_eq!(result, Decision::Allow);
+    }
+
+    /// A tenant-scoped policy applies to its own tenant only: another tenant
+    /// is not covered by it and falls through to the default-deny (audit
+    /// follow-up B9-b).
+    #[tokio::test]
+    async fn test_tenant_scoped_policy_matches_only_its_tenant() {
+        let engine = PBACEngine::new();
+
+        engine
+            .add_policy(Policy {
+                id: uuid::Uuid::new_v4(),
+                name: "tenant-a-only".to_string(),
+                effect: PolicyEffect::Allow,
+                condition: serde_json::json!({ "operator": "always" }),
+                resources: vec!["*".to_string()],
+                subjects: vec!["*".to_string()],
+                tenant: Some("tenant-a".to_string()),
+                enabled: true,
+            })
+            .await
+            .unwrap();
+
+        let own = AccessContext::new("user1", "encrypt", "key:123").with_tenant("tenant-a");
+        assert_eq!(engine.evaluate(&own).await.unwrap(), Decision::Allow);
+
+        let other = AccessContext::new("user1", "encrypt", "key:123").with_tenant("tenant-b");
+        assert_eq!(
+            engine.evaluate(&other).await.unwrap(),
+            Decision::Deny,
+            "a tenant-scoped policy must not cover another tenant"
+        );
+    }
+
+    /// A request that carries no tenant matches no tenant-scoped policy: a
+    /// caller that does not know which tenant it is in must not reach a
+    /// tenant-scoped rule (audit follow-up B9-b).
+    #[tokio::test]
+    async fn test_request_without_a_tenant_matches_no_tenant_scoped_policy() {
+        let engine = PBACEngine::new();
+
+        engine
+            .add_policy(Policy {
+                id: uuid::Uuid::new_v4(),
+                name: "tenant-a-only".to_string(),
+                effect: PolicyEffect::Allow,
+                condition: serde_json::json!({ "operator": "always" }),
+                resources: vec!["*".to_string()],
+                subjects: vec!["*".to_string()],
+                tenant: Some("tenant-a".to_string()),
+                enabled: true,
+            })
+            .await
+            .unwrap();
+
+        // No tenant at all.
+        let ctx = AccessContext::new("user1", "encrypt", "key:123");
+        assert_eq!(engine.evaluate(&ctx).await.unwrap(), Decision::Deny);
+
+        // An empty tenant is "no tenant", not the tenant "".
+        let ctx = AccessContext::new("user1", "encrypt", "key:123").with_tenant("");
+        assert_eq!(engine.evaluate(&ctx).await.unwrap(), Decision::Deny);
+    }
+
+    /// A policy without a tenant constraint applies to every tenant — the
+    /// behaviour every policy had before the tenant dimension existed
+    /// (audit follow-up B9-b).
+    #[tokio::test]
+    async fn test_policy_without_a_tenant_applies_to_every_tenant() {
+        let engine = PBACEngine::new();
+
+        engine
+            .add_policy(Policy {
+                id: uuid::Uuid::new_v4(),
+                name: "global".to_string(),
+                effect: PolicyEffect::Allow,
+                condition: serde_json::json!({ "operator": "always" }),
+                resources: vec!["*".to_string()],
+                subjects: vec!["*".to_string()],
+                tenant: None,
+                enabled: true,
+            })
+            .await
+            .unwrap();
+
+        for tenant in ["tenant-a", "tenant-b", "anything"] {
+            let ctx = AccessContext::new("user1", "encrypt", "key:123").with_tenant(tenant);
+            assert_eq!(
+                engine.evaluate(&ctx).await.unwrap(),
+                Decision::Allow,
+                "an unscoped policy must apply to {tenant}"
+            );
+        }
+
+        // And to a request without a tenant.
+        let ctx = AccessContext::new("user1", "encrypt", "key:123");
+        assert_eq!(engine.evaluate(&ctx).await.unwrap(), Decision::Allow);
+    }
+
+    /// The tenant of a policy is a glob pattern, so one policy can cover a
+    /// family of tenants (audit follow-up B9-b).
+    #[tokio::test]
+    async fn test_tenant_glob_pattern_covers_a_family() {
+        let engine = PBACEngine::new();
+
+        engine
+            .add_policy(Policy {
+                id: uuid::Uuid::new_v4(),
+                name: "tenant-family".to_string(),
+                effect: PolicyEffect::Allow,
+                condition: serde_json::json!({ "operator": "always" }),
+                resources: vec!["*".to_string()],
+                subjects: vec!["*".to_string()],
+                tenant: Some("tenant-*".to_string()),
+                enabled: true,
+            })
+            .await
+            .unwrap();
+
+        for tenant in ["tenant-a", "tenant-b", "tenant-1"] {
+            let ctx = AccessContext::new("user1", "encrypt", "key:123").with_tenant(tenant);
+            assert_eq!(
+                engine.evaluate(&ctx).await.unwrap(),
+                Decision::Allow,
+                "the glob must cover {tenant}"
+            );
+        }
+
+        let ctx = AccessContext::new("user1", "encrypt", "key:123").with_tenant("other-a");
+        assert_eq!(
+            engine.evaluate(&ctx).await.unwrap(),
+            Decision::Deny,
+            "the glob must not cover an unrelated tenant"
+        );
+    }
+
+    /// A deny scoped to one tenant does not deny the other tenants: the
+    /// policy is filtered out before its condition is evaluated, so the
+    /// remaining policies decide.
+    #[tokio::test]
+    async fn test_tenant_scoped_deny_leaves_other_tenants_alone() {
+        let engine = PBACEngine::new();
+
+        engine
+            .add_policy(Policy {
+                id: uuid::Uuid::new_v4(),
+                name: "deny-tenant-a".to_string(),
+                effect: PolicyEffect::Deny,
+                condition: serde_json::json!({ "operator": "always" }),
+                resources: vec!["*".to_string()],
+                subjects: vec!["*".to_string()],
+                tenant: Some("tenant-a".to_string()),
+                enabled: true,
+            })
+            .await
+            .unwrap();
+        engine
+            .add_policy(Policy {
+                id: uuid::Uuid::new_v4(),
+                name: "allow-all".to_string(),
+                effect: PolicyEffect::Allow,
+                condition: serde_json::json!({ "operator": "always" }),
+                resources: vec!["*".to_string()],
+                subjects: vec!["*".to_string()],
+                tenant: None,
+                enabled: true,
+            })
+            .await
+            .unwrap();
+
+        let own = AccessContext::new("user1", "encrypt", "key:123").with_tenant("tenant-a");
+        assert_eq!(engine.evaluate(&own).await.unwrap(), Decision::Deny);
+
+        let other = AccessContext::new("user1", "encrypt", "key:123").with_tenant("tenant-b");
+        assert_eq!(
+            engine.evaluate(&other).await.unwrap(),
+            Decision::Allow,
+            "a deny scoped to another tenant must not deny this one"
+        );
     }
 
     /// `enabled_policy_count` distinguishes "no policy configured" from
@@ -627,6 +830,7 @@ mod tests {
             condition: serde_json::json!({ "operator": "always" }),
             resources: vec!["*".to_string()],
             subjects: vec!["*".to_string()],
+            tenant: None,
             enabled: true,
         };
         let policy_id = policy.id;
@@ -650,6 +854,7 @@ mod tests {
             condition: serde_json::json!({ "operator": "always" }),
             resources: vec!["*".to_string()],
             subjects: vec!["*".to_string()],
+            tenant: None,
             enabled: false,
         };
         engine.add_policy(policy).await.unwrap();
@@ -675,6 +880,7 @@ mod tests {
             condition: serde_json::json!({ "operator": "always" }),
             resources: vec!["*".to_string()],
             subjects: vec!["*".to_string()],
+            tenant: None,
             enabled: false,
         };
         engine.add_policy(disabled).await.unwrap();
@@ -688,6 +894,7 @@ mod tests {
             condition: serde_json::json!({ "operator": "always" }),
             resources: vec!["*".to_string()],
             subjects: vec!["*".to_string()],
+            tenant: None,
             enabled: true,
         };
         engine.add_policy(enabled).await.unwrap();
@@ -712,6 +919,7 @@ mod tests {
             }),
             resources: vec!["key:*".to_string()],
             subjects: vec!["bad-user".to_string()],
+            tenant: None,
             enabled: true,
         };
 
@@ -726,6 +934,7 @@ mod tests {
             }),
             resources: vec!["*".to_string()],
             subjects: vec!["*".to_string()],
+            tenant: None,
             enabled: true,
         };
 
@@ -765,6 +974,7 @@ mod tests {
             }),
             resources: vec!["*".to_string()],
             subjects: vec!["*".to_string()],
+            tenant: None,
             enabled: false, // DISABLED
         };
 
@@ -792,6 +1002,7 @@ mod tests {
             }),
             resources: vec!["*".to_string()],
             subjects: vec!["trusted-user".to_string()],
+            tenant: None,
             enabled: true,
         };
 
@@ -840,6 +1051,7 @@ mod tests {
             condition: serde_json::json!({"operator": "always"}),
             resources: vec!["key:prod-*".to_string()],
             subjects: vec!["*".to_string()],
+            tenant: None,
             enabled: true,
         };
 
@@ -870,6 +1082,7 @@ mod tests {
             }),
             resources: vec!["*".to_string()],
             subjects: vec!["*".to_string()],
+            tenant: None,
             enabled: true,
         };
 
@@ -896,6 +1109,7 @@ mod tests {
             condition: serde_json::json!({"operator": "never"}),
             resources: vec!["*".to_string()],
             subjects: vec!["*".to_string()],
+            tenant: None,
             enabled: true,
         };
 
@@ -924,6 +1138,7 @@ mod tests {
             }),
             resources: vec!["*".to_string()],
             subjects: vec!["*".to_string()],
+            tenant: None,
             enabled: true,
         };
 
@@ -947,6 +1162,7 @@ mod tests {
             }),
             resources: vec!["*".to_string()],
             subjects: vec!["*".to_string()],
+            tenant: None,
             enabled: true,
         };
 
@@ -970,6 +1186,7 @@ mod tests {
             }),
             resources: vec!["*".to_string()],
             subjects: vec!["*".to_string()],
+            tenant: None,
             enabled: true,
         };
 
@@ -996,6 +1213,7 @@ mod tests {
             condition: serde_json::json!({"operator": "always"}),
             resources: vec!["*".to_string()],
             subjects: vec!["*".to_string()],
+            tenant: None,
             enabled: true,
         };
 
@@ -1006,6 +1224,7 @@ mod tests {
             condition: serde_json::json!({"operator": "always"}),
             resources: vec!["*".to_string()],
             subjects: vec!["*".to_string()],
+            tenant: None,
             enabled: true,
         };
 
@@ -1150,6 +1369,7 @@ mod tests {
             condition: serde_json::json!({"operator": "always", "args": true}),
             resources: vec!["key:*".to_string()],
             subjects: vec!["user:*".to_string()],
+            tenant: None,
             enabled: true,
         };
         let p2 = Policy {
@@ -1159,6 +1379,7 @@ mod tests {
             condition: serde_json::json!({"operator": "always", "args": true}),
             resources: vec!["key:*".to_string()],
             subjects: vec!["admin".to_string()],
+            tenant: None,
             enabled: true,
         };
         engine.add_policy(p1).await.unwrap();
@@ -1305,6 +1526,7 @@ mod tests {
             condition: serde_json::json!({"operator": "always", "args": true}),
             resources: vec!["*".to_string()],
             subjects: vec!["*".to_string()],
+            tenant: None,
             enabled: true,
         }
     }

@@ -60,6 +60,7 @@ async fn spawn_server() -> (String, Arc<KmsState>, tokio::task::JoinHandle<()>) 
             condition: json!({ "operator": "always" }),
             resources: vec!["*".to_string()],
             subjects: vec!["*".to_string()],
+            tenant: None,
             enabled: true,
         })
         .await

@@ -13,6 +13,10 @@
 //!   loads it and still decides requests with it;
 //! - a removed policy is removed from the database, not only from memory.
 //!
+//! The tenant dimension (audit follow-up B9-b) is checked here too: the
+//! `tenant` column must survive the round trip, and a row written before that
+//! column existed must still load — as a policy that is not tenant-scoped.
+//!
 //! These cases are `#[ignore]`d and gated on `DATABASE_URL`, like the other
 //! PostgreSQL-backed tests in this repository.
 //!
@@ -62,7 +66,26 @@ fn sample_policy(effect: PolicyEffect, enabled: bool) -> Policy {
         }),
         resources: vec!["keys/prod/*".to_string()],
         subjects: vec!["service:api".to_string()],
+        tenant: None,
         enabled,
+    }
+}
+
+/// A policy restricted to one tenant.
+///
+/// The condition is `always` and the subject/resource are `*`, so the
+/// **tenant** is the only discriminator: a tenant-scoped allow must allow its
+/// own tenant and nothing else.
+fn tenant_scoped_policy(effect: PolicyEffect, tenant: &str) -> Policy {
+    Policy {
+        id: Uuid::new_v4(),
+        name: "pg-tenant-policy".to_string(),
+        effect,
+        condition: json!({ "operator": "always" }),
+        resources: vec!["*".to_string()],
+        subjects: vec!["*".to_string()],
+        tenant: Some(tenant.to_string()),
+        enabled: true,
     }
 }
 
@@ -221,6 +244,135 @@ async fn test_removed_policy_is_removed_from_the_database() {
     let restarted = PBACEngine::new().with_repository(repository.clone());
     let count = restarted.load_from_repository().await.expect("load");
     assert_eq!(count, 0);
+}
+
+/// The tenant column must survive the round trip: a policy that is scoped to
+/// a tenant must come back scoped to that same tenant, or the stored rule
+/// would silently widen to every tenant after a restart.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn test_the_tenant_survives_the_round_trip() {
+    let pool = pool().await;
+    let repository = Arc::new(PostgresPolicyRepository::new(pool.clone()));
+    repository.migrate().await.expect("migrate");
+    clear_policies(&pool).await;
+
+    let engine = PBACEngine::new().with_repository(repository.clone());
+    let policy = tenant_scoped_policy(PolicyEffect::Allow, "tenant-a");
+    engine.add_policy(policy.clone()).await.expect("add policy");
+
+    let row = kms_api::sqlx::query("SELECT tenant FROM policies WHERE id = $1")
+        .bind(policy.id)
+        .fetch_one(&pool)
+        .await
+        .expect("the policy row must exist");
+    assert_eq!(
+        row.get::<Option<String>, _>("tenant"),
+        Some("tenant-a".to_string())
+    );
+
+    let stored = repository
+        .load_all()
+        .await
+        .expect("load")
+        .into_iter()
+        .find(|p| p.id == policy.id)
+        .expect("the policy must be in the store");
+    assert_eq!(stored.tenant, Some("tenant-a".to_string()));
+
+    // And the restored policy still only covers its own tenant. An allow is
+    // used on purpose: the engine denies by default, so only an allow can
+    // tell "the policy matched" apart from "no policy matched".
+    let restarted = PBACEngine::new().with_repository(repository.clone());
+    restarted.load_from_repository().await.expect("load");
+    assert_eq!(
+        restarted
+            .evaluate(
+                &AccessContext::new("service:api", "encrypt", "keys/prod/1")
+                    .with_tenant("tenant-a")
+            )
+            .await
+            .expect("evaluate"),
+        Decision::Allow
+    );
+    assert_eq!(
+        restarted
+            .evaluate(
+                &AccessContext::new("service:api", "encrypt", "keys/prod/1")
+                    .with_tenant("tenant-b")
+            )
+            .await
+            .expect("evaluate"),
+        Decision::Deny
+    );
+    // A request without a tenant reaches no tenant-scoped policy.
+    assert_eq!(
+        restarted
+            .evaluate(&AccessContext::new("service:api", "encrypt", "keys/prod/1"))
+            .await
+            .expect("evaluate"),
+        Decision::Deny
+    );
+}
+
+/// A row written **before** the tenant column existed must still load.
+///
+/// The column is added with `ALTER TABLE … ADD COLUMN IF NOT EXISTS`, so an
+/// existing deployment keeps its rows with `tenant IS NULL`. Such a row must
+/// load as a policy that is not tenant-scoped, i.e. one that applies to every
+/// tenant — exactly how it behaved before the tenant dimension existed.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn test_a_row_without_a_tenant_loads_as_not_tenant_scoped() {
+    let pool = pool().await;
+    let repository = Arc::new(PostgresPolicyRepository::new(pool.clone()));
+    repository.migrate().await.expect("migrate");
+    clear_policies(&pool).await;
+
+    // A row in the shape the store had before the tenant column existed.
+    let id = Uuid::new_v4();
+    kms_api::sqlx::query(
+        r#"
+        INSERT INTO policies (id, name, effect, condition, resources, subjects, tenant, enabled)
+        VALUES ($1, 'legacy-policy', 'ALLOW', $2, $3, $4, NULL, TRUE)
+        "#,
+    )
+    .bind(id)
+    .bind(json!({ "operator": "always" }))
+    .bind(vec!["*".to_string()])
+    .bind(vec!["*".to_string()])
+    .execute(&pool)
+    .await
+    .expect("insert the legacy row");
+
+    let stored = repository
+        .load_all()
+        .await
+        .expect("load")
+        .into_iter()
+        .find(|p| p.id == id)
+        .expect("the legacy policy must be in the store");
+    assert_eq!(stored.tenant, None);
+
+    // Not tenant-scoped means it applies to every tenant.
+    let restarted = PBACEngine::new().with_repository(repository.clone());
+    restarted.load_from_repository().await.expect("load");
+    assert_eq!(
+        restarted
+            .evaluate(
+                &AccessContext::new("service:api", "encrypt", "key-1").with_tenant("tenant-a")
+            )
+            .await
+            .expect("evaluate"),
+        Decision::Allow
+    );
+    assert_eq!(
+        restarted
+            .evaluate(&AccessContext::new("service:api", "encrypt", "key-1"))
+            .await
+            .expect("evaluate"),
+        Decision::Allow
+    );
 }
 
 /// The store must survive a schema that does not exist yet: the server

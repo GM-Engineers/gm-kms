@@ -268,6 +268,55 @@ PostgreSQL 的 `policies` 表，进程重启时再加载回引擎。
 > 写穿的方向也是同一个道理：**持久态是真相源**。落库失败就不进内存，
 > 否则会出现“内存里有、库里没有”的策略——它看起来已安装，直到下次重启静默消失。
 
+### 9.3 策略的租户维度（audit B9-b）
+
+策略多一个可选的 `tenant` 字段。省略（或空串）表示这条策略**不受租户限定**，
+对所有租户生效——这与租户维度出现之前的语义完全一致。
+
+```json
+{
+  "name": "tenant-a-may-not-export",
+  "effect": "deny",
+  "condition": {"operator": "eq", "attribute": "action", "value": "export_key"},
+  "resources": ["*"],
+  "subjects": ["*"],
+  "tenant": "tenant-a"
+}
+```
+
+`tenant` 支持 glob：`"tenant-*"` 覆盖一族租户。
+
+匹配规则（`kms-policy` 引擎）：
+
+| 策略的 `tenant` | 请求的租户 | 是否匹配 |
+|---|---|---|
+| 无（`null` / 省略） | 任意 | ✅ 适用（不限租户） |
+| `"tenant-a"` | `"tenant-a"` | ✅ |
+| `"tenant-a"` | `"tenant-b"` | ❌ |
+| `"tenant-*"` | `"tenant-a"` | ✅ |
+| `"tenant-a"` | **无租户** | ❌ |
+
+> **为什么“无租户的请求”不匹配租户限定策略**：调用方若不知道自己身处哪个租户，
+> 就不能靠一条针对别的租户的规则去拿到权限。这条失败方向是**收紧**的：
+> 不匹配租户限定策略 ≠ 放行，而是落到默认拒绝（若存在已启用策略）或回到
+> 仅 RBAC 一道闸门（若一条已启用策略都没有）。
+>
+> 反向同样是收紧：`tenant` 为空的策略不会因为“加上了租户维度”而变窄，
+> 它仍对所有租户生效，因此升级不会让既有的策略突然失效。
+
+被匹配用的租户是**有效租户**（effective tenant），不是调用方自称的租户：
+
+- API Key **绑定**了租户 → 绑定租户是权威值，自称租户被忽略（并记 `warn`，便于观察越权尝试）；
+- API Key **未绑定** → 用请求自带的租户。
+
+这个有效租户在**策略判定之前**就已解析完成，因此它就是该操作实际使用的那个租户——
+判定用的租户与操作用的租户不可能分叉。REST 与 gRPC 各自解析自己的有效租户，
+但都把同一个字符串交给共用的求值入口 `kms_api::auth::evaluate_pbac`，
+因此**换协议不能绕过租户限定策略**。
+
+> 与 §2 的租户身份派生是同一套规则，只是把结论多带了一步：
+> 以前租户只用来选数据（密钥归属），现在它也参与属性策略的匹配。
+
 ## 测试固化
 
 `tests/api_integration.rs` 的 `p43_*` 用例对同一批请求断言 REST 与 gRPC 的：
@@ -300,3 +349,12 @@ PostgreSQL 的 `policies` 表，进程重启时再加载回引擎。
 | `crates/kms-policy/src/store.rs` | `effect` 的存取用 serde 形式（`ALLOW`/`DENY`）而非 `Debug` 形式，坏值被拒 |
 | `crates/kms-policy/src/engine.rs` | 写穿：装/删策略先落库；落库失败时内存不变；读不到的存储报**错**而不是空集；加载后的策略仍参与求值 |
 | `tests/api_policy_pg_integration.rs` | 真实 PostgreSQL：策略落到 `policies` 表、逐字段往返、**重启后仍在且仍生效**、删除后不再复活、建表幂等 |
+
+### B9-b 的固化用例
+
+| 位置 | 覆盖的语义 |
+|------|-----------|
+| `crates/kms-policy/src/engine.rs` | 租户限定策略只命中自己的租户；无租户的请求不命中租户限定策略；无 `tenant` 的策略对所有租户生效；glob 覆盖一族租户；租户限定的拒绝不影响其它租户 |
+| `crates/kms-api/src/auth.rs` | 求值入口收到的租户决定哪条策略生效（租户维度穿透 `evaluate_pbac`） |
+| `tests/api_integration.rs` | 租户限定的拒绝只覆盖它点名的那个租户；无租户的请求不落入租户限定策略；**换协议不能绕过**租户限定策略（REST 403 与 gRPC `PermissionDenied` 同时成立） |
+| `tests/api_policy_pg_integration.rs` | 真实 PostgreSQL：`tenant` 列逐字段往返，且**没有 `tenant` 的旧行**（B9-b 之前写入的行）加载后仍是不限租户的策略 |

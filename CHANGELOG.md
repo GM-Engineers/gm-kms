@@ -35,6 +35,13 @@ All notable changes to gm-kms will be documented in this file.
   - **新增 `DELETE /v1/policies/{id}`**：此前策略装上后**没有任何方式撤销**（内存里也一样）；持久化后一条装错的策略会永久生效。未知 id 答 404。
   - 装/删策略均记审计事件 `policy_changed`（该事件构造函数此前从未被调用）。`effect` 列存 serde 形式（`ALLOW`/`DENY`）而非 `Debug` 形式（`Allow`/`Deny`），后者无法往返。
   - 护栏：`crates/kms-policy` 单测 9 例（写穿方向、落库失败时内存不变、读不到的存储报错而非空集、加载后仍参与求值、`effect` 往返）；`tests/api_policy_pg_integration.rs` 真实 PostgreSQL 6 例（落库、逐字段往返、**重启后仍在且仍生效**、删除后不复活、建表幂等）。
+- **B9-b — PBAC 策略的租户维度**：策略此前只有 subject / resource / action 三个维度，**没有租户**——一条“某类调用方不得导出”的策略无法只作用于某一个租户，只能全局生效，或退回到用多把 API Key + 审批做隔离（而后者管不到“同租户内的不同动作”）。
+  - `Policy` 新增可选的 `tenant` 字段（`Option<String>`，`serde(default)`）。省略 / 空串 = **不限租户**，对所有租户生效，与租户维度出现之前逐字一致；给定值 = 该策略只命中那个租户，支持 glob（`tenant-*` 覆盖一族租户）。
+  - 引擎新增 `tenant_matches`：策略有 `tenant` 而请求**没有**租户时**不匹配**。调用方若不知道自己身处哪个租户，就不能靠一条针对别的租户的规则拿到权限；失败方向是收紧的（落到默认拒绝，而不是被放行）。
+  - 参与匹配的是**有效租户**（API Key 绑定租户优先，否则请求自报），且在**策略判定之前**解析完成——因此判定用的租户就是该操作实际使用的租户，两者不可能分叉。REST 23 个端点与 gRPC 23 个方法各自解析自己的有效租户，但都把同一个字符串交给共用的 `auth::evaluate_pbac`，**换协议不能绕过**租户限定策略。
+  - `policies` 表新增 `tenant` 列（`ALTER TABLE … ADD COLUMN IF NOT EXISTS`）。**B9-b 之前写入的行**（`tenant IS NULL`）加载后仍是不限租户的策略——升级不会让既有策略突然变宽或变窄。
+  - 破坏性变更（0.3.0 未发布前可接受）：`evaluate_pbac` / `check_rest_pbac` / `KmsGrpcService::check_pbac` 新增 `tenant` 参数；`POST /v1/policies` 与 `GET /v1/policies` 的 DTO 新增 `tenant` 字段；Rust SDK 的 `CreatePolicyRequest` / `Policy` 同步新增 `tenant`。
+  - 护栏：`crates/kms-policy` 单测 5 例（租户限定只命中自己的租户、无租户的请求不命中、不限租户的策略对所有租户生效、glob 覆盖一族、租户限定的拒绝不影响其它租户）；`crates/kms-api` 单测 1 例（租户维度穿透 `evaluate_pbac`）；`tests/api_integration.rs` 3 例（租户限定的拒绝只覆盖它点名的租户、无租户的请求不落入租户限定策略、**换协议不能绕过**）；`tests/api_policy_pg_integration.rs` 真实 PostgreSQL 2 例（`tenant` 列往返、无 `tenant` 的旧行仍按不限租户加载）。
 
 #### Fixed
 
@@ -76,7 +83,9 @@ All notable changes to gm-kms will be documented in this file.
 - **B7-a / B7-b / B7-c / B7-d / B7-e / B7-g** 的语义同步写入该表；其中"两通道此处行为一致"的旧说法有误，已更正。
 - **`docs/api-semantics.md` §8.5** 增补审批门的 400-vs-403 区分表（B8-d）。
 - **`docs/api-semantics.md` §9.2** 新增“PBAC 策略持久化与 fail-closed 启动”（B9-a）：写穿方向、启动时的建表 / 加载 / 拒绝启动三种结果，以及为什么“读不到”不能当成“没有策略”。
+- **`docs/api-semantics.md` §9.3** 新增“策略的租户维度”（B9-b）：`tenant` 字段的匹配规则表（不限租户 / 命中自己的租户 / glob / 无租户的请求）、“为什么无租户的请求不匹配租户限定策略”、以及“参与匹配的是有效租户且在判定前解析完成”对跨协议一致性的意义。
 - **部署指南** 的 PBAC 章节改写：策略改为持久化并跨重启生效，新增 `DELETE /v1/policies/{id}` 用法，并写明策略表读不到时服务拒绝启动。
+- **部署指南** 新增“Scoping a policy to one tenant”（B9-b）：`tenant` 字段的用法、glob、匹配用有效租户、旧行兼容。
 - **README / `README.en.md`**：PBAC 策略不持久化的已知限制条目**移除**（B9-a 已修复），测试统计刷新。
 - **README / `README.en.md`** 的仓库定位与 HSM/TPM 表述随 P3-3 更新。
 

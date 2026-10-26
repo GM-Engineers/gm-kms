@@ -97,6 +97,7 @@ async fn spawn_rest_server_with_policies_and_state(
             condition: json!({ "operator": "always" }),
             resources: vec!["*".to_string()],
             subjects: vec!["*".to_string()],
+            tenant: None,
             enabled: true,
         })
         .await
@@ -1054,6 +1055,7 @@ async fn spawn_dual_stack_with_policies(extra_policies: Vec<Policy>) -> DualStac
             condition: json!({ "operator": "always" }),
             resources: vec!["*".to_string()],
             subjects: vec!["*".to_string()],
+            tenant: None,
             enabled: true,
         })
         .await
@@ -1561,6 +1563,7 @@ fn deny_action_policy(action: &str) -> Policy {
         condition: json!({ "operator": "eq", "attribute": "action", "value": action }),
         resources: vec!["*".to_string()],
         subjects: vec!["*".to_string()],
+        tenant: None,
         enabled: true,
     }
 }
@@ -1837,6 +1840,7 @@ async fn b7g1_installed_policy_restores_default_deny() {
             condition: json!({ "operator": "always" }),
             resources: vec!["no-such-resource".to_string()],
             subjects: vec!["no-such-subject".to_string()],
+            tenant: None,
             enabled: true,
         })
         .await
@@ -2428,6 +2432,7 @@ async fn b7h_disabled_policy_does_not_lock_out_the_data_plane() {
             condition: json!({ "operator": "always" }),
             resources: vec!["*".to_string()],
             subjects: vec!["*".to_string()],
+            tenant: None,
             enabled: false,
         })
         .await
@@ -2550,5 +2555,170 @@ async fn b7h_high_value_key_create_approval_does_not_require_an_existing_key() {
     assert_eq!(
         status, 201,
         "a high-value key creation must be approvable before the key exists: body={body}"
+    );
+}
+
+// =============================================================================
+// Batch 9 / B9-b: the PBAC tenant dimension
+//
+// A policy may be restricted to a tenant. The tenant it is matched against is
+// the effective one — the tenant of the API key when it is bound to one, the
+// self-reported tenant otherwise — so a tenant-scoped rule decides the
+// requests of that tenant and of no other.
+// =============================================================================
+
+/// A PBAC policy that denies one action for one tenant only.
+fn deny_action_policy_for_tenant(action: &str, tenant: &str) -> Policy {
+    Policy {
+        id: uuid::Uuid::new_v4(),
+        name: format!("deny-{action}-{tenant}"),
+        effect: PolicyEffect::Deny,
+        condition: json!({ "operator": "eq", "attribute": "action", "value": action }),
+        resources: vec!["*".to_string()],
+        subjects: vec!["*".to_string()],
+        tenant: Some(tenant.to_string()),
+        enabled: true,
+    }
+}
+
+/// A tenant-scoped deny must block the tenant it names and leave the other
+/// tenants alone.
+#[tokio::test]
+async fn b9b_rest_tenant_scoped_deny_only_covers_its_tenant() {
+    let (base, client, handle) =
+        spawn_rest_server_with_policies(vec![deny_action_policy_for_tenant(
+            "create_key",
+            "tenant-a",
+        )])
+        .await;
+
+    // The tenant the policy names is refused.
+    let resp = client
+        .post(format!("{base}/v1/keys"))
+        .header(ADMIN_HEADER, ADMIN_SECRET)
+        .json(&json!({ "name": "denied-key", "spec": "Sm4", "tenant_id": "tenant-a" }))
+        .send()
+        .await
+        .expect("create_key send");
+    let denied_status = resp.status();
+
+    // Another tenant is not covered by the policy and may create its key.
+    let resp = client
+        .post(format!("{base}/v1/keys"))
+        .header(ADMIN_HEADER, ADMIN_SECRET)
+        .json(&json!({ "name": "allowed-key", "spec": "Sm4", "tenant_id": "tenant-b" }))
+        .send()
+        .await
+        .expect("create_key send");
+    let allowed_status = resp.status();
+    handle.abort();
+
+    assert_eq!(
+        denied_status, 403,
+        "a tenant-scoped deny must refuse the tenant it names"
+    );
+    assert_eq!(
+        allowed_status, 201,
+        "a tenant-scoped deny must not refuse another tenant"
+    );
+}
+
+/// A request without a tenant reaches no tenant-scoped policy: the admin key
+/// of the test harness is unbound, so the tenant comes from the request.
+#[tokio::test]
+async fn b9b_rest_request_without_a_tenant_reaches_no_tenant_scoped_policy() {
+    let (base, client, handle) =
+        spawn_rest_server_with_policies(vec![deny_action_policy_for_tenant(
+            "create_key",
+            "tenant-a",
+        )])
+        .await;
+
+    // No tenant at all in the request.
+    let resp = client
+        .post(format!("{base}/v1/keys"))
+        .header(ADMIN_HEADER, ADMIN_SECRET)
+        .json(&json!({ "name": "tenantless-key", "spec": "Sm4" }))
+        .send()
+        .await
+        .expect("create_key send");
+    let status = resp.status();
+    handle.abort();
+
+    assert_ne!(
+        status, 403,
+        "a request without a tenant must not be caught by a tenant-scoped policy"
+    );
+}
+
+/// Switching protocol must not change the decision: a tenant-scoped policy
+/// denies the same tenant on both channels.
+#[tokio::test]
+async fn b9b_protocol_switch_cannot_bypass_a_tenant_scoped_policy() {
+    let mut stack = spawn_dual_stack_with_policies(vec![deny_action_policy_for_tenant(
+        "create_key",
+        "tenant-a",
+    )])
+    .await;
+
+    // REST must refuse the tenant the policy names.
+    let resp = stack
+        .client
+        .post(format!("{}/v1/keys", stack.base))
+        .header(ADMIN_HEADER, ADMIN_SECRET)
+        .json(&json!({ "name": "rest-denied", "spec": "Sm4", "tenant_id": "tenant-a" }))
+        .send()
+        .await
+        .expect("rest create_key send");
+    let rest_status = resp.status();
+
+    // gRPC must refuse it as well.
+    let grpc_status = stack
+        .grpc
+        .create_key(admin_req(pb::CreateKeyRequest {
+            name: "grpc-denied".to_string(),
+            spec: "Sm4".to_string(),
+            tenant_id: "tenant-a".to_string(),
+        }))
+        .await
+        .expect_err("gRPC create_key must be denied by the same tenant-scoped policy");
+    assert_eq!(
+        grpc_status.code(),
+        tonic::Code::PermissionDenied,
+        "gRPC must refuse the denied tenant"
+    );
+
+    // And another tenant stays allowed on both channels.
+    let resp = stack
+        .client
+        .post(format!("{}/v1/keys", stack.base))
+        .header(ADMIN_HEADER, ADMIN_SECRET)
+        .json(&json!({ "name": "rest-allowed", "spec": "Sm4", "tenant_id": "tenant-b" }))
+        .send()
+        .await
+        .expect("rest create_key send");
+    let rest_allowed = resp.status();
+
+    let grpc_allowed = stack
+        .grpc
+        .create_key(admin_req(pb::CreateKeyRequest {
+            name: "grpc-allowed".to_string(),
+            spec: "Sm4".to_string(),
+            tenant_id: "tenant-b".to_string(),
+        }))
+        .await
+        .expect("gRPC create_key must stay allowed for the other tenant");
+
+    assert_eq!(
+        rest_status, 403,
+        "REST must refuse the tenant the policy names — switching protocol must not help"
+    );
+    assert_eq!(
+        rest_allowed, 201,
+        "REST must allow the tenant the policy does not name"
+    );
+    assert!(
+        grpc_allowed.into_inner().key.is_some(),
+        "gRPC must allow the tenant the policy does not name"
     );
 }

@@ -157,25 +157,25 @@ gm-kms/
 
 | Crate | Test count | Status |
 |-------|-----------|--------|
-| kms-core | 340 | passed |
-| kms-api | 294 (+ 5 ignored) | passed |
-| kms-policy | 40 | passed |
+| kms-core | 339 | passed |
+| kms-api | 295 (+ 5 ignored) | passed |
+| kms-policy | 45 | passed |
 | kms-audit | 101 | passed |
 | kms-hsm | 52 | passed |
 | kms-mfa | 46 | passed |
 | kms-approval | 24 | passed |
 | kms-keystore | 117 (+ 25 ignored) | passed |
 | kms-cli | 8 | passed |
-| kms binary (unit tests, incl. tlcp_listener / config) | 66 | passed |
-| interface integration (api_integration) | 48 | passed |
+| kms binary (unit tests, incl. tlcp_listener / config) | 67 (+ 2 ignored) | passed |
+| interface integration (api_integration) | 51 | passed |
 | api_pg_integration (PostgreSQL backend) | 0 (+ 7 ignored) | passed |
-| api_policy_pg_integration (PostgreSQL policy persistence) | 0 (+ 6 ignored) | passed |
+| api_policy_pg_integration (PostgreSQL policy persistence) | 0 (+ 8 ignored) | passed |
 | startup_failclosed (fail-closed startup) | 2 | passed |
 | integration_tests / kat_vectors | 81 | passed |
 | Rust SDK (sdk/rust: contract 26 + e2e 5 + unit 5 + doctest 3) | 39 | passed |
-| **Total** | **1259 passed** (plus 53 ignored) | |
+| **Total** | **1268 passed** (plus 55 ignored) | |
 
-> Ignored breakdown: kms-api 5 + kms-keystore 25 + api_pg_integration 7 + api_policy_pg_integration 6 + doctests 8.
+> Ignored breakdown: kms-api 5 + kms-keystore 25 + kms binary 2 + api_pg_integration 7 + api_policy_pg_integration 8 + doctests 8.
 > The PostgreSQL / Redis backed cases need a real PostgreSQL and Redis; run them separately with `cargo test --workspace -- --ignored`.
 
 ## Third-party components

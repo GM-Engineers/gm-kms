@@ -304,6 +304,13 @@ pub struct CreatePolicyRequest {
     pub resources: Vec<String>,
     /// List of subject patterns (e.g., ["user:*", "service:api"])
     pub subjects: Vec<String>,
+    /// The tenant this policy is restricted to.
+    ///
+    /// Omitted (or empty) means the policy is **not** tenant-scoped and
+    /// applies to every tenant. A value restricts the policy to that tenant;
+    /// a glob pattern is accepted, so `tenant-*` covers a family of tenants.
+    #[serde(default)]
+    pub tenant: Option<String>,
     /// Whether the policy is active
     #[serde(default = "default_enabled")]
     pub enabled: bool,
@@ -328,6 +335,8 @@ pub struct PolicyResponse {
     pub resources: Vec<String>,
     /// List of subject patterns
     pub subjects: Vec<String>,
+    /// The tenant this policy is restricted to, if any
+    pub tenant: Option<String>,
     /// Whether the policy is active
     pub enabled: bool,
 }
@@ -798,9 +807,15 @@ async fn create_key(
 
     // PBAC evaluation
     use crate::auth::check_rest_pbac;
-    check_rest_pbac(&state.policy_engine, &caller_id, "create_key", &req.name)
-        .await
-        .map_err(|_| ApiError::PermissionDenied)?;
+    check_rest_pbac(
+        &state.policy_engine,
+        &caller_id,
+        &tenant,
+        "create_key",
+        &req.name,
+    )
+    .await
+    .map_err(|_| ApiError::PermissionDenied)?;
 
     let spec = KeyService::parse_spec(&req.spec)?;
 
@@ -848,13 +863,22 @@ async fn get_key(
     // PBAC evaluation (audit B7-g): mirror the gRPC handler, which already
     // checks the "get_key" action. Without this the attribute-based access
     // control could be bypassed by switching from gRPC to REST.
-    use crate::auth::check_rest_pbac;
-    check_rest_pbac(&state.policy_engine, &caller_id, "get_key", &id.to_string())
-        .await
-        .map_err(|_| ApiError::PermissionDenied)?;
-
+    // The effective tenant is resolved before the policy decision: a
+    // tenant-scoped policy is matched against it (audit follow-up B9-b).
     let tenant_id_owned = resolve_tenant(bound.as_deref(), &tenant_query.tenant_id);
     let tenant_id: &str = &tenant_id_owned;
+
+    use crate::auth::check_rest_pbac;
+    check_rest_pbac(
+        &state.policy_engine,
+        &caller_id,
+        tenant_id,
+        "get_key",
+        &id.to_string(),
+    )
+    .await
+    .map_err(|_| ApiError::PermissionDenied)?;
+
     let key_svc = state.key_service();
     let meta = key_svc.get_key(&id, tenant_id).await?;
 
@@ -868,12 +892,21 @@ async fn list_keys(
     BoundTenant(bound): BoundTenant,
 ) -> Result<Json<Vec<KeyResponse>>> {
     // PBAC evaluation
-    use crate::auth::check_rest_pbac;
-    check_rest_pbac(&state.policy_engine, &caller_id, "list_keys", "keys")
-        .await
-        .map_err(|_| ApiError::PermissionDenied)?;
+    // The effective tenant is resolved before the policy decision: a
+    // tenant-scoped policy is matched against it (audit follow-up B9-b).
     let tenant_id_owned = resolve_tenant(bound.as_deref(), &tenant_query.tenant_id);
     let tenant_id: &str = &tenant_id_owned;
+
+    use crate::auth::check_rest_pbac;
+    check_rest_pbac(
+        &state.policy_engine,
+        &caller_id,
+        tenant_id,
+        "list_keys",
+        "keys",
+    )
+    .await
+    .map_err(|_| ApiError::PermissionDenied)?;
     let key_svc = state.key_service();
     let keys = key_svc.list_keys(KeyFilter::default(), tenant_id).await?;
 
@@ -892,13 +925,21 @@ async fn encrypt(
     use base64::{Engine, engine::general_purpose::STANDARD};
 
     // PBAC evaluation
-    use crate::auth::check_rest_pbac;
-    check_rest_pbac(&state.policy_engine, &caller_id, "encrypt", &id.to_string())
-        .await
-        .map_err(|_| ApiError::PermissionDenied)?;
-
+    // The effective tenant is resolved before the policy decision: a
+    // tenant-scoped policy is matched against it (audit follow-up B9-b).
     let tenant_id_owned = resolve_tenant(bound.as_deref(), &tenant_query.tenant_id);
     let tenant_id: &str = &tenant_id_owned;
+
+    use crate::auth::check_rest_pbac;
+    check_rest_pbac(
+        &state.policy_engine,
+        &caller_id,
+        tenant_id,
+        "encrypt",
+        &id.to_string(),
+    )
+    .await
+    .map_err(|_| ApiError::PermissionDenied)?;
 
     // Validate input
     if let Err(e) = validate_encrypt_request(&req.plaintext, &req.aad) {
@@ -945,13 +986,21 @@ async fn decrypt(
     use base64::{Engine, engine::general_purpose::STANDARD};
 
     // PBAC evaluation
-    use crate::auth::check_rest_pbac;
-    check_rest_pbac(&state.policy_engine, &caller_id, "decrypt", &id.to_string())
-        .await
-        .map_err(|_| ApiError::PermissionDenied)?;
-
+    // The effective tenant is resolved before the policy decision: a
+    // tenant-scoped policy is matched against it (audit follow-up B9-b).
     let tenant_id_owned = resolve_tenant(bound.as_deref(), &tenant_query.tenant_id);
     let tenant_id: &str = &tenant_id_owned;
+
+    use crate::auth::check_rest_pbac;
+    check_rest_pbac(
+        &state.policy_engine,
+        &caller_id,
+        tenant_id,
+        "decrypt",
+        &id.to_string(),
+    )
+    .await
+    .map_err(|_| ApiError::PermissionDenied)?;
 
     // Validate input
     if let Err(e) = validate_decrypt_request(&req.ciphertext, &req.nonce, &req.tag, &req.aad) {
@@ -1065,10 +1114,16 @@ async fn rotate_key(
     BoundTenant(bound): BoundTenant,
 ) -> Result<Json<KeyResponse>> {
     // PBAC evaluation
+    // The effective tenant is resolved before the policy decision: a
+    // tenant-scoped policy is matched against it (audit follow-up B9-b).
+    let tenant_id_owned = resolve_tenant(bound.as_deref(), &tenant_query.tenant_id);
+    let tenant_id: &str = &tenant_id_owned;
+
     use crate::auth::check_rest_pbac;
     check_rest_pbac(
         &state.policy_engine,
         &caller_id,
+        tenant_id,
         "rotate_key",
         &id.to_string(),
     )
@@ -1085,9 +1140,6 @@ async fn rotate_key(
         &id.to_string(),
         "key rotation",
     )?;
-
-    let tenant_id_owned = resolve_tenant(bound.as_deref(), &tenant_query.tenant_id);
-    let tenant_id: &str = &tenant_id_owned;
 
     let key_svc = state.key_service();
     let meta = key_svc.rotate_key(&id, tenant_id, &caller_id).await?;
@@ -1109,10 +1161,16 @@ async fn delete_key(
     BoundTenant(bound): BoundTenant,
 ) -> Result<StatusCode> {
     // PBAC evaluation
+    // The effective tenant is resolved before the policy decision: a
+    // tenant-scoped policy is matched against it (audit follow-up B9-b).
+    let tenant_id_owned = resolve_tenant(bound.as_deref(), &tenant_query.tenant_id);
+    let tenant_id: &str = &tenant_id_owned;
+
     use crate::auth::check_rest_pbac;
     check_rest_pbac(
         &state.policy_engine,
         &caller_id,
+        tenant_id,
         "delete_key",
         &id.to_string(),
     )
@@ -1128,9 +1186,6 @@ async fn delete_key(
         &id.to_string(),
         "key deletion",
     )?;
-
-    let tenant_id_owned = resolve_tenant(bound.as_deref(), &tenant_query.tenant_id);
-    let tenant_id: &str = &tenant_id_owned;
 
     let key_svc = state.key_service();
     key_svc.delete_key(&id, tenant_id, &caller_id).await?;
@@ -1157,13 +1212,21 @@ async fn sign(
     // PBAC evaluation — the gRPC channel already checks this action, so
     // omitting it here would let a client bypass the attribute-based control
     // by switching protocol (audit follow-up B7-g).
-    use crate::auth::check_rest_pbac;
-    check_rest_pbac(&state.policy_engine, &caller_id, "sign", &id.to_string())
-        .await
-        .map_err(|_| ApiError::PermissionDenied)?;
-
+    // The effective tenant is resolved before the policy decision: a
+    // tenant-scoped policy is matched against it (audit follow-up B9-b).
     let tenant_id_owned = resolve_tenant(bound.as_deref(), &tenant_query.tenant_id);
     let tenant_id: &str = &tenant_id_owned;
+
+    use crate::auth::check_rest_pbac;
+    check_rest_pbac(
+        &state.policy_engine,
+        &caller_id,
+        tenant_id,
+        "sign",
+        &id.to_string(),
+    )
+    .await
+    .map_err(|_| ApiError::PermissionDenied)?;
 
     let data = STANDARD
         .decode(&req.data)
@@ -1193,13 +1256,21 @@ async fn verify(
     use base64::{Engine, engine::general_purpose::STANDARD};
 
     // PBAC evaluation — mirror the gRPC handler (audit follow-up B7-g).
-    use crate::auth::check_rest_pbac;
-    check_rest_pbac(&state.policy_engine, &caller_id, "verify", &id.to_string())
-        .await
-        .map_err(|_| ApiError::PermissionDenied)?;
-
+    // The effective tenant is resolved before the policy decision: a
+    // tenant-scoped policy is matched against it (audit follow-up B9-b).
     let tenant_id_owned = resolve_tenant(bound.as_deref(), &tenant_query.tenant_id);
     let tenant_id: &str = &tenant_id_owned;
+
+    use crate::auth::check_rest_pbac;
+    check_rest_pbac(
+        &state.policy_engine,
+        &caller_id,
+        tenant_id,
+        "verify",
+        &id.to_string(),
+    )
+    .await
+    .map_err(|_| ApiError::PermissionDenied)?;
 
     let data = STANDARD
         .decode(&req.data)
@@ -1239,13 +1310,21 @@ async fn hmac(
     // PBAC evaluation (audit B7-b): mirror the gRPC handler, which already
     // checks the "hmac" action. Without this the attribute-based access
     // control could be bypassed by switching from gRPC to REST.
-    use crate::auth::check_rest_pbac;
-    check_rest_pbac(&state.policy_engine, &caller_id, "hmac", &id.to_string())
-        .await
-        .map_err(|_| ApiError::PermissionDenied)?;
-
+    // The effective tenant is resolved before the policy decision: a
+    // tenant-scoped policy is matched against it (audit follow-up B9-b).
     let tenant_id_owned = resolve_tenant(bound.as_deref(), &tenant_query.tenant_id);
     let tenant_id: &str = &tenant_id_owned;
+
+    use crate::auth::check_rest_pbac;
+    check_rest_pbac(
+        &state.policy_engine,
+        &caller_id,
+        tenant_id,
+        "hmac",
+        &id.to_string(),
+    )
+    .await
+    .map_err(|_| ApiError::PermissionDenied)?;
 
     let data = STANDARD
         .decode(&req.data)
@@ -1287,18 +1366,21 @@ async fn hmac_verify(
     use base64::{Engine, engine::general_purpose::STANDARD};
 
     // PBAC evaluation (audit B7-b): mirror the gRPC handler.
+    // The effective tenant is resolved before the policy decision: a
+    // tenant-scoped policy is matched against it (audit follow-up B9-b).
+    let tenant_id_owned = resolve_tenant(bound.as_deref(), &tenant_query.tenant_id);
+    let tenant_id: &str = &tenant_id_owned;
+
     use crate::auth::check_rest_pbac;
     check_rest_pbac(
         &state.policy_engine,
         &caller_id,
+        tenant_id,
         "hmac_verify",
         &id.to_string(),
     )
     .await
     .map_err(|_| ApiError::PermissionDenied)?;
-
-    let tenant_id_owned = resolve_tenant(bound.as_deref(), &tenant_query.tenant_id);
-    let tenant_id: &str = &tenant_id_owned;
 
     let data = STANDARD
         .decode(&req.data)
@@ -1338,12 +1420,19 @@ async fn hmac_verify(
 async fn hash(
     CallerId { key_id: caller_id }: CallerId,
     State(state): State<Arc<KmsState>>,
+    BoundTenant(bound): BoundTenant,
     Json(req): Json<HashRequest>,
 ) -> Result<Json<HashResponse>> {
     use crate::auth::check_rest_pbac;
-    check_rest_pbac(&state.policy_engine, &caller_id, "hash", "hash")
-        .await
-        .map_err(|_| ApiError::PermissionDenied)?;
+    check_rest_pbac(
+        &state.policy_engine,
+        &caller_id,
+        bound.as_deref().unwrap_or(""),
+        "hash",
+        "hash",
+    )
+    .await
+    .map_err(|_| ApiError::PermissionDenied)?;
 
     use base64::{Engine, engine::general_purpose::STANDARD};
 
@@ -2524,10 +2613,19 @@ async fn envelope_encrypt(
         .map_err(|_| ApiError::InvalidRequest("invalid kek_id format".to_string()))?;
 
     // PBAC evaluation — mirror the gRPC handler (audit follow-up B7-g).
+    // The effective tenant is resolved before the policy decision: a
+    // tenant-scoped policy is matched against it (audit follow-up B9-b).
+    let tenant_id_owned = resolve_tenant(
+        bound.as_deref(),
+        req.tenant_id.as_deref().unwrap_or("default"),
+    );
+    let tenant_id: &str = &tenant_id_owned;
+
     use crate::auth::check_rest_pbac;
     check_rest_pbac(
         &state.policy_engine,
         &caller_id,
+        tenant_id,
         "envelope_encrypt",
         &kek_id.to_string(),
     )
@@ -2537,12 +2635,6 @@ async fn envelope_encrypt(
     let plaintext = STANDARD
         .decode(&req.plaintext)
         .map_err(|_| ApiError::InvalidRequest("invalid base64 plaintext".to_string()))?;
-
-    let tenant_id_owned = resolve_tenant(
-        bound.as_deref(),
-        req.tenant_id.as_deref().unwrap_or("default"),
-    );
-    let tenant_id: &str = &tenant_id_owned;
 
     let envelope_svc = crate::service::EnvelopeService::new(&state);
     let result = envelope_svc
@@ -2576,10 +2668,19 @@ async fn envelope_decrypt(
         .map_err(|_| ApiError::InvalidRequest("invalid kek_id format".to_string()))?;
 
     // PBAC evaluation — mirror the gRPC handler (audit follow-up B7-g).
+    // The effective tenant is resolved before the policy decision: a
+    // tenant-scoped policy is matched against it (audit follow-up B9-b).
+    let tenant_id_owned = resolve_tenant(
+        bound.as_deref(),
+        req.tenant_id.as_deref().unwrap_or("default"),
+    );
+    let tenant_id: &str = &tenant_id_owned;
+
     use crate::auth::check_rest_pbac;
     check_rest_pbac(
         &state.policy_engine,
         &caller_id,
+        tenant_id,
         "envelope_decrypt",
         &kek_id.to_string(),
     )
@@ -2589,11 +2690,6 @@ async fn envelope_decrypt(
     // Use KEK version from request for version-aware decryption.
     // This allows decrypting data encrypted with an older KEK version after rotation.
     let kek_version = req.kek_version;
-    let tenant_id_owned = resolve_tenant(
-        bound.as_deref(),
-        req.tenant_id.as_deref().unwrap_or("default"),
-    );
-    let tenant_id: &str = &tenant_id_owned;
 
     // Decode request fields
     let wrapped_dek = STANDARD
@@ -2654,10 +2750,19 @@ async fn envelope_rewrap(
         .map_err(|_| ApiError::InvalidRequest("invalid kek_id format".to_string()))?;
 
     // PBAC evaluation — mirror the gRPC handler (audit follow-up B7-g).
+    // The effective tenant is resolved before the policy decision: a
+    // tenant-scoped policy is matched against it (audit follow-up B9-b).
+    let tenant_id_owned = resolve_tenant(
+        bound.as_deref(),
+        req.tenant_id.as_deref().unwrap_or("default"),
+    );
+    let tenant_id: &str = &tenant_id_owned;
+
     use crate::auth::check_rest_pbac;
     check_rest_pbac(
         &state.policy_engine,
         &caller_id,
+        tenant_id,
         "envelope_rewrap",
         &kek_id.to_string(),
     )
@@ -2670,12 +2775,6 @@ async fn envelope_rewrap(
     let dek_nonce = STANDARD
         .decode(&req.dek_nonce)
         .map_err(|_| ApiError::InvalidRequest("invalid base64 dek_nonce".to_string()))?;
-
-    let tenant_id_owned = resolve_tenant(
-        bound.as_deref(),
-        req.tenant_id.as_deref().unwrap_or("default"),
-    );
-    let tenant_id: &str = &tenant_id_owned;
 
     let envelope_svc = crate::service::EnvelopeService::new(&state);
     let result = envelope_svc
@@ -2716,10 +2815,19 @@ async fn dh_derive(
 
     // PBAC evaluation (audit B7-b): mirror the gRPC handler, which already
     // checks the "dh_derive" action.
+    // The effective tenant is resolved before the policy decision: a
+    // tenant-scoped policy is matched against it (audit follow-up B9-b).
+    let tenant_id_owned = resolve_tenant(
+        bound.as_deref(),
+        req.tenant_id.as_deref().unwrap_or("default"),
+    );
+    let tenant_id: &str = &tenant_id_owned;
+
     use crate::auth::check_rest_pbac;
     check_rest_pbac(
         &state.policy_engine,
         &caller_id,
+        tenant_id,
         "dh_derive",
         &key_id.to_string(),
     )
@@ -2731,11 +2839,6 @@ async fn dh_derive(
     // tenant. The keystore enforces this too; the check here turns a
     // cross-tenant attempt into the same sanitized "not found" answer the
     // other key operations give.
-    let tenant_id_owned = resolve_tenant(
-        bound.as_deref(),
-        req.tenant_id.as_deref().unwrap_or("default"),
-    );
-    let tenant_id: &str = &tenant_id_owned;
     let meta = state
         .keystore
         .get_key_metadata(&key_id)
@@ -2808,10 +2911,22 @@ async fn import_key(
 ) -> Result<(StatusCode, Json<ImportKeyResponse>)> {
     use base64::{Engine, engine::general_purpose::STANDARD};
 
+    // The effective tenant is resolved before the policy decision: a
+    // tenant-scoped policy is matched against it (audit follow-up B9-b).
+    // Tenant is derived from the authenticated identity when the key is bound
+    // (audit P1-3); otherwise the caller-self-reported tenant is honoured.
+    let tenant = resolve_tenant(bound.as_deref(), &req.tenant_id);
+
     use crate::auth::check_rest_pbac;
-    check_rest_pbac(&state.policy_engine, &caller_id, "import_key", &req.name)
-        .await
-        .map_err(|_| ApiError::PermissionDenied)?;
+    check_rest_pbac(
+        &state.policy_engine,
+        &caller_id,
+        &tenant,
+        "import_key",
+        &req.name,
+    )
+    .await
+    .map_err(|_| ApiError::PermissionDenied)?;
 
     // Parse key spec using KeyService
     let spec = KeyService::parse_spec(&req.spec)?;
@@ -2828,9 +2943,6 @@ async fn import_key(
         })?;
 
     let key_svc = state.key_service();
-    // Tenant is derived from the authenticated identity when the key is bound
-    // (audit P1-3); otherwise the caller-self-reported tenant is honoured.
-    let tenant = resolve_tenant(bound.as_deref(), &req.tenant_id);
     let meta = key_svc
         .import_key(
             spec,
@@ -2876,10 +2988,20 @@ async fn export_key(
     use base64::{Engine, engine::general_purpose::STANDARD};
 
     // PBAC evaluation
+    // The effective tenant is resolved before the policy decision: a
+    // tenant-scoped policy is matched against it (audit follow-up B9-b).
+    // Tenant is derived from the authenticated identity when the key is bound
+    // (audit P1-3); otherwise the caller-supplied tenant is honoured. The service
+    // layer enforces `meta.tenant_id == tenant_id` (cross-tenant/missing => 404),
+    // so a bound key can no longer export another tenant's material by spoofing
+    // `tenant_id` (replaces the previous reliance on the self-reported request value).
+    let tenant_id = resolve_tenant(bound.as_deref(), &tenant_query.tenant_id);
+
     use crate::auth::check_rest_pbac;
     check_rest_pbac(
         &state.policy_engine,
         &caller_id,
+        &tenant_id,
         "export_key",
         &key_id.to_string(),
     )
@@ -2901,12 +3023,6 @@ async fn export_key(
         .map_err(|_| ApiError::InvalidRequest("invalid base64 target_public_key".to_string()))?;
 
     let key_svc = state.key_service();
-    // Tenant is derived from the authenticated identity when the key is bound
-    // (audit P1-3); otherwise the caller-supplied tenant is honoured. The service
-    // layer enforces `meta.tenant_id == tenant_id` (cross-tenant/missing => 404),
-    // so a bound key can no longer export another tenant's material by spoofing
-    // `tenant_id` (replaces the previous reliance on the self-reported request value).
-    let tenant_id = resolve_tenant(bound.as_deref(), &tenant_query.tenant_id);
     // Resolve the transport-key protection scheme (audit P2-6). Omitted/"rsa-oaep"
     // keeps the historical RSA path; "sm2" switches to SM4-GCM wrap + SM2.
     let protection = crate::service::ExportProtection::parse(req.protection_scheme.as_deref())?;
@@ -2966,6 +3082,9 @@ async fn create_policy(
         condition: req.condition,
         resources: req.resources,
         subjects: req.subjects,
+        // An empty tenant means "not tenant-scoped": the policy then applies
+        // to every tenant, exactly like before the tenant dimension existed.
+        tenant: req.tenant.filter(|t| !t.trim().is_empty()),
         enabled: req.enabled,
     };
 
@@ -2992,6 +3111,7 @@ async fn create_policy(
             condition: policy.condition,
             resources: policy.resources,
             subjects: policy.subjects,
+            tenant: policy.tenant,
             enabled: policy.enabled,
         }),
     ))
@@ -3015,6 +3135,7 @@ async fn get_policy(
         condition: policy.condition,
         resources: policy.resources,
         subjects: policy.subjects,
+        tenant: policy.tenant,
         enabled: policy.enabled,
     }))
 }
@@ -3035,6 +3156,7 @@ async fn list_policies(State(state): State<Arc<KmsState>>) -> Result<Json<Vec<Po
             condition: p.condition,
             resources: p.resources,
             subjects: p.subjects,
+            tenant: p.tenant,
             enabled: p.enabled,
         })
         .collect();
@@ -3084,12 +3206,14 @@ async fn query_audit_events(
     CallerId { key_id: caller_id }: CallerId,
     State(state): State<Arc<KmsState>>,
     Query(filter): Query<kms_audit::AuditFilter>,
+    BoundTenant(bound): BoundTenant,
 ) -> Result<Json<Vec<kms_audit::AuditEvent>>> {
     // PBAC evaluation
     use crate::auth::check_rest_pbac;
     check_rest_pbac(
         &state.policy_engine,
         &caller_id,
+        bound.as_deref().unwrap_or(""),
         "query_audit_events",
         "audit",
     )
@@ -3107,12 +3231,19 @@ use gm_sm9_rs::{Decryptor, Encryptor, Signer, Verifier};
 async fn sm9_sign(
     CallerId { key_id: caller_id }: CallerId,
     State(state): State<Arc<KmsState>>,
+    BoundTenant(bound): BoundTenant,
     Json(req): Json<Sm9SignRequest>,
 ) -> Result<Json<Sm9SignResponse>> {
     use crate::auth::check_rest_pbac;
-    check_rest_pbac(&state.policy_engine, &caller_id, "sm9_sign", &req.identity)
-        .await
-        .map_err(|_| ApiError::PermissionDenied)?;
+    check_rest_pbac(
+        &state.policy_engine,
+        &caller_id,
+        bound.as_deref().unwrap_or(""),
+        "sm9_sign",
+        &req.identity,
+    )
+    .await
+    .map_err(|_| ApiError::PermissionDenied)?;
 
     use base64::{Engine, engine::general_purpose::STANDARD};
 
@@ -3156,12 +3287,14 @@ async fn sm9_sign(
 async fn sm9_verify(
     CallerId { key_id: caller_id }: CallerId,
     State(state): State<Arc<KmsState>>,
+    BoundTenant(bound): BoundTenant,
     Json(req): Json<Sm9VerifyRequest>,
 ) -> Result<Json<Sm9VerifyResponse>> {
     use crate::auth::check_rest_pbac;
     check_rest_pbac(
         &state.policy_engine,
         &caller_id,
+        bound.as_deref().unwrap_or(""),
         "sm9_verify",
         &req.identity,
     )
@@ -3210,12 +3343,14 @@ async fn sm9_verify(
 async fn sm9_encrypt(
     CallerId { key_id: caller_id }: CallerId,
     State(state): State<Arc<KmsState>>,
+    BoundTenant(bound): BoundTenant,
     Json(req): Json<Sm9EncryptRequest>,
 ) -> Result<Json<Sm9EncryptResponse>> {
     use crate::auth::check_rest_pbac;
     check_rest_pbac(
         &state.policy_engine,
         &caller_id,
+        bound.as_deref().unwrap_or(""),
         "sm9_encrypt",
         &req.identity,
     )
@@ -3261,12 +3396,14 @@ async fn sm9_encrypt(
 async fn sm9_decrypt(
     CallerId { key_id: caller_id }: CallerId,
     State(state): State<Arc<KmsState>>,
+    BoundTenant(bound): BoundTenant,
     Json(req): Json<Sm9DecryptRequest>,
 ) -> Result<Json<Sm9DecryptResponse>> {
     use crate::auth::check_rest_pbac;
     check_rest_pbac(
         &state.policy_engine,
         &caller_id,
+        bound.as_deref().unwrap_or(""),
         "sm9_decrypt",
         &req.identity,
     )

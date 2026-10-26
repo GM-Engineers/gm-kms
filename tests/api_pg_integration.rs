@@ -122,6 +122,7 @@ async fn spawn_pg_rest_server() -> (
             condition: json!({ "operator": "always" }),
             resources: vec!["*".to_string()],
             subjects: vec!["*".to_string()],
+            tenant: None,
             enabled: true,
         })
         .await

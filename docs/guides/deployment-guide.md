@@ -435,6 +435,44 @@ curl -X DELETE http://127.0.0.1:8080/v1/policies/$POLICY_ID \
   -H "x-api-key: $KMS_API_KEY_SECURITY_OFFICER"
 ```
 
+### Scoping a policy to one tenant
+
+A policy may carry an optional `tenant` field. Omit it (or send an empty string) and the
+policy applies to **every** tenant — exactly how a policy behaved before the tenant dimension
+existed, so existing policies keep working unchanged. Set it and the policy applies to that
+tenant only:
+
+```bash
+# tenant-a may not export; tenant-b is unaffected.
+curl -X POST http://127.0.0.1:8080/v1/policies \
+  -H "x-api-key: $KMS_API_KEY_SECURITY_OFFICER" \
+  -H 'content-type: application/json' \
+  -d '{
+        "name": "tenant-a-may-not-export",
+        "effect": "deny",
+        "condition": {"operator": "eq", "attribute": "action", "value": "export_key"},
+        "resources": ["*"],
+        "subjects": ["*"],
+        "tenant": "tenant-a"
+      }'
+```
+
+`tenant` accepts a glob pattern, so `"tenant-*"` covers a family of tenants.
+
+The tenant a policy is matched against is the **effective** tenant of the request: the tenant the
+API key is bound to when it is bound to one (the bound tenant wins and the self-reported value is
+ignored), otherwise the tenant the request carries. A request that carries no tenant at all matches
+**no** tenant-scoped policy — a caller that does not know which tenant it is in must not reach a
+tenant-scoped rule.
+
+> Because both protocol channels resolve the effective tenant before the decision and hand the
+> same string to the shared evaluation entry point, switching between REST and gRPC cannot change
+> the outcome. A tenant-scoped deny refuses on both channels.
+
+> The `tenant` column is added to the `policies` table automatically. Rows written before this
+> column existed load as policies that are **not** tenant-scoped, so an upgrade never silently
+> widens or narrows an already-installed policy.
+
 The policy management endpoints require the `security-officer` role (`MANAGE_POLICY`). Installing
 and removing a policy are both recorded in the audit trail as a `policy_changed` event.
 

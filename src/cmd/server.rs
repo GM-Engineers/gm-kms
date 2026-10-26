@@ -2397,6 +2397,7 @@ mod tests {
             condition: serde_json::json!({"operator": "always", "args": true}),
             resources: vec!["*".to_string()],
             subjects: vec!["*".to_string()],
+            tenant: None,
             enabled: true,
         };
         repository.save(&policy).await.expect("save");
