@@ -2,7 +2,7 @@
 
 All notable changes to gm-kms will be documented in this file.
 
-## [0.3.0] — Unreleased
+## [0.3.0] — 2026-10-26
 
 本版本以**安全修复**与**两通道语义收敛**为主：闭合 22 项已复核的安全与一致性问题，
 补齐 PBAC 策略的持久化、租户维度与撤销路径，新增 Rust SDK，
