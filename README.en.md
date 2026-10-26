@@ -150,7 +150,6 @@ gm-kms/
 | gRPC over TLCP not implemented | gRPC uses TLS 1.3 + SM, not TLCP protocol | TLCP REST available; gRPC planned for future version |
 | TLCP cert chain verification not integrated | TLCP handshake does not verify peer CA chain | Only trust peer bytes; waiting for upstream gm-tlcp `TlcpCertPair` to wire `cert_verify` |
 | SM9 master key in memory by default | Process crash or memory dump could leak | Production should use HSM/TPM (kms-hsm currently a stub) |
-| PBAC policies are not persisted | Policies live in memory only, are never loaded at startup, and every attribute-based restriction disappears on restart | The server logs a `warn` at startup; re-install the policies after each restart, or have the orchestrator install them at startup |
 | No bug bounty | No incentive for vulnerability disclosure | GitHub Security Advisory reporting still available |
 | No commercial support / SLA | No upstream response-time commitment | See "Suitable / Not-suitable scenarios" above |
 
@@ -160,7 +159,7 @@ gm-kms/
 |-------|-----------|--------|
 | kms-core | 340 | passed |
 | kms-api | 294 (+ 5 ignored) | passed |
-| kms-policy | 31 | passed |
+| kms-policy | 40 | passed |
 | kms-audit | 101 | passed |
 | kms-hsm | 52 | passed |
 | kms-mfa | 46 | passed |
@@ -170,12 +169,13 @@ gm-kms/
 | kms binary (unit tests, incl. tlcp_listener / config) | 66 | passed |
 | interface integration (api_integration) | 48 | passed |
 | api_pg_integration (PostgreSQL backend) | 0 (+ 7 ignored) | passed |
+| api_policy_pg_integration (PostgreSQL policy persistence) | 0 (+ 6 ignored) | passed |
 | startup_failclosed (fail-closed startup) | 2 | passed |
 | integration_tests / kat_vectors | 81 | passed |
 | Rust SDK (sdk/rust: contract 26 + e2e 5 + unit 5 + doctest 3) | 39 | passed |
-| **Total** | **1249 passed** (plus 45 ignored) | |
+| **Total** | **1259 passed** (plus 53 ignored) | |
 
-> Ignored breakdown: kms-api 5 + kms-keystore 25 + api_pg_integration 7 + doctests 8.
+> Ignored breakdown: kms-api 5 + kms-keystore 25 + api_pg_integration 7 + api_policy_pg_integration 6 + doctests 8.
 > The PostgreSQL / Redis backed cases need a real PostgreSQL and Redis; run them separately with `cargo test --workspace -- --ignored`.
 
 ## Third-party components

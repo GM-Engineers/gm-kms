@@ -390,18 +390,26 @@ access.
 
 Two states matter:
 
-- **No policy configured** — the server starts with an empty policy engine and loads no policy
-  at startup, so attribute-based control is *inactive* and the role check is the only gate. This
-  is the out-of-the-box state. The server logs a `warn` on every startup saying so.
+- **No policy configured** — the policy store is empty, so attribute-based control is *inactive*
+  and the role check is the only gate. This is the out-of-the-box state. The server logs a `warn`
+  on every startup saying so.
 - **At least one enabled policy configured** — the engine denies every request that no policy
   covers, so an allow-list policy means exactly that: only what the policies cover is permitted.
 
 A `Deny` policy always wins over an `Allow` policy for the same request.
 
-> **Policies are held in memory only.** They are not written to disk and are not loaded at
-> startup, so a policy disappears when the process restarts — and with it, every attribute-based
-> restriction. Re-install the policies after each restart, or provision them as part of the
-> deployment. The startup `warn` line is the reminder.
+> **Policies are persisted in PostgreSQL.** They are written to a `policies` table when installed
+> and loaded back at startup, so a policy survives a restart along with the attribute-based
+> restrictions it carries. The table is created automatically on the first start.
+>
+> The server **refuses to start** if the policy store cannot be read. An unreadable store and an
+> empty store look the same from the API's point of view, and treating the first as the second
+> would silently drop every attribute-based restriction while the deployment believes they are
+> in force. If the startup fails with a policy-store error, fix the database — the KMS will not
+> come up degraded on this path.
+>
+> Without a PostgreSQL connection there is no store to read, and the engine stays in memory only.
+> That is the degraded development mode, and the startup log says so.
 >
 > A **disabled** policy (`"enabled": false`) does not count: it matches nothing, so it does not
 > switch the engine into the default-deny mode either. Only enabled policies count.
@@ -420,7 +428,15 @@ curl -X POST http://127.0.0.1:8080/v1/policies \
       }'
 ```
 
-The policy management endpoints require the `security-officer` role (`MANAGE_POLICY`).
+```bash
+# Withdraw a policy again. A persisted policy that turns out to be wrong
+# would otherwise outlive every restart.
+curl -X DELETE http://127.0.0.1:8080/v1/policies/$POLICY_ID \
+  -H "x-api-key: $KMS_API_KEY_SECURITY_OFFICER"
+```
+
+The policy management endpoints require the `security-officer` role (`MANAGE_POLICY`). Installing
+and removing a policy are both recorded in the audit trail as a `policy_changed` event.
 
 Both protocol channels evaluate the same policies with the same action names, so switching
 between REST and gRPC cannot change the decision. The action names are:

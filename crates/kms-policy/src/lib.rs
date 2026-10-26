@@ -35,10 +35,12 @@
 //! `and`, `or`, `time_range`, `not_expired`, `matches`, etc.
 
 pub mod engine;
+pub mod store;
 
 pub use engine::{PBACEngine, TimeSkewAlert, TimeSkewStatus, TimeValidator};
 use kms_core::PolicyEffect;
 use serde::{Deserialize, Serialize};
+pub use store::{PolicyRepository, PolicyStoreError, PostgresPolicyRepository};
 use uuid::Uuid;
 
 /// Policy for storage / REST API layer.

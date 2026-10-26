@@ -1586,7 +1586,7 @@ mod tests {
     async fn test_evaluate_pbac_policy_removal_restores_inactive_state() {
         let engine = kms_policy::PBACEngine::new();
         let policy = unrelated_policy(kms_core::PolicyEffect::Allow, "unrelated");
-        let policy_id = policy.id.to_string();
+        let policy_id = policy.id;
         engine.add_policy(policy).await.expect("add policy");
         assert_eq!(engine.enabled_policy_count().await, 1);
 

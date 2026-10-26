@@ -29,6 +29,12 @@ All notable changes to gm-kms will be documented in this file.
 - **B7-f — 熵源失败不再 panic**：OS CSPRNG 助手改为返回错误，熵源故障不会在请求路径上变成拒绝服务。
 - **P3-2 — DRBG 与随机源**：DRBG 增实例化 KAT 自检与周期重播种；密钥材料与 nonce 统一走 OS CSPRNG，DRBG 仅限非密钥场景。
 - **P4-2 — 密钥销毁证明改用 HMAC-SM3**（原 HMAC-SHA256）。
+- **B9-a — PBAC 策略持久化，消除静默的属性级控制降级**：策略此前只存在引擎内存里，既不落库也不在启动时加载，运维装好策略后一重启（扩缩容 / 故障恢复 / 升级）属性级限制就全部消失，引擎回落到“只看 API Key 权限位”一道闸门，且**没有任何拒绝信号**。现在策略写穿到 PostgreSQL 的 `policies` 表（`kms-policy` 新增 `PolicyRepository` trait 与 `PostgresPolicyRepository`），启动时加载回引擎。
+  - **fail-closed 启动**：策略表读不到时**拒绝启动**，不把“读不到”当成“没有策略”。两者在 API 层无法区分，当成后者就是静默降级；没有 PostgreSQL（开发 / 降级模式）时保持纯内存并在启动日志说明。
+  - **写穿方向同理**：落库失败就不进内存（`POST /v1/policies` 答 500），不出现“内存里有、库里没有”的策略——那种策略看起来已安装，直到下次重启静默消失。
+  - **新增 `DELETE /v1/policies/{id}`**：此前策略装上后**没有任何方式撤销**（内存里也一样）；持久化后一条装错的策略会永久生效。未知 id 答 404。
+  - 装/删策略均记审计事件 `policy_changed`（该事件构造函数此前从未被调用）。`effect` 列存 serde 形式（`ALLOW`/`DENY`）而非 `Debug` 形式（`Allow`/`Deny`），后者无法往返。
+  - 护栏：`crates/kms-policy` 单测 9 例（写穿方向、落库失败时内存不变、读不到的存储报错而非空集、加载后仍参与求值、`effect` 往返）；`tests/api_policy_pg_integration.rs` 真实 PostgreSQL 6 例（落库、逐字段往返、**重启后仍在且仍生效**、删除后不复活、建表幂等）。
 
 #### Fixed
 
@@ -61,7 +67,7 @@ All notable changes to gm-kms will be documented in this file.
 - **B7-g — `tenant-admin` 角色**：映射到 `Role::Admin`，使 `tenant_admin` 操作可被审批。该角色只持 approve 权限，三名审批人的职责分离不受影响。
 - **B7-g — 审批请求的读取/列举限定为拥有它的租户**；拒绝路径的引擎错误不再一律压成 "not found"，自拒为 403。
 - **B7-g — Go SDK 不再发送服务端已忽略的身份字段**（`approver_id` / `approver_role` / `rejector_id` / `rejector_role` / `requestor_id`），这些字段改由服务端从 API key 推导。
-- **B7-g — PBAC 策略持久化（未实现，已登记为已知限制）**：策略仅存内存、不落盘、不在启动时加载，重启后属性限制全部消失。启动时打印 `warn` 说明该控制当前不生效且策略不跨重启存活，部署指南同步记录。
+- **B7-g — PBAC 策略持久化（已由 B9-a 实现）**：此前仅存内存、不落盘、不在启动时加载，重启后属性限制全部消失。**B9-a 已实现持久化 + fail-closed 启动**，原先登记为已知限制的条目从两份 README 的已知限制表中移除。
 - **B8-a — `create_software_keystore` / `create_software_keystore_inner`** 走共享校验器。
 
 #### Documentation
@@ -69,6 +75,9 @@ All notable changes to gm-kms will be documented in this file.
 - **P4-3 — `docs/api-semantics.md` REST/gRPC 语义对照表**：含租户缺省、错误映射、导出语义与版本行为，并以测试固化。
 - **B7-a / B7-b / B7-c / B7-d / B7-e / B7-g** 的语义同步写入该表；其中"两通道此处行为一致"的旧说法有误，已更正。
 - **`docs/api-semantics.md` §8.5** 增补审批门的 400-vs-403 区分表（B8-d）。
+- **`docs/api-semantics.md` §9.2** 新增“PBAC 策略持久化与 fail-closed 启动”（B9-a）：写穿方向、启动时的建表 / 加载 / 拒绝启动三种结果，以及为什么“读不到”不能当成“没有策略”。
+- **部署指南** 的 PBAC 章节改写：策略改为持久化并跨重启生效，新增 `DELETE /v1/policies/{id}` 用法，并写明策略表读不到时服务拒绝启动。
+- **README / `README.en.md`**：PBAC 策略不持久化的已知限制条目**移除**（B9-a 已修复），测试统计刷新。
 - **README / `README.en.md`** 的仓库定位与 HSM/TPM 表述随 P3-3 更新。
 
 ### Added

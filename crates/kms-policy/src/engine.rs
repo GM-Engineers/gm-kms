@@ -1,5 +1,6 @@
 //! PBAC Policy Engine implementation
 
+use super::store::{PolicyRepository, PolicyStoreError};
 use super::{AccessContext, Decision, Policy};
 use kms_core::{PolicyEffect, Result};
 use serde_json::Value;
@@ -7,6 +8,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
+use uuid::Uuid;
 
 use kms_core::policy::PolicyContext;
 
@@ -88,6 +90,13 @@ pub struct PBACEngine {
     policies: RwLock<HashMap<String, Policy>>,
     time_validator: Arc<dyn TimeValidator>,
     time_skew_alerts: RwLock<Vec<TimeSkewAlert>>,
+    /// Durable store for the policy set, when one is configured.
+    ///
+    /// The engine evaluates out of memory, so this is the half that makes an
+    /// installed policy survive a restart (audit follow-up B9-a). It is
+    /// optional: an engine without one behaves exactly as before, which is
+    /// what the in-memory development mode relies on.
+    repository: Option<Arc<dyn PolicyRepository>>,
 }
 
 /// Time skew alert record
@@ -110,21 +119,91 @@ impl PBACEngine {
             policies: RwLock::new(HashMap::new()),
             time_validator: Arc::new(validator),
             time_skew_alerts: RwLock::new(Vec::new()),
+            repository: None,
         }
     }
 
+    /// Attach a durable store to the engine.
+    ///
+    /// From this point on every policy change is written through to the
+    /// store: a policy that the API accepted is a policy that is persisted,
+    /// and a policy that was persisted is loaded back on the next start.
+    pub fn with_repository(mut self, repository: Arc<dyn PolicyRepository>) -> Self {
+        self.repository = Some(repository);
+        self
+    }
+
+    /// Whether a durable store is attached.
+    pub fn has_repository(&self) -> bool {
+        self.repository.is_some()
+    }
+
     /// Add a policy
+    ///
+    /// When a durable store is attached the policy is written to it **first**
+    /// and the in-memory map is only updated once the write succeeded. The
+    /// durable state is the source of truth: a policy that the store rejected
+    /// must not linger in memory, because it would look installed until the
+    /// next restart, when it would silently vanish.
     pub async fn add_policy(&self, policy: Policy) -> Result<()> {
+        if let Some(repo) = &self.repository {
+            repo.save(&policy)
+                .await
+                .map_err(|e| kms_core::Error::Internal(format!("persist policy: {e}")))?;
+        }
+
         let mut policies = self.policies.write().await;
         policies.insert(policy.id.to_string(), policy);
         Ok(())
     }
 
     /// Remove a policy
-    pub async fn remove_policy(&self, id: &str) -> Result<()> {
+    ///
+    /// Removing a policy that is not installed is not an error, so the
+    /// durable store is asked to delete the row as well: the two sides must
+    /// not drift apart.
+    pub async fn remove_policy(&self, id: &Uuid) -> Result<()> {
+        if let Some(repo) = &self.repository {
+            repo.delete(id)
+                .await
+                .map_err(|e| kms_core::Error::Internal(format!("delete policy: {e}")))?;
+        }
+
         let mut policies = self.policies.write().await;
-        policies.remove(id);
+        policies.remove(&id.to_string());
         Ok(())
+    }
+
+    /// Replace the whole policy set in one shot.
+    ///
+    /// Used by the startup load and by a reload: the engine never observes a
+    /// half-applied policy set.
+    pub async fn replace_all(&self, policies: Vec<Policy>) {
+        let mut guard = self.policies.write().await;
+        *guard = policies
+            .into_iter()
+            .map(|policy| (policy.id.to_string(), policy))
+            .collect();
+    }
+
+    /// Load every stored policy into the engine.
+    ///
+    /// Returns the number of policies loaded. A store that cannot be read is
+    /// an error, never an empty result: the caller cannot tell an empty
+    /// store from an unreadable one, and reporting the second as the first
+    /// would silently disable attribute-based control.
+    pub async fn load_from_repository(&self) -> Result<usize> {
+        let repo = self.repository.as_ref().ok_or_else(|| {
+            kms_core::Error::Internal("no policy repository is configured".to_string())
+        })?;
+
+        let policies = repo.load_all().await.map_err(|e: PolicyStoreError| {
+            kms_core::Error::Internal(format!("load policies: {e}"))
+        })?;
+
+        let count = policies.len();
+        self.replace_all(policies).await;
+        Ok(count)
     }
 
     /// Get a policy by ID
@@ -550,7 +629,7 @@ mod tests {
             subjects: vec!["*".to_string()],
             enabled: true,
         };
-        let policy_id = policy.id.to_string();
+        let policy_id = policy.id;
 
         engine.add_policy(policy).await.unwrap();
         assert_eq!(engine.enabled_policy_count().await, 1);
@@ -943,7 +1022,7 @@ mod tests {
         assert_eq!(got.unwrap().name, "p1");
 
         // Remove
-        engine.remove_policy(&policy1.id.to_string()).await.unwrap();
+        engine.remove_policy(&policy1.id).await.unwrap();
         let list = engine.list_policies().await.unwrap();
         assert_eq!(list.len(), 1);
     }
@@ -1041,7 +1120,7 @@ mod tests {
     async fn test_remove_nonexistent_policy() {
         let engine = PBACEngine::new();
         // Should succeed even if policy doesn't exist
-        engine.remove_policy("nonexistent").await.unwrap();
+        engine.remove_policy(&Uuid::new_v4()).await.unwrap();
     }
 
     /// Test get_policy on empty engine
@@ -1144,5 +1223,182 @@ mod tests {
 
         let alerts = engine.get_time_skew_alerts().await.unwrap();
         assert_eq!(alerts.len(), 3);
+    }
+
+    // ── Durable store tests (audit follow-up B9-a) ──
+
+    /// An in-memory stand-in for a real policy store.
+    ///
+    /// It records the calls the engine makes and can be told to fail, so the
+    /// write-through behaviour can be observed without a database.
+    #[derive(Default)]
+    struct FakeRepository {
+        stored: std::sync::Mutex<Vec<Policy>>,
+        saved: std::sync::Mutex<Vec<Uuid>>,
+        deleted: std::sync::Mutex<Vec<Uuid>>,
+        fail_save: bool,
+        fail_load: bool,
+    }
+
+    impl FakeRepository {
+        fn new() -> Self {
+            Self::default()
+        }
+
+        fn failing_save() -> Self {
+            Self {
+                fail_save: true,
+                ..Self::default()
+            }
+        }
+
+        fn failing_load() -> Self {
+            Self {
+                fail_load: true,
+                ..Self::default()
+            }
+        }
+
+        fn stored_policies(&self) -> Vec<Policy> {
+            self.stored.lock().expect("lock").clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl PolicyRepository for FakeRepository {
+        async fn migrate(&self) -> std::result::Result<(), PolicyStoreError> {
+            Ok(())
+        }
+
+        async fn load_all(&self) -> std::result::Result<Vec<Policy>, PolicyStoreError> {
+            if self.fail_load {
+                return Err(PolicyStoreError::Unavailable("store is down".to_string()));
+            }
+            Ok(self.stored_policies())
+        }
+
+        async fn save(&self, policy: &Policy) -> std::result::Result<(), PolicyStoreError> {
+            if self.fail_save {
+                return Err(PolicyStoreError::Unavailable("store is down".to_string()));
+            }
+            self.saved.lock().expect("lock").push(policy.id);
+            let mut stored = self.stored.lock().expect("lock");
+            stored.retain(|p| p.id != policy.id);
+            stored.push(policy.clone());
+            Ok(())
+        }
+
+        async fn delete(&self, id: &Uuid) -> std::result::Result<bool, PolicyStoreError> {
+            self.deleted.lock().expect("lock").push(*id);
+            let mut stored = self.stored.lock().expect("lock");
+            let before = stored.len();
+            stored.retain(|p| p.id != *id);
+            Ok(stored.len() != before)
+        }
+    }
+
+    fn sample_policy(effect: PolicyEffect) -> Policy {
+        Policy {
+            id: Uuid::new_v4(),
+            name: "persisted".to_string(),
+            effect,
+            condition: serde_json::json!({"operator": "always", "args": true}),
+            resources: vec!["*".to_string()],
+            subjects: vec!["*".to_string()],
+            enabled: true,
+        }
+    }
+
+    /// A policy that the API accepted must be in the store, not only in
+    /// memory — otherwise it disappears on the next restart.
+    #[tokio::test]
+    async fn test_add_policy_is_written_through_to_the_store() {
+        let repo = Arc::new(FakeRepository::new());
+        let engine = PBACEngine::new().with_repository(repo.clone());
+        let policy = sample_policy(PolicyEffect::Allow);
+
+        engine.add_policy(policy.clone()).await.unwrap();
+
+        assert_eq!(repo.saved.lock().expect("lock").as_slice(), &[policy.id]);
+        assert_eq!(repo.stored_policies().len(), 1);
+    }
+
+    /// A store that rejects the write must leave the engine untouched: a
+    /// policy that only lives in memory looks installed until the next
+    /// restart, when it silently vanishes.
+    #[tokio::test]
+    async fn test_add_policy_leaves_the_engine_untouched_when_the_store_fails() {
+        let repo = Arc::new(FakeRepository::failing_save());
+        let engine = PBACEngine::new().with_repository(repo);
+
+        let result = engine.add_policy(sample_policy(PolicyEffect::Allow)).await;
+
+        assert!(result.is_err(), "the failure must be reported");
+        assert_eq!(engine.list_policies().await.unwrap().len(), 0);
+    }
+
+    /// Removing a policy must remove it from the store as well, so the two
+    /// sides cannot drift apart.
+    #[tokio::test]
+    async fn test_remove_policy_is_written_through_to_the_store() {
+        let repo = Arc::new(FakeRepository::new());
+        let engine = PBACEngine::new().with_repository(repo.clone());
+        let policy = sample_policy(PolicyEffect::Allow);
+        engine.add_policy(policy.clone()).await.unwrap();
+
+        engine.remove_policy(&policy.id).await.unwrap();
+
+        assert_eq!(repo.deleted.lock().expect("lock").as_slice(), &[policy.id]);
+        assert!(repo.stored_policies().is_empty());
+        assert!(engine.list_policies().await.unwrap().is_empty());
+    }
+
+    /// A store that cannot be read must be an error, never an empty policy
+    /// set: the caller cannot tell the two apart, and mistaking the second
+    /// for the first disables attribute-based control without a word.
+    #[tokio::test]
+    async fn test_load_from_repository_reports_a_failing_store_as_an_error() {
+        let repo = Arc::new(FakeRepository::failing_load());
+        let engine = PBACEngine::new().with_repository(repo);
+
+        let result = engine.load_from_repository().await;
+
+        assert!(result.is_err(), "an unreadable store must not look empty");
+    }
+
+    /// Loading restores the persisted policy set, and the restored policy
+    /// still decides requests — that is the whole point of persisting it.
+    #[tokio::test]
+    async fn test_loaded_policies_still_decide_requests() {
+        let repo = Arc::new(FakeRepository::new());
+        let writer = PBACEngine::new().with_repository(repo.clone());
+        writer
+            .add_policy(sample_policy(PolicyEffect::Deny))
+            .await
+            .unwrap();
+
+        // A fresh engine over the same store stands in for a restart.
+        let restarted = PBACEngine::new().with_repository(repo);
+        let count = restarted.load_from_repository().await.unwrap();
+        assert_eq!(count, 1);
+
+        let ctx = AccessContext::new("user1", "encrypt", "key:123");
+        assert_eq!(restarted.evaluate(&ctx).await.unwrap(), Decision::Deny);
+    }
+
+    /// An engine without a store keeps the previous in-memory behaviour.
+    #[tokio::test]
+    async fn test_engine_without_a_store_still_works() {
+        let engine = PBACEngine::new();
+        assert!(!engine.has_repository());
+
+        engine
+            .add_policy(sample_policy(PolicyEffect::Allow))
+            .await
+            .unwrap();
+        assert_eq!(engine.enabled_policy_count().await, 1);
+
+        // Loading without a store is an error, not a silent empty set.
+        assert!(engine.load_from_repository().await.is_err());
     }
 }

@@ -151,7 +151,6 @@ gm-kms/
 | gRPC over TLCP 未实现 | gRPC 走 TLS 1.3 + SM，非 TLCP 协议 | TLCP REST 已可用；未来版本补 gRPC |
 | TLCP 证书链验证未集成 | TLCP 握手不验证对端 CA 链 | 仅信任对端字节；等 gm-tlcp 上游 `TlcpCertPair` 接 `cert_verify` |
 | SM9 主密钥默认存内存 | 进程崩溃或内存转储可泄漏 | 生产部署应使用 HSM/TPM（kms-hsm 当前是 stub） |
-| PBAC 策略不持久化 | 策略仅存内存、不落盘、不在启动时加载，重启后属性级限制全部消失 | 启动日志有 `warn` 提示；重启后需重新下发策略，或由编排层在启动时下发 |
 | 无 bug bounty | 漏洞披露无激励 | 仍可通过 GitHub Security Advisory 报告 |
 | 无商业支持 / SLA | 上游不承诺响应时间 | 适用场景见上表 |
 
@@ -161,7 +160,7 @@ gm-kms/
 |-------|--------|------|
 | kms-core | 340 | passed |
 | kms-api | 294 (+ 5 ignored) | passed |
-| kms-policy | 31 | passed |
+| kms-policy | 40 | passed |
 | kms-audit | 101 | passed |
 | kms-hsm | 52 | passed |
 | kms-mfa | 46 | passed |
@@ -171,12 +170,13 @@ gm-kms/
 | kms binary（单元测试，含 tlcp_listener / config） | 66 | passed |
 | interface integration（api_integration） | 48 | passed |
 | api_pg_integration（PostgreSQL 后端） | 0 (+ 7 ignored) | passed |
+| api_policy_pg_integration（PostgreSQL 策略持久化） | 0 (+ 6 ignored) | passed |
 | startup_failclosed（启动 fail-closed） | 2 | passed |
 | integration_tests / kat_vectors | 81 | passed |
 | Rust SDK（sdk/rust：contract 26 + e2e 5 + unit 5 + doctest 3） | 39 | passed |
-| **合计** | **1249 passed**（另 45 ignored） | |
+| **合计** | **1259 passed**（另 53 ignored） | |
 
-> ignored 分布：kms-api 5 + kms-keystore 25 + api_pg_integration 7 + doctest 8。
+> ignored 分布：kms-api 5 + kms-keystore 25 + api_pg_integration 7 + api_policy_pg_integration 6 + doctest 8。
 > PG/Redis 相关的 ignored 用例需真实 PostgreSQL 与 Redis，按 `cargo test --workspace -- --ignored` 单独执行。
 
 ## 第三方组件

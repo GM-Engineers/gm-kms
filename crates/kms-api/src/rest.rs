@@ -703,6 +703,7 @@ pub fn create_routes(state: Arc<KmsState>, api_key_config: ApiKeyConfig) -> Rout
         .route("/v1/policies", post(create_policy))
         .route("/v1/policies", get(list_policies))
         .route("/v1/policies/{id}", get(get_policy))
+        .route("/v1/policies/{id}", delete(delete_policy))
         .route_layer(auth_layer!(Permission::MANAGE_POLICY));
 
     // Audit routes: SecurityOfficer or AuditAdmin
@@ -2943,6 +2944,7 @@ async fn export_key(
 }
 
 async fn create_policy(
+    CallerId { key_id: caller_id }: CallerId,
     State(state): State<Arc<KmsState>>,
     Json(req): Json<CreatePolicyRequest>,
 ) -> Result<(StatusCode, Json<PolicyResponse>)> {
@@ -2975,6 +2977,11 @@ async fn create_policy(
 
     // Record PBAC policy creation metric
     state.metrics.record_policy_create();
+
+    // The policy is now durable, so the change belongs in the audit trail:
+    // an authorization policy that outlives the process must be traceable.
+    let event = kms_core::event::Event::policy_changed(&policy.id, &caller_id, "created");
+    state.audit_logger.log_event(&event).await;
 
     Ok((
         StatusCode::CREATED,
@@ -3033,6 +3040,44 @@ async fn list_policies(State(state): State<Arc<KmsState>>) -> Result<Json<Vec<Po
         .collect();
 
     Ok(Json(response))
+}
+
+/// Remove a policy.
+///
+/// Without this endpoint an installed policy could never be withdrawn: the
+/// API could create one and that was all, not even in memory. Now that
+/// policies are persisted, one that turns out to be wrong would outlive
+/// every restart, so the operator needs a way to take it back.
+async fn delete_policy(
+    CallerId { key_id: caller_id }: CallerId,
+    State(state): State<Arc<KmsState>>,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode> {
+    let id_str = id.to_string();
+
+    // Answer 404 for an unknown policy, so a typo is visible instead of
+    // looking like a successful removal.
+    let known = state
+        .policy_engine
+        .get_policy(&id_str)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    if known.is_none() {
+        return Err(ApiError::NotFound(format!("policy {id_str} not found")));
+    }
+
+    state
+        .policy_engine
+        .remove_policy(&id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    state.metrics.record_policy_delete();
+
+    let event = kms_core::event::Event::policy_changed(&id, &caller_id, "deleted");
+    state.audit_logger.log_event(&event).await;
+
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn query_audit_events(

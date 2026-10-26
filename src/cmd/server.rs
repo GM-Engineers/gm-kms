@@ -18,7 +18,7 @@ use kms_hsm::create_tpm_keystore;
 use kms_keystore::{
     KeystoreBackend, PostgresKeyRepository, PostgresKeystore, RedisCachedKeystore, SoftwareKeystore,
 };
-use kms_policy::PBACEngine;
+use kms_policy::{PBACEngine, PolicyRepository, PostgresPolicyRepository};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
@@ -306,6 +306,60 @@ async fn connect_with_deadline(
     }
 }
 
+/// Load the persisted PBAC policies into the engine (audit follow-up B9-a).
+///
+/// # Fail-closed
+///
+/// When PostgreSQL is available the policy store MUST be readable, otherwise
+/// the server refuses to start. An unreadable store cannot be told apart
+/// from an empty one, and treating it as empty is precisely the silent
+/// degradation this closes: the operator would believe attribute-based
+/// control is in force while the engine holds nothing, and every request
+/// would fall back to the API key's permission bits alone.
+///
+/// Without PostgreSQL there is no store to read, so the engine stays
+/// in-memory — that is the degraded development mode, and it says so.
+async fn load_persisted_policies(
+    engine: PBACEngine,
+    pool: &Option<kms_api::sqlx::PgPool>,
+) -> Result<PBACEngine, anyhow::Error> {
+    let Some(pool) = pool else {
+        tracing::warn!(
+            "PBAC is INACTIVE: no PostgreSQL connection is available, so policies are held \
+             in memory only. Attribute-based control does not restrict anything and \
+             installed policies do not survive a restart. The role-based check (the API \
+             key's permission bits) is the only gate."
+        );
+        return Ok(engine);
+    };
+
+    let repository = Arc::new(PostgresPolicyRepository::new(pool.clone()));
+    repository
+        .migrate()
+        .await
+        .map_err(|e| anyhow::anyhow!("PBAC policy store migration failed: {e}"))?;
+
+    let engine = engine.with_repository(repository);
+    let count = engine
+        .load_from_repository()
+        .await
+        .map_err(|e| anyhow::anyhow!("PBAC policy store load failed: {e}"))?;
+
+    if count == 0 {
+        tracing::warn!(
+            "PBAC is INACTIVE: the policy store is empty, so attribute-based control does \
+             not restrict anything. The role-based check (the API key's permission bits) is \
+             the only gate. Install a policy with POST /v1/policies to enable it."
+        );
+    } else {
+        tracing::info!(
+            "Loaded {count} PBAC policies from PostgreSQL — attribute-based control is ACTIVE"
+        );
+    }
+
+    Ok(engine)
+}
+
 /// Build a KmsState with optional rate limiter, quota tracker, and metrics.
 #[allow(clippy::too_many_arguments)]
 fn build_kms_state(
@@ -539,21 +593,9 @@ pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()
     );
 
     // Initialize components
-    let policy_engine = PBACEngine::new();
-
-    // The policy store lives in memory only: it is not persisted and no policy
-    // is loaded at startup. Attribute-based control is therefore *inactive*
-    // until an operator installs one, and any policy that was installed
-    // before a restart is gone (audit follow-up B7-h). Say so loudly at every
-    // startup — a silently inactive security control is worse than a noisy
-    // one.
-    tracing::warn!(
-        "PBAC is INACTIVE: no policy is configured and none is loaded at startup, so \
-         attribute-based control does not restrict anything. The role-based check \
-         (the API key's permission bits) is the only gate. Install a policy with \
-         POST /v1/policies to enable it — note that policies are held in memory and \
-         do not survive a restart."
-    );
+    //
+    // The PBAC engine is created after the database pool (see below) so the
+    // persisted policies can be loaded into it.
 
     // TSA counters — created here so they can be shared between TimestampedAuditLogger
     // background task and KmsMetrics (for /v1/metrics endpoint).
@@ -719,6 +761,12 @@ pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()
 
     // Create PostgreSQL connection pool for MFA + SM9 persistence
     let mfa_pool = maybe_create_mfa_pool(&config.database).await;
+
+    // Initialize the PBAC engine and load the persisted policies.
+    //
+    // This is the last chance to have attribute-based control in force for
+    // this process, so it happens before anything is served.
+    let policy_engine = load_persisted_policies(PBACEngine::new(), &mfa_pool).await?;
 
     // Initialize SM9 KGC master key with persistence support
 
@@ -2302,6 +2350,86 @@ mod tests {
         assert!(
             err.to_string().contains("reuses the secret"),
             "unexpected error: {err}"
+        );
+    }
+
+    // ── PBAC policy store startup (audit follow-up B9-a) ──
+
+    /// The connection string of the PostgreSQL under test.
+    fn database_url() -> String {
+        std::env::var("DATABASE_URL")
+            .unwrap_or_else(|_| "postgres://kms:kms123@localhost:5432/kms".to_string())
+    }
+
+    /// Without a database there is no store to read, so the engine stays in
+    /// memory — the degraded development mode.
+    #[tokio::test]
+    async fn b9a_no_database_leaves_the_policy_engine_in_memory() {
+        let engine = load_persisted_policies(PBACEngine::new(), &None)
+            .await
+            .expect("no database is not a startup failure");
+        assert!(!engine.has_repository());
+        assert_eq!(engine.enabled_policy_count().await, 0);
+    }
+
+    /// The startup path must load the persisted policies into the engine —
+    /// that is the whole point of persisting them.
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL"]
+    async fn b9a_persisted_policies_are_loaded_at_startup() {
+        let pool = kms_api::sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&database_url())
+            .await
+            .expect("connect to the PostgreSQL under test");
+
+        let repository = PostgresPolicyRepository::new(pool.clone());
+        repository.migrate().await.expect("migrate");
+        kms_api::sqlx::query("DELETE FROM policies")
+            .execute(&pool)
+            .await
+            .expect("clear");
+
+        let policy = kms_policy::Policy {
+            id: uuid::Uuid::new_v4(),
+            name: "startup-policy".to_string(),
+            effect: kms_core::PolicyEffect::Deny,
+            condition: serde_json::json!({"operator": "always", "args": true}),
+            resources: vec!["*".to_string()],
+            subjects: vec!["*".to_string()],
+            enabled: true,
+        };
+        repository.save(&policy).await.expect("save");
+
+        let engine = load_persisted_policies(PBACEngine::new(), &Some(pool))
+            .await
+            .expect("the store is readable");
+
+        assert!(engine.has_repository());
+        let loaded = engine.list_policies().await.expect("list");
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].id, policy.id);
+    }
+
+    /// A policy store that cannot be reached must stop the server.
+    ///
+    /// An unreadable store and an empty store look the same to the caller,
+    /// and treating the second as the first silently disables
+    /// attribute-based control — so this path fails closed.
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL"]
+    async fn b9a_an_unreachable_policy_store_refuses_to_start() {
+        let pool = kms_api::sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&database_url())
+            .await
+            .expect("connect to the PostgreSQL under test");
+        pool.close().await;
+
+        let result = load_persisted_policies(PBACEngine::new(), &Some(pool)).await;
+        assert!(
+            result.is_err(),
+            "the server must not start on an unreadable policy store"
         );
     }
 }

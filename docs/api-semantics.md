@@ -242,8 +242,31 @@ sm9_sign    sm9_verify  sm9_encrypt  sm9_decrypt  query_audit_events
 > 计数只包含**已启用**的策略（audit B7-h）：被禁用的策略不匹配任何请求，若把它计入，
 > 就会在“什么都匹配不到”的状态下切到默认拒绝，把所有调用方锁在门外且无从查因。
 >
-> 策略只存在于内存中：**重启后全部丢失**，属性级限制随之失效。服务端每次启动都会打印
-> `warn` 提示这一点（audit B7-h）。
+> 策略持久化到 PostgreSQL 的 `policies` 表：**重启后仍在**（audit B9-a）。
+> 启动时服务端会加载已持久化的策略；加载失败则**拒绝启动**（fail-closed），
+> 绝不把“读不到”当成“没有策略”而静默降级。
+
+### 9.2 策略持久化与 fail-closed 启动（audit B9-a）
+
+策略引擎的求值集在内存里，持久层是另一半：通过 API 安装的策略会**写穿**到
+PostgreSQL 的 `policies` 表，进程重启时再加载回引擎。
+
+| 阶段 | 行为 |
+|------|------|
+| `POST /v1/policies` | 先落库，成功后进内存。落库失败 → 500，且内存**不**留下该策略 |
+| `DELETE /v1/policies/{id}` | 先删库，再删内存。未知 id → 404 |
+| 启动 | 建表 → 加载。加载失败 → **拒绝启动** |
+| 启动 | 策略表为空 → 属性级控制未启用（沿用 §9.1 语义），打印 `warn` |
+| 启动 | 加载到 N 条 → 属性级控制生效，打印 `info` |
+
+> **为什么加载失败要拒绝启动**：读不到策略表与策略表为空，在 API 层无法区分。
+> 把前者当成后者，就是“引擎里什么都没有但看起来一切正常”——每次调用都只剩
+> API Key 权限位一道闸门，而运维以为属性级限制还在。因此这条路径是 fail-closed 的。
+>
+> 没有 PostgreSQL 时（开发 / 降级模式）没有可读的存储，引擎保持纯内存，语义同 §9.1。
+>
+> 写穿的方向也是同一个道理：**持久态是真相源**。落库失败就不进内存，
+> 否则会出现“内存里有、库里没有”的策略——它看起来已安装，直到下次重启静默消失。
 
 ## 测试固化
 
@@ -269,3 +292,11 @@ sm9_sign    sm9_verify  sm9_encrypt  sm9_decrypt  query_audit_events
 另：`crates/kms-api/src/auth.rs` 与 `crates/kms-policy/src/engine.rs` 的单测固化 PBAC 的
 引导语义与 `policy_count`；`src/cmd/server.rs` 的单测固化 API Key 配置校验；
 `crates/kms-core/src/backup.rs` 的单测固化主密钥文件的原子写与不跟随符号链接。
+
+### B9-a 的固化用例
+
+| 位置 | 覆盖的语义 |
+|------|-----------|
+| `crates/kms-policy/src/store.rs` | `effect` 的存取用 serde 形式（`ALLOW`/`DENY`）而非 `Debug` 形式，坏值被拒 |
+| `crates/kms-policy/src/engine.rs` | 写穿：装/删策略先落库；落库失败时内存不变；读不到的存储报**错**而不是空集；加载后的策略仍参与求值 |
+| `tests/api_policy_pg_integration.rs` | 真实 PostgreSQL：策略落到 `policies` 表、逐字段往返、**重启后仍在且仍生效**、删除后不再复活、建表幂等 |
