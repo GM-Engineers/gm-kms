@@ -12,4 +12,17 @@ ignore = [
     "RUSTSEC-2023-0089",
     # rustls-pemfile is unmaintained, pulled in via redis. No direct use in gm-kms.
     "RUSTSEC-2025-0134",
+    # crypto-bigint timing variability (RUSTSEC-2026-0387): patched only in >=0.7.6,
+    # a breaking jump the `rsa` crate (its requirer) does not allow. gm-kms reaches
+    # crypto-bigint solely through rsa OAEP *encryption* (public-key side); it holds no
+    # RSA private key, so the secret-dependent branches cannot leak local material.
+    # Same posture as RUSTSEC-2023-0071 above.
+    "RUSTSEC-2026-0387",
+    # zip extraction flaws (RUSTSEC-2026-0367/0368/0369): patched only in >=9.0.0,
+    # incompatible with the 3.x pinned by utoipa-swagger-ui. zip is a *build-dependency*
+    # used at compile time to unpack the vendored (trusted) Swagger UI asset; gm-kms never
+    # extracts attacker-controlled archives at runtime, so these paths are unreachable.
+    "RUSTSEC-2026-0367",
+    "RUSTSEC-2026-0368",
+    "RUSTSEC-2026-0369",
 ]
