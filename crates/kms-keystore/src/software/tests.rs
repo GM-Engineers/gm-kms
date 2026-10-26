@@ -2181,7 +2181,7 @@ async fn test_pr14_aad_differs_across_tenants() {
     assert_eq!(&aad_b[2..4], &kms_core::AAD_VERSION.to_be_bytes());
 }
 
-/// audit B7-c: the version-aware material lookup must return the *historical*
+/// the version-aware material lookup must return the *historical*
 /// material for an old version, not the current one.
 ///
 /// The trait's default implementation used to answer every version with the
@@ -2228,7 +2228,7 @@ async fn test_get_key_material_version_returns_historical_material() {
     );
 }
 
-/// audit B7-c: an unknown version must fail closed instead of returning the
+/// an unknown version must fail closed instead of returning the
 /// current material.
 #[tokio::test]
 async fn test_get_key_material_version_unknown_version_fails_closed() {
@@ -2249,7 +2249,7 @@ async fn test_get_key_material_version_unknown_version_fails_closed() {
     );
 }
 
-/// audit B7-c: the version-aware lookup must respect the tenant boundary.
+/// the version-aware lookup must respect the tenant boundary.
 #[tokio::test]
 async fn test_get_key_material_version_cross_tenant_rejected() {
     let store = SoftwareKeystore::new();

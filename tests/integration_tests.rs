@@ -85,8 +85,8 @@ async fn test_key_lifecycle_complete() {
 #[tokio::test]
 async fn test_key_soft_delete_and_list() {
     let keystore = SoftwareKeystore::new();
-    // Use a generatable spec (audit P3-1 narrowed the generatable list; this
-    // test only exercises soft-delete + listing, not ECDSA semantics).
+    // Use a generatable spec (the generatable list is narrowed to truly supported
+    // types; this test only exercises soft-delete + listing, not ECDSA semantics).
     let spec = KeySpec::Aes256Gcm;
 
     // Create multiple keys

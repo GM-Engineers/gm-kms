@@ -11,7 +11,7 @@ use kms_core::sanitize::sanitize_for_log;
 use ring::rand::SecureRandom;
 use std::sync::Arc;
 
-/// Transport-key protection scheme for wrapped key export (audit P2-6).
+/// Transport-key protection scheme for wrapped key export.
 ///
 /// Both schemes wrap the key material with an ephemeral symmetric transport key
 /// and then protect that transport key with the caller's public key. The scheme
@@ -55,7 +55,7 @@ impl ExportProtection {
 pub struct ExportOptions {
     /// Transport-key protection scheme.
     pub protection: ExportProtection,
-    /// Key version to export (audit P2-2). `None` (or `Some(0)`) exports the
+    /// Key version to export. `None` (or `Some(0)`) exports the
     /// current/active version; `Some(v)` with `v != current` exports a historical
     /// version from the key's rotation history, provided the key is still
     /// exportable (export-policy is validated against the current key).
@@ -85,7 +85,7 @@ impl KeyService {
         tenant_id: &str,
         _user_id: &str,
     ) -> Result<KeyMeta> {
-        // audit P3-1: reject non-generatable specs at the service boundary so
+        // reject non-generatable specs at the service boundary so
         // both REST and gRPC get a clear, actionable error instead of a deeper
         // 500 from the keystore (or, previously, a silently mislabeled key).
         if !spec.is_generatable() {
@@ -255,7 +255,7 @@ impl KeyService {
         tenant_id: &str,
         _user_id: &str,
     ) -> Result<KeyMeta> {
-        // audit P3-1: SM9 (and any future non-importable spec) is rejected here
+        // SM9 (and any future non-importable spec) is rejected here
         // with a clear message; the keystore validator also refuses SM9 now.
         if !spec.is_importable() {
             return Err(ApiError::InvalidRequest(format!(
@@ -328,7 +328,7 @@ impl KeyService {
     /// Returns the wrapped key (material encrypted with an ephemeral transport
     /// key) and the encrypted transport key (transport key protected with the
     /// caller's `target_public_key`). The protection scheme is selected via
-    /// [`ExportOptions::protection`] (audit P2-6): RSA-OAEP (default) or SM2.
+    /// [`ExportOptions::protection`]: RSA-OAEP (default) or SM2.
     pub async fn export_key(
         &self,
         key_id: &uuid::Uuid,
@@ -394,7 +394,7 @@ impl KeyService {
                 _ => ServiceError::from(e).into_api_error(),
             })?;
 
-        // Select the requested version (audit P2-2): `None`/0/current exports the
+        // Select the requested version: `None`/0/current exports the
         // active material; a different version is pulled from rotation history.
         let key_material = match opts.version.filter(|v| *v != 0) {
             Some(v) if v != meta.version => self
@@ -510,7 +510,7 @@ impl KeyService {
         );
 
         // Wrapped material is returned inline, once — there is no secondary
-        // pull-back endpoint, so no export_id/expiration is minted (audit P3-4).
+        // pull-back endpoint, so no export_id/expiration is minted.
         Ok(ExportedKey {
             wrapped_key: STANDARD.encode(&wrapped_key),
             encrypted_transport_key: STANDARD.encode(&encrypted_transport_key),
@@ -545,7 +545,7 @@ impl KeyService {
 /// Result type for key export operations.
 ///
 /// The wrapped material is delivered inline; there is deliberately no
-/// `export_id`/`expires_at` because no pull-back endpoint exists (audit P3-4).
+/// `export_id`/`expires_at` because no pull-back endpoint exists.
 pub struct ExportedKey {
     /// Base64-encoded wrapped key (key encrypted with transport key)
     pub wrapped_key: String,
@@ -686,7 +686,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_key_service_create_key_rejects_non_generatable() {
-        // audit P3-1: the service boundary must reject non-generatable specs
+        // the service boundary must reject non-generatable specs
         // (ECDSA/Ed448/RSA/SM9) with a clear request error for both channels.
         let state = create_test_state();
         let key_service = KeyService::new(&state);
@@ -956,7 +956,7 @@ mod tests {
         );
     }
 
-    // ── B4-b: SM2 export protection path (audit P2-6) ──
+    // ── B4-b: SM2 export protection path ──
 
     #[test]
     fn export_protection_parse_defaults_and_aliases() {
@@ -1075,7 +1075,7 @@ mod tests {
         );
     }
 
-    // ── B4-c: versioned export (audit P2-2) ──
+    // ── B4-c: versioned export ──
 
     #[tokio::test]
     async fn export_specific_version_pulls_rotation_history() {

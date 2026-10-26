@@ -31,8 +31,8 @@ pub struct CallerId {
     pub key_id: String,
 }
 
-/// Tenant bound to the authenticated API key, derived server-side from identity
-/// (audit P1-3). Injected by the auth middleware alongside [`CallerId`].
+/// Tenant bound to the authenticated API key, derived server-side from the
+/// identity. Injected by the auth middleware alongside [`CallerId`].
 ///
 /// `None` means the key carries no tenant binding, so handlers fall back to the
 /// caller-self-reported tenant (existing behaviour). When `Some`, the bound tenant
@@ -158,7 +158,7 @@ impl Permission {
 /// requests: it is the only role that maps onto the approval engine's
 /// `Admin` level, which the `tenant_admin` operation requires. It holds no
 /// policy, audit or MFA administration power, so the three-officer separation
-/// stays intact (audit follow-up B7-g).
+/// stays intact.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ApiKeyPermission {
     /// Read-only access (list, get keys)
@@ -169,7 +169,7 @@ pub enum ApiKeyPermission {
     KeyAdmin = 2,
     /// Security administration (policy, API keys, MFA, approval, audit view)
     SecurityOfficer = 3,
-    /// Audit administration (audit log view and export only)
+    /// Audit administration
     AuditAdmin = 4,
     /// Tenant administration (approves tenant-scoped administration requests)
     TenantAdmin = 5,
@@ -183,7 +183,7 @@ impl ApiKeyPermission {
     /// `tenant-admin`.
     ///
     /// Used by the server configuration to map a declarative role name onto a
-    /// permission (audit B7-e).
+    /// permission.
     pub fn from_role_name(name: &str) -> Option<Self> {
         let normalized = name.trim().to_lowercase().replace('_', "-");
         match normalized.as_str() {
@@ -239,8 +239,7 @@ impl ApiKeyPermission {
             }
             ApiKeyPermission::AuditAdmin => Permission::VIEW_AUDIT | Permission::EXPORT_AUDIT,
             // Tenant administration: may approve tenant-administration
-            // requests, but holds no policy/audit/MFA administration power
-            // (audit follow-up B7-g).
+            // requests, but holds no policy/audit/MFA administration power.
             ApiKeyPermission::TenantAdmin => {
                 Permission::LIST_KEYS | Permission::GET_KEY | Permission::APPROVE_ACTION
             }
@@ -281,7 +280,7 @@ pub struct ApiKey {
     pub revoked: bool,
     /// Key ID for rotation tracking
     pub key_id: String,
-    /// Tenant bound to this key (server-side authoritative tenant; audit P1-3).
+    /// Tenant bound to this key (server-side authoritative tenant).
     /// `None` means unbound: handlers fall back to the self-reported tenant.
     pub tenant_id: Option<String>,
     /// Failed login attempt counter
@@ -342,7 +341,7 @@ impl ApiKey {
         Self::new(secret, ApiKeyPermission::SecurityOfficer)
     }
 
-    /// Create an audit admin API key (audit log view and export only)
+    /// Create an audit admin API key
     pub fn audit_admin(secret: String) -> Self {
         Self::new(secret, ApiKeyPermission::AuditAdmin)
     }
@@ -364,7 +363,7 @@ impl ApiKey {
         self
     }
 
-    /// Bind this key to a tenant (audit P1-3). Once bound, the server derives the
+    /// Bind this key to a tenant. Once bound, the server derives the
     /// request tenant from the key and ignores any caller-self-reported tenant.
     pub fn with_tenant(mut self, tenant_id: String) -> Self {
         self.tenant_id = Some(tenant_id);
@@ -513,7 +512,7 @@ impl ApiKeyConfig {
         // The role name is parsed with `from_role_name`, so both configuration
         // surfaces (this variable and the `[[api_keys]]` file section) accept
         // the same names. An unknown name is a configuration error, not a
-        // silent downgrade to a weaker role (audit follow-up B7-h).
+        // silent downgrade to a weaker role.
         let role = match std::env::var("KMS_API_KEY_ROLE") {
             Ok(requested) => {
                 Some(ApiKeyPermission::from_role_name(&requested).ok_or_else(|| {
@@ -678,7 +677,7 @@ impl ApiKeyConfig {
             .map(|k| k.key_id.clone())
     }
 
-    /// Look up the tenant bound to a given key (audit P1-3).
+    /// Look up the tenant bound to a given key.
     /// Returns `Some(tenant)` only when the key carries an explicit tenant binding;
     /// `None` for an unknown key or a key with no binding (fall back to self-reported).
     pub fn lookup_tenant(&self, key: &str) -> Option<String> {
@@ -817,13 +816,12 @@ async fn auth_middleware_with_permission(
                 Some(key) => {
                     // Extract identity for audit trail (P2-1 fix)
                     let key_id = config.lookup_key_id(key);
-                    // Server-side tenant binding (audit P1-3): derive the authoritative
+                    // Server-side tenant binding: derive the authoritative
                     // tenant from the authenticated key, independent of what the caller
                     // self-reports in query/body.
                     let bound_tenant = config.lookup_tenant(key);
                     // Server-side authority of the authenticated key: handlers
-                    // must never take the caller's role from the request body
-                    // (audit follow-up B7-a).
+                    // must never take the caller's role from the request body.
                     let permission = config.validate(key).unwrap_or(ApiKeyPermission::ReadOnly);
                     if config.has_permission(key, required) {
                         let mut request = request;
@@ -888,7 +886,7 @@ pub enum PbacOutcome {
 /// role-based check (the API key's permission bitmask) is the only gate.
 /// Denying every request in that state would make the KMS unusable out of the
 /// box — the server starts with an empty engine and loads no policies at
-/// startup (audit follow-up B7-g).
+/// startup.
 ///
 /// As soon as the first policy is installed the default-deny applies again,
 /// so an allow-list policy keeps its meaning.
@@ -897,7 +895,7 @@ pub enum PbacOutcome {
 /// never disagree about what the policy allows.
 ///
 /// The `tenant` is the effective tenant of the request — the one derived
-/// from the authenticated identity, not a self-reported value (audit P1-3).
+/// from the authenticated identity, not a self-reported value.
 /// It is what a tenant-scoped policy is matched against (audit follow-up
 /// B9-b); a policy without a tenant constraint applies to every tenant.
 pub async fn evaluate_pbac(
@@ -1378,7 +1376,7 @@ mod tests {
         );
     }
 
-    /// audit B7-e: the role names used in the server configuration must map
+    /// the role names used in the server configuration must map
     /// onto the documented permissions, and an unknown name must not resolve.
     #[test]
     fn test_permission_from_role_name() {
@@ -1414,7 +1412,7 @@ mod tests {
 
     /// The tenant-admin role exists so that the `tenant_admin` operation —
     /// which requires the approval engine's `Admin` level — can be approved at
-    /// all (audit follow-up B7-g).
+    /// all.
     #[test]
     fn test_tenant_admin_permission() {
         assert_eq!(
@@ -1470,7 +1468,7 @@ mod tests {
         assert!(!config.has_permission("aa-key", Permission::CREATE_KEY));
     }
 
-    // ── PBAC bootstrap semantics (audit follow-up B7-g) ──
+    // ── PBAC bootstrap semantics ──
 
     /// Build a policy that matches everything (subject `*`, resource `*`).
     fn matching_policy(effect: kms_core::PolicyEffect, name: &str) -> kms_policy::Policy {
@@ -1559,7 +1557,7 @@ mod tests {
     /// An engine without any **enabled** policy must not deny everything: the
     /// deployment has not opted into attribute-based control yet, and the
     /// role-based check is the only gate. Before this was fixed the server
-    /// answered 403 to every protected request (audit follow-up B7-g).
+    /// answered 403 to every protected request.
     #[tokio::test]
     async fn test_evaluate_pbac_empty_engine_allows() {
         let engine = kms_policy::PBACEngine::new();
@@ -1574,7 +1572,7 @@ mod tests {
 
     /// A **disabled** policy does not put the engine into the default-deny
     /// mode: it matches nothing, so counting it would lock every caller out
-    /// with no visible cause (audit follow-up B7-h).
+    /// with no visible cause.
     #[tokio::test]
     async fn test_evaluate_pbac_disabled_policy_keeps_the_control_inactive() {
         let engine = kms_policy::PBACEngine::new();

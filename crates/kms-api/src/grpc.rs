@@ -33,12 +33,12 @@ impl KmsGrpcService {
     /// is still required; PBAC can only FURTHER RESTRICT access, never grant it.
     ///
     /// Both channels share `auth::evaluate_pbac`, so a client cannot reach a
-    /// different decision by switching protocol (audit follow-up B7-g).
+    /// different decision by switching protocol.
     ///
     /// The tenant is the effective one — the tenant of the API key when it is
     /// bound to one, the self-reported tenant otherwise. It is resolved before
     /// the call, so a tenant-scoped policy is matched against the very tenant
-    /// the operation is performed for (audit follow-up B9-b).
+    /// the operation is performed for.
     async fn check_pbac(
         &self,
         subject_id: &str,
@@ -69,7 +69,7 @@ impl KmsGrpcService {
 
     /// Shared approval gate for sensitive key-lifecycle operations (delete/export/rotate).
     /// Mirrors the REST `require_approved` helper so both channels enforce the same
-    /// invariants (audit P1-2 resource binding, P2-8 expiry, P2-4 uniform
+    /// invariants (resource binding, expiry check and a uniform
     /// `OperationType`-driven gate): the `approval_id` must reference a fully-approved,
     /// non-expired request of `operation` bound to `resource_id`.
     fn require_approved(
@@ -106,7 +106,7 @@ impl KmsGrpcService {
     }
 }
 
-/// Resolve the effective request tenant from the authenticated identity (audit P1-3).
+/// Resolve the effective request tenant from the authenticated identity.
 ///
 /// - Bound key (`Some(b)`) => the bound tenant is AUTHORITATIVE; the request-reported
 ///   tenant is ignored (a mismatch is logged so spoofing attempts are observable).
@@ -183,7 +183,7 @@ impl Interceptor for GrpcAuthInterceptor {
             Some(key) => {
                 if let Some((permission, key_id)) = self.api_key_config.validate_with_identity(key)
                 {
-                    // Server-side tenant binding (audit P1-3): derive the authoritative
+                    // Server-side tenant binding: derive the authoritative
                     // tenant from the authenticated key. Computed before the mutable
                     // borrow of `request` below to keep the `key` borrow region tight.
                     let tenant_id = self.api_key_config.lookup_tenant(key);
@@ -215,7 +215,7 @@ pub struct GrpcCaller {
     pub role: ApiKeyPermission,
     /// API key ID for audit trail (satisfies 等保三级 traceability requirement).
     pub key_id: String,
-    /// Tenant bound to the authenticated API key (audit P1-3). `None` means unbound,
+    /// Tenant bound to the authenticated API key. `None` means unbound,
     /// so the handler falls back to the request-self-reported tenant.
     pub tenant_id: Option<String>,
 }
@@ -271,7 +271,7 @@ fn api_error_to_status(e: ApiError) -> Status {
         ApiError::InvalidArgument(msg) => Status::invalid_argument(msg),
         // The remaining variants used to fall into a catch-all arm and were
         // reported as INTERNAL, while REST answers 403/400/429/501 for them.
-        // The two channels now agree (audit follow-up B7-g).
+        // The two channels now agree.
         ApiError::PermissionDenied => Status::permission_denied("permission denied"),
         ApiError::BadRequest(msg) => Status::invalid_argument(msg),
         ApiError::TooManyRequests(msg) => Status::resource_exhausted(msg),
@@ -292,7 +292,7 @@ impl KmsService for KmsGrpcService {
 
         // PBAC: evaluate policy for key creation
         // The effective tenant is resolved before the policy decision: a
-        // tenant-scoped policy is matched against it (audit follow-up B9-b).
+        // tenant-scoped policy is matched against it.
         let tenant_id = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
 
         self.check_pbac(&caller_id, &tenant_id, "create_key", &req.name)
@@ -358,7 +358,7 @@ impl KmsService for KmsGrpcService {
         let id = uuid::Uuid::parse_str(&req.id)
             .map_err(|_| Status::invalid_argument("invalid key id"))?;
         // The effective tenant is resolved before the policy decision: a
-        // tenant-scoped policy is matched against it (audit follow-up B9-b).
+        // tenant-scoped policy is matched against it.
         let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
         let tenant_id: &str = &tenant_id_owned;
 
@@ -397,7 +397,7 @@ impl KmsService for KmsGrpcService {
         let id = uuid::Uuid::parse_str(&req.key_id)
             .map_err(|_| Status::invalid_argument("invalid key id"))?;
         // The effective tenant is resolved before the policy decision: a
-        // tenant-scoped policy is matched against it (audit follow-up B9-b).
+        // tenant-scoped policy is matched against it.
         let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
         let tenant_id: &str = &tenant_id_owned;
 
@@ -436,7 +436,7 @@ impl KmsService for KmsGrpcService {
         let id = uuid::Uuid::parse_str(&req.key_id)
             .map_err(|_| Status::invalid_argument("invalid key id"))?;
         // The effective tenant is resolved before the policy decision: a
-        // tenant-scoped policy is matched against it (audit follow-up B9-b).
+        // tenant-scoped policy is matched against it.
         let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
         let tenant_id: &str = &tenant_id_owned;
 
@@ -451,7 +451,7 @@ impl KmsService for KmsGrpcService {
             // distinguish "unset" from 0, so an unset field is normalised to
             // the same default the REST channel uses (version 1); a caller
             // must echo the version returned by `Encrypt` for ciphertexts
-            // produced after a rotation (audit B7-d).
+            // produced after a rotation.
             version: if req.version == 0 { 1 } else { req.version },
             // Echo the caller-supplied format so the keystore reproduces the
             // exact AAD used at encryption (format 2 binds AAD to
@@ -493,7 +493,7 @@ impl KmsService for KmsGrpcService {
         let id = uuid::Uuid::parse_str(&req.id)
             .map_err(|_| Status::invalid_argument("invalid key id"))?;
         // The effective tenant is resolved before the policy decision: a
-        // tenant-scoped policy is matched against it (audit follow-up B9-b).
+        // tenant-scoped policy is matched against it.
         let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
         let tenant_id: &str = &tenant_id_owned;
 
@@ -502,8 +502,7 @@ impl KmsService for KmsGrpcService {
 
         // Security: KeyRotate is a dual-approval operation (workflow.rs:
         // KeyRotate => ApprovalLevel::Double). Enforce it here too, bound to THIS
-        // key, so the enum-declared level is actually required at the interface
-        // (audit P2-4).
+        // key, so the enum-declared level is actually required at the interface.
         self.require_approved(
             &req.approval_id,
             OperationType::KeyRotate,
@@ -543,7 +542,7 @@ impl KmsService for KmsGrpcService {
         let id = uuid::Uuid::parse_str(&req.id)
             .map_err(|_| Status::invalid_argument("invalid key id"))?;
         // The effective tenant is resolved before the policy decision: a
-        // tenant-scoped policy is matched against it (audit follow-up B9-b).
+        // tenant-scoped policy is matched against it.
         let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
         let tenant_id: &str = &tenant_id_owned;
 
@@ -579,7 +578,7 @@ impl KmsService for KmsGrpcService {
         let (_, caller_id, caller_tenant) = check_permission(&request, Permission::LIST_KEYS)?;
         let req = request.into_inner();
         // The effective tenant is resolved before the policy decision: a
-        // tenant-scoped policy is matched against it (audit follow-up B9-b).
+        // tenant-scoped policy is matched against it.
         let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
         let tenant_id: &str = &tenant_id_owned;
 
@@ -629,7 +628,7 @@ impl KmsService for KmsGrpcService {
         let id = uuid::Uuid::parse_str(&req.key_id)
             .map_err(|_| Status::invalid_argument("invalid key id"))?;
         // The effective tenant is resolved before the policy decision: a
-        // tenant-scoped policy is matched against it (audit follow-up B9-b).
+        // tenant-scoped policy is matched against it.
         let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
         let tenant_id: &str = &tenant_id_owned;
 
@@ -667,7 +666,7 @@ impl KmsService for KmsGrpcService {
         let id = uuid::Uuid::parse_str(&req.key_id)
             .map_err(|_| Status::invalid_argument("invalid key id"))?;
         // The effective tenant is resolved before the policy decision: a
-        // tenant-scoped policy is matched against it (audit follow-up B9-b).
+        // tenant-scoped policy is matched against it.
         let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
         let tenant_id: &str = &tenant_id_owned;
 
@@ -712,7 +711,7 @@ impl KmsService for KmsGrpcService {
         let id = uuid::Uuid::parse_str(&req.key_id)
             .map_err(|_| Status::invalid_argument("invalid key id"))?;
         // The effective tenant is resolved before the policy decision: a
-        // tenant-scoped policy is matched against it (audit follow-up B9-b).
+        // tenant-scoped policy is matched against it.
         let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
         let tenant_id: &str = &tenant_id_owned;
 
@@ -748,7 +747,7 @@ impl KmsService for KmsGrpcService {
         let id = uuid::Uuid::parse_str(&req.key_id)
             .map_err(|_| Status::invalid_argument("invalid key id"))?;
         // The effective tenant is resolved before the policy decision: a
-        // tenant-scoped policy is matched against it (audit follow-up B9-b).
+        // tenant-scoped policy is matched against it.
         let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
         let tenant_id: &str = &tenant_id_owned;
 
@@ -983,7 +982,7 @@ impl KmsService for KmsGrpcService {
         let kek_id = uuid::Uuid::parse_str(&req.kek_id)
             .map_err(|_| Status::invalid_argument("invalid kek_id format"))?;
         // The effective tenant is resolved before the policy decision: a
-        // tenant-scoped policy is matched against it (audit follow-up B9-b).
+        // tenant-scoped policy is matched against it.
         let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
         let tenant_id: &str = &tenant_id_owned;
 
@@ -1024,7 +1023,7 @@ impl KmsService for KmsGrpcService {
         let kek_id = uuid::Uuid::parse_str(&req.kek_id)
             .map_err(|_| Status::invalid_argument("invalid kek_id format"))?;
         // The effective tenant is resolved before the policy decision: a
-        // tenant-scoped policy is matched against it (audit follow-up B9-b).
+        // tenant-scoped policy is matched against it.
         let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
         let tenant_id: &str = &tenant_id_owned;
 
@@ -1071,7 +1070,7 @@ impl KmsService for KmsGrpcService {
         let kek_id = uuid::Uuid::parse_str(&req.kek_id)
             .map_err(|_| Status::invalid_argument("invalid kek_id format"))?;
         // The effective tenant is resolved before the policy decision: a
-        // tenant-scoped policy is matched against it (audit follow-up B9-b).
+        // tenant-scoped policy is matched against it.
         let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
         let tenant_id: &str = &tenant_id_owned;
 
@@ -1113,7 +1112,7 @@ impl KmsService for KmsGrpcService {
         let (_, caller_id, caller_tenant) = check_permission(&request, Permission::IMPORT_KEY)?;
         let req = request.into_inner();
         // The effective tenant is resolved before the policy decision: a
-        // tenant-scoped policy is matched against it (audit follow-up B9-b).
+        // tenant-scoped policy is matched against it.
         let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
         let tenant_id: &str = &tenant_id_owned;
 
@@ -1159,7 +1158,7 @@ impl KmsService for KmsGrpcService {
         let key_id = uuid::Uuid::parse_str(&req.id)
             .map_err(|_| Status::invalid_argument("invalid key id format"))?;
         // The effective tenant is resolved before the policy decision: a
-        // tenant-scoped policy is matched against it (audit follow-up B9-b).
+        // tenant-scoped policy is matched against it.
         let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
         let tenant_id: &str = &tenant_id_owned;
 
@@ -1175,10 +1174,10 @@ impl KmsService for KmsGrpcService {
             "key export",
         )?;
 
-        // Wrapped-export semantics (audit P2-5): converge gRPC onto the SAME service-layer
+        // Wrapped-export semantics: converge gRPC onto the SAME service-layer
         // method REST uses, so raw key material is never returned over the wire. The caller
         // supplies its public key; the server returns wrapped_key + encrypted_transport_key.
-        // The transport-key protection scheme (audit P2-6) mirrors REST.
+        // The transport-key protection scheme mirrors REST.
         let protection =
             crate::service::ExportProtection::parse(Some(req.protection_scheme.as_str()))
                 .map_err(api_error_to_status)?;
@@ -1262,14 +1261,14 @@ impl KmsService for KmsGrpcService {
         let key_id = uuid::Uuid::parse_str(&req.key_id)
             .map_err(|_| Status::invalid_argument("invalid key_id format"))?;
         // The effective tenant is resolved before the policy decision: a
-        // tenant-scoped policy is matched against it (audit follow-up B9-b).
+        // tenant-scoped policy is matched against it.
         let tenant_id_owned = resolve_tenant(caller_tenant.as_deref(), &req.tenant_id)?;
         let tenant_id: &str = &tenant_id_owned;
 
         self.check_pbac(&caller_id, tenant_id, "dh_derive", &key_id.to_string())
             .await?;
 
-        // Tenant isolation (audit B7-b): the private key belongs to exactly one
+        // Tenant isolation: the private key belongs to exactly one
         // tenant, so the derived secret must not be handed to a caller acting
         // for another one. The keystore enforces it too; the check here gives
         // the same sanitized NOT_FOUND answer as the other key operations.
@@ -1504,7 +1503,7 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    // ── resolve_tenant (audit P1-3) ──────────────────────────────────
+    // ── resolve_tenant ──────────────────────────────────
 
     #[test]
     fn test_resolve_tenant_bound_overrides_reported() {
@@ -1559,7 +1558,7 @@ mod tests {
     }
     /// The gRPC channel must map the same `ApiError` variants to the same
     /// status codes as REST. The four variants below used to fall into the
-    /// catch-all arm and were reported as INTERNAL (audit follow-up B7-g).
+    /// catch-all arm and were reported as INTERNAL.
     #[test]
     fn test_api_error_to_status_covers_every_variant() {
         assert_eq!(

@@ -222,7 +222,7 @@ impl ApprovalEngine {
     ///
     /// The restored request keeps its own timestamps and votes, so a request
     /// that was already expired when it was persisted stays expired:
-    /// [`Self::is_approved`] rejects it (audit B0 / P2-8).
+    /// [`Self::is_approved`] rejects it.
     ///
     /// Errors with [`ApprovalError::WorkflowError`] when a request with the
     /// same id is already present — the persisted copy is not allowed to
@@ -271,7 +271,7 @@ impl ApprovalEngine {
 
         // The approver's own authority must meet the level the operation
         // requires. Otherwise a low-privilege approver could contribute a vote
-        // toward a high-privilege quorum (audit follow-up B7-a).
+        // toward a high-privilege quorum.
         if approval_level < request.required_level {
             return Err(ApprovalError::InsufficientApprovalLevel);
         }
@@ -459,7 +459,7 @@ impl ApprovalEngine {
     /// resource**, is fully approved, and has not expired.
     ///
     /// This is the primary gate for sensitive operations like key export/delete.
-    /// Security invariants (audit P1-2 / P2-8):
+    /// Security invariants:
     /// - `resource_id` must match the resource the request was raised for, so one
     ///   approved export cannot be replayed against a different key.
     /// - An `Approved` request is only valid until `expires_at`; a fully approved

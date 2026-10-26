@@ -3,7 +3,7 @@
 //! [`PBACEngine`](crate::PBACEngine) evaluates policies out of an in-memory
 //! map, so this repository is the durable half of the policy store: it is
 //! what makes an installed policy survive a restart instead of silently
-//! disappearing from the engine (audit follow-up B9-a).
+//! disappearing from the engine.
 //!
 //! The engine holds an optional repository and writes through it, so there is
 //! no code path that installs a policy only in memory. A policy the API
@@ -102,8 +102,8 @@ impl PolicyRepository for PostgresPolicyRepository {
         .await
         .map_err(|e| PolicyStoreError::Unavailable(format!("create policies index: {e}")))?;
 
-        // The tenant column arrived after the first release of the store
-        // (audit follow-up B9-b). `CREATE TABLE IF NOT EXISTS` does not add
+        // The tenant column arrived after the first release of the store.
+        // `CREATE TABLE IF NOT EXISTS` does not add
         // a column to a table that already exists, so the column is added
         // separately.
         sqlx::query(

@@ -139,7 +139,7 @@ async fn maybe_create_quota_tracker(
     }
 }
 
-/// Decide whether an in-memory keystore fallback is permitted (audit P1-4).
+/// Decide whether an in-memory keystore fallback is permitted.
 ///
 /// A production KMS must not silently boot in-memory (keys lost on restart), so
 /// this returns `Err` (fail-closed) unless the operator explicitly opted in via
@@ -157,7 +157,7 @@ fn in_memory_fallback_permitted(allow_in_memory: bool, reason: &str) -> Result<(
             "refusing to start without a persistent keystore ({reason}). \
              Configure PostgreSQL, or set backend.allow_in_memory=true \
              (or KMS_DEV_MODE=1 / KMS_ALLOW_INSECURE=1) for development only \
-             (audit P1-4 fail-closed)."
+."
         ))
     }
 }
@@ -166,7 +166,7 @@ fn in_memory_fallback_permitted(allow_in_memory: bool, reason: &str) -> Result<(
 ///
 /// Only the real `tpm2-tss` backend is persistent; the simulated one stores
 /// the keys in a process-local map, so it needs the same fail-closed gate as
-/// the in-memory software fallback (audit B7-f).
+/// the in-memory software fallback.
 fn tpm_backend_is_in_memory(tpm_backend: &str) -> bool {
     tpm_backend != "tpm2-tss"
 }
@@ -184,8 +184,7 @@ enum LatestBackupCheck {
     Failed(anyhow::Error),
 }
 
-/// Open the newest backup file and report whether it could be restored
-/// (audit B5 P2-7).
+/// Open the newest backup file and report whether it could be restored.
 ///
 /// A usable master key does not prove the last backup can be opened:
 /// `KeyBackupService::load_or_create` only exercises the master key itself, so
@@ -221,7 +220,7 @@ fn report_latest_backup_check(check: &LatestBackupCheck) -> Result<()> {
             tracing::info!("Latest backup verified at startup: {}", path.display());
         }
         LatestBackupCheck::Failed(e) => {
-            tracing::error!("Latest backup could NOT be opened at startup (audit B5 P2-7): {e:#}");
+            tracing::error!("Latest backup could NOT be opened at startup: {e:#}");
         }
     }
     Ok(())
@@ -269,7 +268,7 @@ async fn maybe_create_mfa_pool(
 /// The pool creation waits for sqlx's own 30 s acquire timeout when the
 /// server is unreachable — the connection is retried in the background until
 /// the deadline expires. That would delay the fail-closed keystore gate
-/// (audit P1-4) by a full timeout per attempt and leave the operator staring
+/// by a full timeout per attempt and leave the operator staring
 /// at a hanging startup instead of a refusal, so the attempt gets its own
 /// deadline. `connect_timeout_secs == 0` leaves the wait to sqlx.
 ///
@@ -306,7 +305,7 @@ async fn connect_with_deadline(
     }
 }
 
-/// Load the persisted PBAC policies into the engine (audit follow-up B9-a).
+/// Load the persisted PBAC policies into the engine.
 ///
 /// # Fail-closed
 ///
@@ -443,7 +442,7 @@ fn build_cors_layer(cors_config: &crate::cmd::config::CorsConfig) -> CorsLayer {
 
 /// Build the API key configuration from the environment and the declared keys.
 ///
-/// The declared keys (audit B7-e) are the only way to bind a key to a tenant:
+/// The declared keys are the only way to bind a key to a tenant:
 /// without that surface the tenant binding existed in the code but was
 /// unreachable in production, so every request trusted the caller's
 /// self-reported tenant.
@@ -452,8 +451,7 @@ fn build_cors_layer(cors_config: &crate::cmd::config::CorsConfig) -> CorsLayer {
 /// name; it is a parameter so the behaviour can be tested without touching the
 /// process environment.
 ///
-/// The configuration is validated instead of being accepted as-is
-/// (audit follow-up B7-g):
+/// The configuration is validated instead of being accepted as-is:
 ///
 /// * an empty secret is rejected — an empty secret is a valid credential, so
 ///   anybody could authenticate with an empty `x-api-key` header;
@@ -888,7 +886,7 @@ pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()
                                 );
                             }
                             Ok(Err(e)) => {
-                                // audit B7-f: the readiness flag is only set when
+                                // the readiness flag is only set when
                                 // the preload succeeds, so `/readyz` keeps
                                 // answering 503 and traffic is withheld. The
                                 // keys themselves stay correct because the
@@ -927,7 +925,7 @@ pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()
     // Build state: wrap with Redis cache if available, otherwise use keystore directly
 
     /// Helper: create software keystore wrapped with Redis cache if PG is available.
-    /// In-memory fallback only when `allow_in_memory` is set (audit P1-4 fail-closed).
+    /// In-memory fallback only when `allow_in_memory` is set.
     async fn create_software_keystore_inner(
         mfa_pool: &Option<kms_api::sqlx::PgPool>,
         redis_conn: redis::aio::ConnectionManager,
@@ -948,7 +946,7 @@ pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()
                                 "preload task panicked".into(),
                             ))
                         }) {
-                            // audit B7-f: see the note above — the readiness
+                            // see the note above — the readiness
                             // flag stays unset, so traffic is withheld.
                             tracing::error!(
                                 "Failed to load keys from PostgreSQL: {e}; \
@@ -1013,10 +1011,8 @@ pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()
                     }
                     Err(e) => {
                         // A persisted master key we cannot open would silently orphan every
-                        // prior backup — never regenerate it. Fail closed (audit P2-7).
-                        return Err(anyhow::anyhow!(
-                            "backup service init failed (audit P2-7): {e}"
-                        ));
+                        // prior backup — never regenerate it. Fail closed.
+                        return Err(anyhow::anyhow!("backup service init failed: {e}"));
                     }
                 }
             }
@@ -1030,7 +1026,7 @@ pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()
                         tracing::warn!(
                             "Backup service running with an EPHEMERAL master key: backups will NOT \
                              be recoverable after a restart. Set BACKUP_MASTER_KEY_PASSPHRASE for \
-                             durable backups (audit P2-7)."
+                             durable backups."
                         );
                         Some(Arc::new(svc))
                     }
@@ -1104,8 +1100,7 @@ pub async fn run(config_path: &str, rest_port: u16, grpc_port: u16) -> Result<()
                             tracing::warn!(
                                 "Redis caching not supported for TPM backend, using keystore directly"
                             );
-                            // The simulated TPM keeps the keys in process memory
-                            // (audit B7-f): it must pass the same fail-closed gate
+                            // The simulated TPM keeps the keys in process memory: it must pass the same fail-closed gate
                             // as the in-memory software fallback, otherwise a
                             // production deployment silently loses every key on
                             // restart while believing it uses a TPM.
@@ -1847,7 +1842,7 @@ impl kms_api::Sm9MasterKeyRepository for Sm9RepoAdapter {
 }
 
 // ============================================================================
-// PR 4.1 unit tests (audit doc reference)
+// PR 4.1 unit tests
 // ============================================================================
 
 // PR-4.1 (see audit docs): unit tests
@@ -1955,7 +1950,7 @@ mod pr41_failfast_tests {
         });
     }
 
-    // audit P1-4: fail-closed in-memory fallback decision.
+    // fail-closed in-memory fallback decision.
     #[test]
     fn p14_in_memory_failclosed_without_opt_in() {
         with_env(&[("KMS_ALLOW_INSECURE", ""), ("KMS_DEV_MODE", "")], || {
@@ -1978,7 +1973,7 @@ mod pr41_failfast_tests {
         });
     }
 
-    /// audit B7-f: only the real hardware backend is persistent; the simulated
+    /// only the real hardware backend is persistent; the simulated
     /// one must pass the same fail-closed gate.
     #[test]
     fn b7f_simulated_tpm_is_treated_as_in_memory() {
@@ -1987,7 +1982,7 @@ mod pr41_failfast_tests {
         assert!(!tpm_backend_is_in_memory("tpm2-tss"));
     }
 
-    /// audit B7-f: a simulated TPM backend must not start in production
+    /// a simulated TPM backend must not start in production
     /// without an explicit opt-in.
     #[test]
     fn b7f_simulated_tpm_requires_opt_in() {
@@ -2154,7 +2149,7 @@ mod tests {
         }
     }
 
-    /// audit B7-e: a declared key must end up bound to its tenant, so the
+    /// a declared key must end up bound to its tenant, so the
     /// server derives the tenant from the credential.
     #[test]
     fn b7e_declared_api_key_is_bound_to_its_tenant() {
@@ -2254,8 +2249,7 @@ mod tests {
     }
 
     /// An empty secret is a valid credential: anybody could authenticate with
-    /// an empty `x-api-key` header. The startup must fail instead
-    /// (audit follow-up B7-g).
+    /// an empty `x-api-key` header. The startup must fail instead.
     #[test]
     fn b7g4_declared_api_key_with_empty_secret_is_rejected() {
         let config = Config {
@@ -2285,8 +2279,7 @@ mod tests {
     }
 
     /// Two keys with the same secret are ambiguous: the same credential would
-    /// authenticate as whichever key is validated first. The startup must fail
-    /// (audit follow-up B7-g).
+    /// authenticate as whichever key is validated first. The startup must fail.
     #[test]
     fn b7g4_declared_api_keys_with_duplicate_secret_are_rejected() {
         let config = Config {
@@ -2306,7 +2299,7 @@ mod tests {
     }
 
     /// Two keys with the same key id break the revocation: only the first
-    /// match is revoked. The startup must fail (audit follow-up B7-g).
+    /// match is revoked. The startup must fail.
     #[test]
     fn b7g4_declared_api_keys_with_duplicate_key_id_are_rejected() {
         let config = Config {
@@ -2332,7 +2325,7 @@ mod tests {
     }
 
     /// A declared key must not reuse the secret of the key that came from the
-    /// environment (audit follow-up B7-g).
+    /// environment.
     #[test]
     fn b7g4_declared_api_key_must_not_reuse_the_environment_secret() {
         let config = Config {
@@ -2353,7 +2346,7 @@ mod tests {
         );
     }
 
-    // ── PBAC policy store startup (audit follow-up B9-a) ──
+    // ── PBAC policy store startup ──
 
     /// The connection string of the PostgreSQL under test.
     fn database_url() -> String {

@@ -10,7 +10,7 @@ members = [
     "crates/kms-hsm",
     "crates/kms-mfa",
     "crates/kms-approval",
-    # The Rust SDK (audit B8-e). A workspace member so that `cargo test
+    # The Rust SDK. A workspace member so that `cargo test
     # --workspace` and `cargo clippy --all-targets` cover it automatically.
     "sdk/rust",
 ]
@@ -208,7 +208,7 @@ ring = "0.17"
 chrono = { workspace = true }
 gm-crypto = { version = "0.3" }
 gm-sm9-rs = { version = "0.1.0" }
-# audit B8-d: the interface-level expiry guard needs to build an
+# the interface-level expiry guard needs to build an
 # "approved but expired" approval request, which requires the approval
 # entity types.
 kms-approval = { path = "crates/kms-approval" }

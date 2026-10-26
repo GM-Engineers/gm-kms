@@ -4,7 +4,7 @@ name = "kms-hsm"
 license.workspace = true
 version.workspace = true
 edition.workspace = true
-# audit P3-3: state the real maturity of this backend so downstream users do
+# state the real maturity of this backend so downstream users do
 # not assume hardware HSM/TPM support is production-ready. The default build is
 # a software-simulated TPM; real hardware is an architecture-reserved adapter.
 description = "HSM/TPM backend adapter (architecture reserved). Default build is a software-simulated TPM; real hardware requires feature tpm2-tss (Linux)."

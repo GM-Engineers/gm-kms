@@ -83,7 +83,7 @@ fn default_tenant_id() -> String {
     "default".to_string()
 }
 
-/// Resolve the effective request tenant from the authenticated identity (audit P1-3).
+/// Resolve the effective request tenant from the authenticated identity.
 ///
 /// When the API key carries a tenant binding, that bound tenant is AUTHORITATIVE and the
 /// caller-self-reported value is ignored (a mismatch is logged so client-side tenant
@@ -162,7 +162,7 @@ pub struct EncryptResponse {
     pub format_version: u8,
     /// Key version used for the encryption. Echo back in `DecryptRequest.version`
     /// so the server selects the matching material and reproduces the bound AAD
-    /// (format 2 binds AAD to `key_id/tenant_id/version`) (audit P2-3).
+    /// (format 2 binds AAD to `key_id/tenant_id/version`).
     pub version: u32,
 }
 
@@ -187,7 +187,7 @@ pub struct DecryptRequest {
     /// Key version returned by `Encrypt`. Defaults to 1 for backward compatibility
     /// with ciphertexts produced before the version was echoed. At `format_version`
     /// 2 the AAD binds this version, so a ciphertext produced after a key rotation
-    /// must echo the returned version to decrypt correctly (audit P2-3).
+    /// must echo the returned version to decrypt correctly.
     #[serde(default = "default_decrypt_version")]
     pub version: u32,
 }
@@ -239,7 +239,7 @@ pub struct VerifyResponse {
     pub valid: bool,
 }
 
-/// Compute a managed HMAC-SM3 over data with an HMAC key (audit P2-1)
+/// Compute a managed HMAC-SM3 over data with an HMAC key
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct HmacRequest {
     /// Base64-encoded data to MAC
@@ -633,10 +633,10 @@ pub struct ExportKeyRequest {
     /// Key export requires an approved `KeyExport` approval request.
     pub approval_id: Option<String>,
     /// Transport-key protection scheme: `"rsa-oaep"` (default when omitted) or
-    /// `"sm2"` (audit P2-6). Selects how the ephemeral transport key is protected.
+    /// `"sm2"`. Selects how the ephemeral transport key is protected.
     #[serde(default)]
     pub protection_scheme: Option<String>,
-    /// Key version to export (audit P2-2). Omitted/0 exports the current version;
+    /// Key version to export. Omitted/0 exports the current version;
     /// a specific historical version can be exported while the key is exportable.
     #[serde(default)]
     pub version: Option<u32>,
@@ -645,7 +645,7 @@ pub struct ExportKeyRequest {
 /// Response containing wrapped key for secure export.
 ///
 /// Material is delivered inline (wrapped); there is no export_id/expiration
-/// pull-back flow, so those misleading fields were removed (audit P3-4).
+/// pull-back flow, so those misleading fields were removed.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ExportKeyResponse {
     /// Base64-encoded wrapped key (key encrypted with transport key)
@@ -797,7 +797,7 @@ async fn create_key(
     Json(req): Json<CreateKeyRequest>,
 ) -> Result<(StatusCode, Json<KeyResponse>)> {
     // Tenant is derived from the authenticated identity when the key is bound
-    // (audit P1-3); otherwise the caller-self-reported tenant is honoured.
+    //; otherwise the caller-self-reported tenant is honoured.
     let tenant = resolve_tenant(bound.as_deref(), &req.tenant_id);
 
     // Validate input
@@ -860,11 +860,11 @@ async fn get_key(
     Query(tenant_query): Query<TenantQuery>,
     BoundTenant(bound): BoundTenant,
 ) -> Result<Json<KeyResponse>> {
-    // PBAC evaluation (audit B7-g): mirror the gRPC handler, which already
+    // PBAC evaluation: mirror the gRPC handler, which already
     // checks the "get_key" action. Without this the attribute-based access
     // control could be bypassed by switching from gRPC to REST.
     // The effective tenant is resolved before the policy decision: a
-    // tenant-scoped policy is matched against it (audit follow-up B9-b).
+    // tenant-scoped policy is matched against it.
     let tenant_id_owned = resolve_tenant(bound.as_deref(), &tenant_query.tenant_id);
     let tenant_id: &str = &tenant_id_owned;
 
@@ -893,7 +893,7 @@ async fn list_keys(
 ) -> Result<Json<Vec<KeyResponse>>> {
     // PBAC evaluation
     // The effective tenant is resolved before the policy decision: a
-    // tenant-scoped policy is matched against it (audit follow-up B9-b).
+    // tenant-scoped policy is matched against it.
     let tenant_id_owned = resolve_tenant(bound.as_deref(), &tenant_query.tenant_id);
     let tenant_id: &str = &tenant_id_owned;
 
@@ -926,7 +926,7 @@ async fn encrypt(
 
     // PBAC evaluation
     // The effective tenant is resolved before the policy decision: a
-    // tenant-scoped policy is matched against it (audit follow-up B9-b).
+    // tenant-scoped policy is matched against it.
     let tenant_id_owned = resolve_tenant(bound.as_deref(), &tenant_query.tenant_id);
     let tenant_id: &str = &tenant_id_owned;
 
@@ -987,7 +987,7 @@ async fn decrypt(
 
     // PBAC evaluation
     // The effective tenant is resolved before the policy decision: a
-    // tenant-scoped policy is matched against it (audit follow-up B9-b).
+    // tenant-scoped policy is matched against it.
     let tenant_id_owned = resolve_tenant(bound.as_deref(), &tenant_query.tenant_id);
     let tenant_id: &str = &tenant_id_owned;
 
@@ -1012,11 +1012,11 @@ async fn decrypt(
         // Echo the key version returned by `Encrypt`. At `format_version` 2 the
         // AAD binds (key_id, tenant_id, version) and the keystore selects material
         // by version, so decrypting a ciphertext produced after a rotation requires
-        // the real version rather than a hardcoded 1 (audit P2-3).
+        // the real version rather than a hardcoded 1.
         //
         // A version of 0 means "unset": the field defaults to 1 when it is
         // absent, and an explicit 0 is normalised to the same value, so both
-        // channels behave identically (audit follow-up B7-g, cf. B7-d).
+        // channels behave identically.
         version: if req.version == 0 { 1 } else { req.version },
         // Echo the caller-supplied format so the keystore reproduces the exact
         // AAD used at encryption (format 2 binds AAD to key_id/tenant/version);
@@ -1098,7 +1098,7 @@ fn require_approved(
         // is not authorized (no/expired/unbound/not-fully-approved approval).
         // The gRPC channel already answers the same gate with
         // `Status::permission_denied` (grpc.rs::require_approved) — the two
-        // channels must not diverge on a security gate (audit B0).
+        // channels must not diverge on a security gate.
         return Err(ApiError::Forbidden(format!(
             "{action} requires a fully approved request bound to this resource"
         )));
@@ -1115,7 +1115,7 @@ async fn rotate_key(
 ) -> Result<Json<KeyResponse>> {
     // PBAC evaluation
     // The effective tenant is resolved before the policy decision: a
-    // tenant-scoped policy is matched against it (audit follow-up B9-b).
+    // tenant-scoped policy is matched against it.
     let tenant_id_owned = resolve_tenant(bound.as_deref(), &tenant_query.tenant_id);
     let tenant_id: &str = &tenant_id_owned;
 
@@ -1132,7 +1132,7 @@ async fn rotate_key(
 
     // Security: key rotation is a Double-approval operation (workflow.rs declares
     // KeyRotate => ApprovalLevel::Double); enforce it at the interface too, bound
-    // to THIS key (audit P2-4).
+    // to THIS key.
     require_approved(
         &state,
         tenant_query.approval_id.as_deref(),
@@ -1162,7 +1162,7 @@ async fn delete_key(
 ) -> Result<StatusCode> {
     // PBAC evaluation
     // The effective tenant is resolved before the policy decision: a
-    // tenant-scoped policy is matched against it (audit follow-up B9-b).
+    // tenant-scoped policy is matched against it.
     let tenant_id_owned = resolve_tenant(bound.as_deref(), &tenant_query.tenant_id);
     let tenant_id: &str = &tenant_id_owned;
 
@@ -1177,8 +1177,7 @@ async fn delete_key(
     .await
     .map_err(|_| ApiError::PermissionDenied)?;
 
-    // Security: enforce dual-control approval bound to THIS key for deletion
-    // (audit P1-2/P2-4/P2-8 via the shared gate).
+    // Security: enforce dual-control approval bound to THIS key for deletion.
     require_approved(
         &state,
         tenant_query.approval_id.as_deref(),
@@ -1211,9 +1210,9 @@ async fn sign(
 
     // PBAC evaluation — the gRPC channel already checks this action, so
     // omitting it here would let a client bypass the attribute-based control
-    // by switching protocol (audit follow-up B7-g).
+    // by switching protocol.
     // The effective tenant is resolved before the policy decision: a
-    // tenant-scoped policy is matched against it (audit follow-up B9-b).
+    // tenant-scoped policy is matched against it.
     let tenant_id_owned = resolve_tenant(bound.as_deref(), &tenant_query.tenant_id);
     let tenant_id: &str = &tenant_id_owned;
 
@@ -1255,9 +1254,9 @@ async fn verify(
 ) -> Result<Json<VerifyResponse>> {
     use base64::{Engine, engine::general_purpose::STANDARD};
 
-    // PBAC evaluation — mirror the gRPC handler (audit follow-up B7-g).
+    // PBAC evaluation — mirror the gRPC handler.
     // The effective tenant is resolved before the policy decision: a
-    // tenant-scoped policy is matched against it (audit follow-up B9-b).
+    // tenant-scoped policy is matched against it.
     let tenant_id_owned = resolve_tenant(bound.as_deref(), &tenant_query.tenant_id);
     let tenant_id: &str = &tenant_id_owned;
 
@@ -1296,7 +1295,7 @@ async fn verify(
     Ok(Json(VerifyResponse { valid }))
 }
 
-/// Compute a managed HMAC-SM3 over `data` with an `Sm3Hmac` key (audit P2-1).
+/// Compute a managed HMAC-SM3 over `data` with an `Sm3Hmac` key.
 async fn hmac(
     CallerId { key_id: caller_id }: CallerId,
     State(state): State<Arc<KmsState>>,
@@ -1307,11 +1306,11 @@ async fn hmac(
 ) -> Result<Json<HmacResponse>> {
     use base64::{Engine, engine::general_purpose::STANDARD};
 
-    // PBAC evaluation (audit B7-b): mirror the gRPC handler, which already
+    // PBAC evaluation: mirror the gRPC handler, which already
     // checks the "hmac" action. Without this the attribute-based access
     // control could be bypassed by switching from gRPC to REST.
     // The effective tenant is resolved before the policy decision: a
-    // tenant-scoped policy is matched against it (audit follow-up B9-b).
+    // tenant-scoped policy is matched against it.
     let tenant_id_owned = resolve_tenant(bound.as_deref(), &tenant_query.tenant_id);
     let tenant_id: &str = &tenant_id_owned;
 
@@ -1354,7 +1353,7 @@ async fn hmac(
     }))
 }
 
-/// Verify a managed HMAC-SM3 tag over `data` (audit P2-1).
+/// Verify a managed HMAC-SM3 tag over `data`.
 async fn hmac_verify(
     CallerId { key_id: caller_id }: CallerId,
     State(state): State<Arc<KmsState>>,
@@ -1365,9 +1364,9 @@ async fn hmac_verify(
 ) -> Result<Json<VerifyResponse>> {
     use base64::{Engine, engine::general_purpose::STANDARD};
 
-    // PBAC evaluation (audit B7-b): mirror the gRPC handler.
+    // PBAC evaluation: mirror the gRPC handler.
     // The effective tenant is resolved before the policy decision: a
-    // tenant-scoped policy is matched against it (audit follow-up B9-b).
+    // tenant-scoped policy is matched against it.
     let tenant_id_owned = resolve_tenant(bound.as_deref(), &tenant_query.tenant_id);
     let tenant_id: &str = &tenant_id_owned;
 
@@ -2168,16 +2167,16 @@ struct CreateApprovalReq {
     operation: String,
     resource_id: String,
     /// Ignored: the resource type is derived from the operation, because the
-    /// request body must not decide whether the tenant-ownership check runs
-    /// (audit follow-up B7-g). Kept in the schema for wire compatibility.
+    /// request body must not decide whether the tenant-ownership check runs.
+    /// Kept in the schema for wire compatibility.
     #[serde(default)]
     resource_type: String,
     /// Tenant of the resource. Ignored when the API key carries a tenant
     /// binding (the bound tenant is authoritative).
     #[serde(default = "default_tenant_id")]
     tenant_id: String,
-    /// Ignored: the requestor is derived from the authenticated API key
-    /// (audit follow-up B7-a). Kept in the schema for wire compatibility.
+    /// Ignored: the requestor is derived from the authenticated API key.
+    /// Kept in the schema for wire compatibility.
     #[serde(default)]
     requestor_id: String,
     justification: Option<String>,
@@ -2188,15 +2187,14 @@ struct CreateApprovalReq {
 /// The resource type is a property of the operation, not of the request. When
 /// it came from the request body a caller could label a key resource as
 /// something else ("policy") and thereby skip the tenant-ownership check
-/// while still binding the approval to another tenant's key
-/// (audit follow-up B7-g).
+/// while still binding the approval to another tenant's key.
 fn resource_type_for(operation: OperationType) -> &'static str {
     match operation {
         OperationType::KeyDelete | OperationType::KeyExport | OperationType::KeyRotate => "key",
         // The key does not exist yet — the approval authorises its creation.
         // Treating it as an existing "key" would make the tenant-ownership
         // check look for a key that cannot be there yet, so the request could
-        // never be raised (audit follow-up B7-h).
+        // never be raised.
         OperationType::HighValueKeyCreate => "key-request",
         OperationType::PolicyChange => "policy",
         OperationType::AuditAccess => "audit",
@@ -2208,8 +2206,7 @@ fn resource_type_for(operation: OperationType) -> &'static str {
 /// Map the authenticated API key's permission to an approval [`Role`].
 ///
 /// The role is always derived from the credential, never from the request body,
-/// so a caller cannot claim a higher authority than its key holds
-/// (audit follow-up B7-a).
+/// so a caller cannot claim a higher authority than its key holds.
 fn role_from_permission(permission: ApiKeyPermission) -> Role {
     match permission {
         ApiKeyPermission::ReadOnly => Role::User,
@@ -2218,7 +2215,7 @@ fn role_from_permission(permission: ApiKeyPermission) -> Role {
         ApiKeyPermission::SecurityOfficer => Role::SecurityOfficer,
         ApiKeyPermission::AuditAdmin => Role::User,
         // The only role that reaches the approval engine's `Admin` level,
-        // which the `tenant_admin` operation requires (audit follow-up B7-g).
+        // which the `tenant_admin` operation requires.
         ApiKeyPermission::TenantAdmin => Role::Admin,
     }
 }
@@ -2226,7 +2223,7 @@ fn role_from_permission(permission: ApiKeyPermission) -> Role {
 /// Warn when a client still sends a client-side approval identity.
 ///
 /// The server derives the requestor/approver from the authenticated API key
-/// (audit follow-up B7-a); the field is kept in the schema for wire
+///; the field is kept in the schema for wire
 /// compatibility but is not authoritative, so say so out loud instead of
 /// silently dropping it.
 fn warn_ignored_identity(field: &str, value: &str) {
@@ -2243,12 +2240,11 @@ fn warn_ignored_identity(field: &str, value: &str) {
 ///
 /// Returns a sanitized "key not found" error when the resource is unknown or
 /// owned by another tenant, so the endpoint cannot be used to probe for
-/// key ids of other tenants (audit follow-up B7-a).
+/// key ids of other tenants.
 ///
 /// Only key-scoped operations are checked here. The resource type is derived
 /// from the operation (never taken from the request body), so a caller cannot
-/// label a key resource as something else to skip this check
-/// (audit follow-up B7-g).
+/// label a key resource as something else to skip this check.
 async fn ensure_resource_tenant(
     state: &KmsState,
     resource_type: &str,
@@ -2277,8 +2273,7 @@ async fn ensure_resource_tenant(
 /// A tenant-bound key may only approve or reject the requests of its own
 /// tenant. Without this check a tenant-scoped approver could approve (or
 /// reject) the request of another tenant, and an approved request is what
-/// unlocks the export of that tenant's key material
-/// (audit follow-up B7-h).
+/// unlocks the export of that tenant's key material.
 ///
 /// A request that does not exist is left to the engine, which reports it as
 /// "not found" as well.
@@ -2312,14 +2307,14 @@ async fn create_approval_request(
     let operation_name = req.operation.clone();
     // The requestor is the authenticated API key, never a client-supplied
     // string: otherwise anyone could impersonate another requestor and
-    // bypass the engine's self-approval guard (audit follow-up B7-a).
+    // bypass the engine's self-approval guard.
     warn_ignored_identity("requestor_id", &req.requestor_id);
     let requestor = caller;
 
     // The resource type follows from the operation. Taking it from the
     // request body would let a caller label a key resource as e.g. "policy"
     // and thereby skip the tenant-ownership check below while still binding
-    // the approval to another tenant's key (audit follow-up B7-g).
+    // the approval to another tenant's key.
     let resource_type = resource_type_for(operation);
     if !req.resource_type.is_empty() && !req.resource_type.eq_ignore_ascii_case(resource_type) {
         tracing::warn!(
@@ -2368,8 +2363,7 @@ async fn list_pending_approvals(
     Path(tenant_id): Path<String>,
     BoundTenant(bound): BoundTenant,
 ) -> Result<Json<Vec<crate::approval::ApprovalRequestResponse>>> {
-    // A tenant-bound key may only list its own tenant's pending approvals
-    // (audit follow-up B7-g).
+    // A tenant-bound key may only list its own tenant's pending approvals.
     if let Some(bound_tenant) = bound.as_deref()
         && bound_tenant != tenant_id
     {
@@ -2416,7 +2410,7 @@ async fn get_approval_request(
 
     // A tenant-bound key may only read the approval requests of its own
     // tenant. Without this check any authenticated caller could read the
-    // approval requests of every other tenant by id (audit follow-up B7-g).
+    // approval requests of every other tenant by id.
     if let Some(bound_tenant) = bound.as_deref()
         && response.tenant_id != bound_tenant
     {
@@ -2441,12 +2435,12 @@ async fn get_approval_request(
 
 #[derive(Debug, Deserialize, ToSchema)]
 struct ApproveReq {
-    /// Ignored: the approver is derived from the authenticated API key
-    /// (audit follow-up B7-a). Kept in the schema for wire compatibility.
+    /// Ignored: the approver is derived from the authenticated API key.
+    /// Kept in the schema for wire compatibility.
     #[serde(default)]
     approver_id: String,
     /// Ignored: the approver's authority is derived from the authenticated API
-    /// key (audit follow-up B7-a). Kept in the schema for wire compatibility.
+    /// key. Kept in the schema for wire compatibility.
     #[serde(default)]
     approver_role: String,
     comment: Option<String>,
@@ -2483,13 +2477,12 @@ async fn approve_request(
     BoundTenant(bound): BoundTenant,
     Json(req): Json<ApproveReq>,
 ) -> Result<Json<crate::approval::ApprovalRequestResponse>> {
-    // A tenant-bound key may only approve the requests of its own tenant
-    // (audit follow-up B7-h).
+    // A tenant-bound key may only approve the requests of its own tenant.
     ensure_approval_tenant(&state, request_id, bound.as_deref())?;
 
     // The approver identity and its authority both come from the
     // authenticated API key. Taking them from the request body would let a
-    // single key forge a multi-party quorum (audit follow-up B7-a).
+    // single key forge a multi-party quorum.
     warn_ignored_identity("approver_id", &req.approver_id);
     warn_ignored_identity("approver_role", &req.approver_role);
     let role = role_from_permission(permission);
@@ -2511,12 +2504,11 @@ async fn approve_request(
 
 #[derive(Debug, Deserialize, ToSchema)]
 struct RejectReq {
-    /// Ignored: the rejector is derived from the authenticated API key
-    /// (audit follow-up B7-a).
+    /// Ignored: the rejector is derived from the authenticated API key.
     #[serde(default)]
     rejector_id: String,
     /// Ignored: the rejector's authority is derived from the authenticated API
-    /// key (audit follow-up B7-a).
+    /// key.
     #[serde(default)]
     rejector_role: String,
     reason: String,
@@ -2530,12 +2522,10 @@ async fn reject_request(
     BoundTenant(bound): BoundTenant,
     Json(req): Json<RejectReq>,
 ) -> Result<Json<crate::approval::ApprovalRequestResponse>> {
-    // A tenant-bound key may only reject the requests of its own tenant
-    // (audit follow-up B7-h).
+    // A tenant-bound key may only reject the requests of its own tenant.
     ensure_approval_tenant(&state, request_id, bound.as_deref())?;
 
-    // Identity and authority come from the credential, not the body
-    // (audit follow-up B7-a).
+    // Identity and authority come from the credential, not the body.
     warn_ignored_identity("rejector_id", &req.rejector_id);
     warn_ignored_identity("rejector_role", &req.rejector_role);
     let role = role_from_permission(permission);
@@ -2559,7 +2549,7 @@ async fn reject_request(
 #[derive(Debug, Deserialize, ToSchema)]
 struct CancelReq {
     /// Ignored: only the authenticated key that created the request may
-    /// cancel it (audit follow-up B7-a).
+    /// cancel it.
     #[serde(default)]
     requestor_id: String,
 }
@@ -2572,7 +2562,7 @@ async fn cancel_request(
 ) -> Result<Json<crate::approval::ApprovalRequestResponse>> {
     // Only the authenticated key that created the request may cancel it: the
     // engine compares this identity with the stored requestor, and both are
-    // now server-derived (audit follow-up B7-a).
+    // now server-derived.
     warn_ignored_identity("requestor_id", &req.requestor_id);
     let requestor = caller;
 
@@ -2612,9 +2602,9 @@ async fn envelope_encrypt(
     let kek_id = uuid::Uuid::parse_str(&req.kek_id)
         .map_err(|_| ApiError::InvalidRequest("invalid kek_id format".to_string()))?;
 
-    // PBAC evaluation — mirror the gRPC handler (audit follow-up B7-g).
+    // PBAC evaluation — mirror the gRPC handler.
     // The effective tenant is resolved before the policy decision: a
-    // tenant-scoped policy is matched against it (audit follow-up B9-b).
+    // tenant-scoped policy is matched against it.
     let tenant_id_owned = resolve_tenant(
         bound.as_deref(),
         req.tenant_id.as_deref().unwrap_or("default"),
@@ -2667,9 +2657,9 @@ async fn envelope_decrypt(
     let kek_id = uuid::Uuid::parse_str(&req.kek_id)
         .map_err(|_| ApiError::InvalidRequest("invalid kek_id format".to_string()))?;
 
-    // PBAC evaluation — mirror the gRPC handler (audit follow-up B7-g).
+    // PBAC evaluation — mirror the gRPC handler.
     // The effective tenant is resolved before the policy decision: a
-    // tenant-scoped policy is matched against it (audit follow-up B9-b).
+    // tenant-scoped policy is matched against it.
     let tenant_id_owned = resolve_tenant(
         bound.as_deref(),
         req.tenant_id.as_deref().unwrap_or("default"),
@@ -2749,9 +2739,9 @@ async fn envelope_rewrap(
     let kek_id = uuid::Uuid::parse_str(&req.kek_id)
         .map_err(|_| ApiError::InvalidRequest("invalid kek_id format".to_string()))?;
 
-    // PBAC evaluation — mirror the gRPC handler (audit follow-up B7-g).
+    // PBAC evaluation — mirror the gRPC handler.
     // The effective tenant is resolved before the policy decision: a
-    // tenant-scoped policy is matched against it (audit follow-up B9-b).
+    // tenant-scoped policy is matched against it.
     let tenant_id_owned = resolve_tenant(
         bound.as_deref(),
         req.tenant_id.as_deref().unwrap_or("default"),
@@ -2813,10 +2803,10 @@ async fn dh_derive(
     let key_id = uuid::Uuid::parse_str(&req.key_id)
         .map_err(|_| ApiError::InvalidRequest("invalid key_id format".to_string()))?;
 
-    // PBAC evaluation (audit B7-b): mirror the gRPC handler, which already
+    // PBAC evaluation: mirror the gRPC handler, which already
     // checks the "dh_derive" action.
     // The effective tenant is resolved before the policy decision: a
-    // tenant-scoped policy is matched against it (audit follow-up B9-b).
+    // tenant-scoped policy is matched against it.
     let tenant_id_owned = resolve_tenant(
         bound.as_deref(),
         req.tenant_id.as_deref().unwrap_or("default"),
@@ -2834,7 +2824,7 @@ async fn dh_derive(
     .await
     .map_err(|_| ApiError::PermissionDenied)?;
 
-    // Tenant isolation (audit B7-b): a key belongs to exactly one tenant, so
+    // Tenant isolation: a key belongs to exactly one tenant, so
     // the derived secret must never be handed to a caller acting for another
     // tenant. The keystore enforces this too; the check here turns a
     // cross-tenant attempt into the same sanitized "not found" answer the
@@ -2912,9 +2902,9 @@ async fn import_key(
     use base64::{Engine, engine::general_purpose::STANDARD};
 
     // The effective tenant is resolved before the policy decision: a
-    // tenant-scoped policy is matched against it (audit follow-up B9-b).
+    // tenant-scoped policy is matched against it.
     // Tenant is derived from the authenticated identity when the key is bound
-    // (audit P1-3); otherwise the caller-self-reported tenant is honoured.
+    //; otherwise the caller-self-reported tenant is honoured.
     let tenant = resolve_tenant(bound.as_deref(), &req.tenant_id);
 
     use crate::auth::check_rest_pbac;
@@ -2989,9 +2979,9 @@ async fn export_key(
 
     // PBAC evaluation
     // The effective tenant is resolved before the policy decision: a
-    // tenant-scoped policy is matched against it (audit follow-up B9-b).
+    // tenant-scoped policy is matched against it.
     // Tenant is derived from the authenticated identity when the key is bound
-    // (audit P1-3); otherwise the caller-supplied tenant is honoured. The service
+    //; otherwise the caller-supplied tenant is honoured. The service
     // layer enforces `meta.tenant_id == tenant_id` (cross-tenant/missing => 404),
     // so a bound key can no longer export another tenant's material by spoofing
     // `tenant_id` (replaces the previous reliance on the self-reported request value).
@@ -3009,7 +2999,7 @@ async fn export_key(
     .map_err(|_| ApiError::PermissionDenied)?;
 
     // Enforce approval gate: an approved, un-expired KeyExport request **bound to
-    // this key** (audit P1-2/P2-8).
+    // this key**.
     require_approved(
         &state,
         req.approval_id.as_deref(),
@@ -3023,7 +3013,7 @@ async fn export_key(
         .map_err(|_| ApiError::InvalidRequest("invalid base64 target_public_key".to_string()))?;
 
     let key_svc = state.key_service();
-    // Resolve the transport-key protection scheme (audit P2-6). Omitted/"rsa-oaep"
+    // Resolve the transport-key protection scheme. Omitted/"rsa-oaep"
     // keeps the historical RSA path; "sm2" switches to SM4-GCM wrap + SM2.
     let protection = crate::service::ExportProtection::parse(req.protection_scheme.as_deref())?;
     let exported = key_svc
@@ -3453,7 +3443,7 @@ mod tests {
     use super::*;
     use kms_core::key::KeySpec;
 
-    // resolve_tenant (audit P1-3): bound identity is authoritative and overrides
+    // resolve_tenant: bound identity is authoritative and overrides
     // the self-reported tenant; an unbound key keeps the self-reported value.
     #[test]
     fn test_resolve_tenant_bound_overrides_self_reported() {

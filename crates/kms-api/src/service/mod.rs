@@ -50,7 +50,7 @@ impl IntoApiError for ServiceError {
             ServiceError::KeyNotFound(id) => ApiError::KeyNotFound(id),
             // A missing version is a missing resource: answer 404 with the
             // sanitized "key not found" message, and keep the detail in the
-            // server log (audit follow-up B7-g).
+            // server log.
             ServiceError::KeyVersionNotFound(id) => ApiError::KeyNotFound(id),
             ServiceError::KeyOperationNotAllowed(msg) => ApiError::Forbidden(msg),
             ServiceError::InvalidCiphertext => {

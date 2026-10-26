@@ -111,8 +111,7 @@ impl KeySpec {
         )
     }
 
-    /// Whether the keystore can **generate** fresh key material for this spec
-    /// (audit P3-1: explicit "generatable" list).
+    /// Whether the keystore can **generate** fresh key material for this spec.
     ///
     /// Specs outside this set are still *declarable* (they parse and can be
     /// stored as metadata) and some are *importable*, but the software keystore
@@ -131,7 +130,7 @@ impl KeySpec {
     }
 
     /// Whether raw key material can be **imported** and format-validated for
-    /// this spec (audit P3-1: explicit "importable" list).
+    /// this spec.
     ///
     /// SM9 is deliberately excluded: its `validate_key_material` branch was a
     /// no-op that accepted anything, yet imported SM9 material cannot be used
@@ -348,7 +347,7 @@ impl DestructionProof {
     /// Compute HMAC signature for the destruction proof
     /// Hashes all fields except hmac_signature for deterministic output
     ///
-    /// Uses HMAC-SM3 (国密) per audit P4-2, replacing the previous HMAC-SHA256.
+    /// Uses HMAC-SM3 (国密), replacing the previous HMAC-SHA256.
     pub fn compute_hmac(&self, key: &[u8]) -> Vec<u8> {
         use gm_crypto::sm3::Sm3Hmac;
         // Serialize but exclude hmac_signature field for consistent hashing

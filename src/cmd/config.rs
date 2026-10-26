@@ -53,7 +53,7 @@ pub struct Config {
     #[serde(default)]
     pub kafka_auth: KafkaAuthConfig,
 
-    /// API keys with optional tenant bindings (audit B7-e).
+    /// API keys with optional tenant bindings.
     ///
     /// The server derives the tenant from the authenticated key, so a key
     /// declared here with a `tenant` cannot be used to reach another
@@ -107,7 +107,7 @@ pub struct BackupConfig {
     #[serde(default = "default_backup_kdf_iterations")]
     pub kdf_iterations: u32,
 
-    /// Passphrase that encrypts the backup master key at rest (audit P2-7).
+    /// Passphrase that encrypts the backup master key at rest.
     /// Typically supplied via the `BACKUP_MASTER_KEY_PASSPHRASE` env var. When
     /// `None`, the backup service falls back to an ephemeral per-process master
     /// key (backups will NOT survive a restart) with a loud warning.
@@ -915,7 +915,7 @@ pub struct DatabaseConfig {
     ///
     /// sqlx keeps retrying the connection until its own 30 s pool acquire
     /// timeout expires, so an unreachable PostgreSQL otherwise holds the
-    /// startup hostage: the fail-closed keystore gate (audit P1-4) is only
+    /// startup hostage: the fail-closed keystore gate is only
     /// reached a full timeout later, and the operator sees a hang instead of a
     /// refusal. The deadline bounds the *startup* attempt only — an
     /// established pool is unaffected. `0` disables the bound and leaves the
@@ -1055,7 +1055,7 @@ mod tests {
 
     #[test]
     fn test_backend_fail_closed_by_default() {
-        // audit P1-4: in-memory fallback must be opt-in; the default is fail-closed
+        // in-memory fallback must be opt-in; the default is fail-closed
         // so a production KMS never silently loses keys by booting in-memory.
         assert!(!Config::default().backend.allow_in_memory);
         assert!(!BackendConfig::default().allow_in_memory);
@@ -1174,7 +1174,7 @@ mod tests {
         assert!(config.buffer_size > 0, "buffer size should be positive");
     }
 
-    /// audit B7-e: the declared API keys must be parseable from the config
+    /// the declared API keys must be parseable from the config
     /// file, including the tenant binding.
     #[test]
     fn test_config_api_keys_parse_with_tenant_binding() {
@@ -1207,7 +1207,7 @@ mod tests {
         assert_eq!(auditor.role, "audit-admin");
     }
 
-    /// audit B7-e: a config without the section must still parse.
+    /// a config without the section must still parse.
     #[test]
     fn test_config_api_keys_default_empty() {
         let config: Config = toml::from_str("").expect("config must parse");

@@ -1,5 +1,4 @@
-//! PostgreSQL-backed tests for the **persisted** PBAC policy store
-//! (audit follow-up B9-a).
+//! PostgreSQL-backed tests for the **persisted** PBAC policy store.
 //!
 //! The PBAC engine keeps its policy set in memory, so before this change a
 //! policy installed through the API vanished on the next restart. The engine
@@ -13,7 +12,7 @@
 //!   loads it and still decides requests with it;
 //! - a removed policy is removed from the database, not only from memory.
 //!
-//! The tenant dimension (audit follow-up B9-b) is checked here too: the
+//! The tenant dimension is checked here too: the
 //! `tenant` column must survive the round trip, and a row written before that
 //! column existed must still load — as a policy that is not tenant-scoped.
 //!

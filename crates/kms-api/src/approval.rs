@@ -82,7 +82,7 @@ impl ApprovalManager {
     ///
     /// Returns the engine error so the caller can distinguish a self-approval,
     /// a duplicate vote, an insufficient authority level and a missing request
-    /// (audit follow-up B7-a) instead of collapsing them all into "not found".
+    /// instead of collapsing them all into "not found".
     pub fn approve(
         &mut self,
         request_id: uuid::Uuid,
@@ -109,7 +109,7 @@ impl ApprovalManager {
     ///
     /// Returns the engine error so the caller can distinguish a self-rejection,
     /// a duplicate vote, an expired request and a missing request
-    /// (audit follow-up B7-g) instead of collapsing them all into "not found".
+    /// instead of collapsing them all into "not found".
     pub fn reject(
         &mut self,
         request_id: uuid::Uuid,
@@ -244,7 +244,7 @@ fn level_to_string(level: ApprovalLevel) -> String {
 
 // The request DTOs that used to live here (`CreateApprovalRequest`,
 // `ApproveRequest`, `RejectRequest`, `CancelRequest`) and their `to_role()`
-// helpers were removed in audit follow-up B7-g: they took the approver's
+// helpers were removed because they took the approver's
 // identity and authority from the request body, which is exactly the forgery
 // the approval workflow must not allow. The server derives both from the
 // authenticated API key (see `rest::role_from_permission`).

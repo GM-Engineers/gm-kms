@@ -11,7 +11,7 @@
 //!
 //! and the refusals that matter are checked through the SDK as well: an
 //! export without an approval, and an export unlocked by an approval that has
-//! expired (audit B8-d).
+//! expired.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -34,7 +34,7 @@ use tokio::net::TcpListener;
 const ADMIN_SECRET: &str = "e2e-admin-key-secret";
 
 /// Three distinct approvers. The approver identity comes from the API key
-/// (audit follow-up B7-a), so a quorum needs three *different* keys.
+///, so a quorum needs three *different* keys.
 const OFFICER_SECRETS: [&str; 3] = [
     "e2e-officer-1-secret",
     "e2e-officer-2-secret",
@@ -249,7 +249,7 @@ async fn the_sdk_walks_the_whole_life_of_a_key() {
     assert_eq!(approval.resource_id, key.id.to_string());
     assert_eq!(approval.tenant_id, TENANT);
 
-    // Three distinct approvers: one key is one vote (audit follow-up B7-a).
+    // Three distinct approvers: one key is one vote.
     for secret in OFFICER_SECRETS {
         let officer = officer_client(&base, secret);
         let approved = officer
@@ -283,7 +283,7 @@ async fn the_sdk_walks_the_whole_life_of_a_key() {
 /// export whose approval does not authorize it is a *refusal* (403).
 ///
 /// The distinction matters to a caller: a 400 says "fix your request", a 403
-/// says "you are not allowed" (audit B8-d, `docs/api-semantics.md` §8.5).
+/// says "you are not allowed".
 #[tokio::test]
 async fn an_export_without_an_approval_is_a_malformed_request() {
     let (base, _state, handle) = spawn_server().await;
@@ -374,7 +374,7 @@ async fn an_export_with_a_malformed_approval_id_is_a_malformed_request() {
 }
 
 /// An approval that has expired authorizes nothing, even though it was
-/// approved while it was valid (audit B8-d).
+/// approved while it was valid.
 #[tokio::test]
 async fn an_expired_approval_does_not_unlock_an_export() {
     let (base, state, handle) = spawn_server().await;

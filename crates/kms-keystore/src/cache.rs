@@ -3,7 +3,7 @@
 //! Implements cache-aside pattern for key metadata.
 //! Caches key metadata with TTL to reduce datastore load.
 //!
-//! ## Current scope: write-through / reserved (audit P3-5)
+//! ## Current scope: write-through / reserved
 //!
 //! Cache entries are keyed by `(tenant_id, key_id)` (see the `cache_key_id`
 //! helper), but
@@ -17,7 +17,7 @@
 //! In other words this layer is, as it stands, a write-through + invalidation
 //! scaffold: it keeps the cache consistent but does not yet accelerate reads.
 //! Enabling read hits requires extending the trait's read methods to accept
-//! `tenant_id` (tracked by audit P3-5); until then do not rely on this cache
+//! `tenant_id` (tracked-5); until then do not rely on this cache
 //! for read-path latency. The `#[allow(dead_code)]`-free read helpers below are
 //! intentionally kept so the enablement is a one-line change once the interface
 //! carries the tenant dimension.
@@ -65,7 +65,7 @@ impl<B: KeystoreBackend + Send + Sync> KeystoreBackend for RedisCachedKeystore<B
 
     /// Read a key's metadata.
     ///
-    /// audit P3-5: the cache key requires `tenant_id`, which this trait method
+    /// the cache key requires `tenant_id`, which this trait method
     /// does not receive, so we cannot look the entry up by `(tenant_id, key_id)`
     /// and the read is **always a cache miss** today. We fetch from storage and
     /// re-populate the cache (write-through) so it stays consistent, but no read
@@ -73,7 +73,7 @@ impl<B: KeystoreBackend + Send + Sync> KeystoreBackend for RedisCachedKeystore<B
     async fn get_key_metadata(&self, key_id: &uuid::Uuid) -> Result<KeyMeta> {
         // The cache key includes tenant_id, but we don't have tenant_id until we
         // fetch the key, so this read path can never compute a cache lookup key
-        // and always misses (audit P3-5 — reserved read cache, write-through only).
+        // and always misses.
 
         tracing::debug!("Cache miss for key {}, fetching from storage", key_id);
 
@@ -207,8 +207,7 @@ impl<B: KeystoreBackend + Send + Sync> KeystoreBackend for RedisCachedKeystore<B
         self.inner.get_key_material(key_id, tenant_id).await
     }
 
-    /// Delegate the version-aware material lookup to the inner backend
-    /// (audit B7-c).
+    /// Delegate the version-aware material lookup to the inner backend.
     ///
     /// Without this override the wrapper inherited the trait's default
     /// implementation, which ignores the requested version and returns the

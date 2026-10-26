@@ -444,7 +444,7 @@ impl Client {
     /// Export a key.
     ///
     /// The export is refused with **403** when the approval does not exist,
-    /// has expired, or is bound to another key (audit B8-d).
+    /// has expired, or is bound to another key.
     pub async fn export_key(&self, request: &ExportKeyRequest) -> Result<ExportKeyResult> {
         let tenant = self.resolve_tenant(request.tenant_id.as_deref());
         let body = serde_json::to_value(request)?;
@@ -458,7 +458,7 @@ impl Client {
     /// Raise an approval request.
     ///
     /// The requestor is derived from the API key by the server; a
-    /// body-supplied requestor is ignored (audit follow-up B7-a).
+    /// body-supplied requestor is ignored.
     pub async fn create_approval(&self, request: &CreateApprovalRequest) -> Result<Approval> {
         let tenant = self.resolve_tenant(request.tenant_id.as_deref());
         let body = Client::body_with_tenant(request, &tenant)?;

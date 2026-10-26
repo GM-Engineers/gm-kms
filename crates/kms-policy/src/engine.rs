@@ -93,7 +93,7 @@ pub struct PBACEngine {
     /// Durable store for the policy set, when one is configured.
     ///
     /// The engine evaluates out of memory, so this is the half that makes an
-    /// installed policy survive a restart (audit follow-up B9-a). It is
+    /// installed policy survive a restart. It is
     /// optional: an engine without one behaves exactly as before, which is
     /// what the in-memory development mode relies on.
     repository: Option<Arc<dyn PolicyRepository>>,
@@ -225,14 +225,13 @@ impl PBACEngine {
     /// at all" from "policies configured but none matches" use this counter:
     /// an engine with zero enabled policies imposes no attribute-level
     /// restriction, and as soon as the first enabled policy is installed the
-    /// default-deny applies to everything the policies do not cover
-    /// (audit follow-up B7-g).
+    /// default-deny applies to everything the policies do not cover.
     ///
     /// Only **enabled** policies count, because that is exactly what
     /// [`PBACEngine::evaluate`] takes into account. Counting disabled ones
     /// would make a single disabled policy switch the engine into the
     /// default-deny mode while it matches nothing — locking out every
-    /// request with no way to tell why (audit follow-up B7-h).
+    /// request with no way to tell why.
     pub async fn enabled_policy_count(&self) -> usize {
         self.policies
             .read()
@@ -295,7 +294,7 @@ impl PBACEngine {
     /// Returns `None` when **no enabled policy** is configured. The caller
     /// then knows that attribute-based control is not in force; once at least
     /// one enabled policy exists the engine's default-deny applies to
-    /// everything the policies do not cover (audit follow-up B7-h).
+    /// everything the policies do not cover.
     ///
     /// The count and the decision are taken under a single lock, so a policy
     /// installed concurrently can neither be missed (which would allow a
@@ -537,7 +536,7 @@ impl Default for PBACEngine {
     }
 }
 
-/// Whether a policy applies to the request's tenant (audit follow-up B9-b).
+/// Whether a policy applies to the request's tenant.
 ///
 /// A policy without a tenant constraint applies to every tenant. A policy
 /// with one applies only to the tenants its pattern matches — and a request
@@ -669,7 +668,7 @@ mod tests {
 
     /// A request that carries no tenant matches no tenant-scoped policy: a
     /// caller that does not know which tenant it is in must not reach a
-    /// tenant-scoped rule (audit follow-up B9-b).
+    /// tenant-scoped rule.
     #[tokio::test]
     async fn test_request_without_a_tenant_matches_no_tenant_scoped_policy() {
         let engine = PBACEngine::new();
@@ -698,8 +697,7 @@ mod tests {
     }
 
     /// A policy without a tenant constraint applies to every tenant — the
-    /// behaviour every policy had before the tenant dimension existed
-    /// (audit follow-up B9-b).
+    /// behaviour every policy had before the tenant dimension existed.
     #[tokio::test]
     async fn test_policy_without_a_tenant_applies_to_every_tenant() {
         let engine = PBACEngine::new();
@@ -733,7 +731,7 @@ mod tests {
     }
 
     /// The tenant of a policy is a glob pattern, so one policy can cover a
-    /// family of tenants (audit follow-up B9-b).
+    /// family of tenants.
     #[tokio::test]
     async fn test_tenant_glob_pattern_covers_a_family() {
         let engine = PBACEngine::new();
@@ -815,9 +813,8 @@ mod tests {
     }
 
     /// `enabled_policy_count` distinguishes "no policy configured" from
-    /// "policies configured but none matches" (audit follow-up B7-g), and it
-    /// counts only the policies `evaluate` actually takes into account
-    /// (audit follow-up B7-h).
+    /// "policies configured but none matches", and it
+    /// counts only the policies `evaluate` actually takes into account.
     #[tokio::test]
     async fn test_enabled_policy_count_tracks_policies() {
         let engine = PBACEngine::new();
@@ -843,7 +840,7 @@ mod tests {
     }
 
     /// A disabled policy is invisible to `evaluate`, so it must not be counted
-    /// as an active policy either (audit follow-up B7-h).
+    /// as an active policy either.
     #[tokio::test]
     async fn test_disabled_policy_is_not_counted() {
         let engine = PBACEngine::new();
@@ -863,7 +860,7 @@ mod tests {
     }
 
     /// `evaluate_if_configured` returns `None` while no enabled policy exists
-    /// and the decision once one does (audit follow-up B7-h).
+    /// and the decision once one does.
     #[tokio::test]
     async fn test_evaluate_if_configured() {
         let engine = PBACEngine::new();
@@ -1446,7 +1443,7 @@ mod tests {
         assert_eq!(alerts.len(), 3);
     }
 
-    // ── Durable store tests (audit follow-up B9-a) ──
+    // ── Durable store tests ──
 
     /// An in-memory stand-in for a real policy store.
     ///

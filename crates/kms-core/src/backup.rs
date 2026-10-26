@@ -21,7 +21,7 @@ use uuid::Uuid;
 const BACKUP_VERSION: u32 = 2;
 
 /// File name (within `backup_path`) holding the passphrase-encrypted backup
-/// master key, so backups stay recoverable across process restarts (audit P2-7).
+/// master key, so backups stay recoverable across process restarts.
 pub const MASTER_KEY_FILE: &str = "master_key.enc";
 
 /// SM4 key size in bytes (128 bits per GM/T 0002-2012)
@@ -169,7 +169,7 @@ pub struct EncryptedMasterKey {
     pub kdf_iterations: u32,
 }
 
-/// Write `content` to `path` with owner-only permissions (audit B7-f).
+/// Write `content` to `path` with owner-only permissions.
 ///
 /// The content is written to a temporary file in the same directory and then
 /// renamed over the target:
@@ -179,7 +179,7 @@ pub struct EncryptedMasterKey {
 /// * the write is atomic — a reader never observes a half-written file;
 /// * the rename replaces a symlink instead of following it, so a symlinked
 ///   path cannot redirect the write (or the permission change) to another
-///   file (audit follow-up B7-g).
+///   file.
 ///
 /// The temporary file name carries random bytes so that it cannot be
 /// predicted (and pre-created) by another user of the same directory.
@@ -230,8 +230,7 @@ fn write_owner_only(path: &std::path::Path, content: &[u8]) -> std::io::Result<(
 ///
 /// Owner-only permissions are a unix concept; on other platforms the file
 /// inherits the directory's default access control. The write is still done
-/// through a temporary file so the content is never half-written
-/// (audit follow-up B7-g).
+/// through a temporary file so the content is never half-written.
 #[cfg(not(unix))]
 fn write_owner_only(path: &std::path::Path, content: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
@@ -364,12 +363,12 @@ impl MasterKey {
         })
     }
 
-    /// Persist this master key passphrase-encrypted to `path` (audit P2-7).
+    /// Persist this master key passphrase-encrypted to `path`.
     ///
     /// Writes an [`EncryptedMasterKey`] JSON envelope with owner-only (0o600)
     /// permissions, creating the parent directory if needed.
     ///
-    /// audit B7-f: the file is created with the restrictive mode **atomically**
+    /// the file is created with the restrictive mode **atomically**
     /// (via `OpenOptions::mode`), instead of being written with the default
     /// umask and tightened afterwards. The old order left a window in which
     /// another local user could read the passphrase-encrypted master key.
@@ -473,7 +472,7 @@ impl KeyBackupService {
     }
 
     /// Load the backup master key from `backup_path`/[`MASTER_KEY_FILE`],
-    /// generating and persisting it on first use (audit P2-7).
+    /// generating and persisting it on first use.
     ///
     /// This is the restart-safe replacement for [`KeyBackupService::with_random_master_key`]:
     /// the same master key is reloaded after a process restart, so backups taken
@@ -513,7 +512,7 @@ impl KeyBackupService {
     /// Verify the master key is usable: an SM4-GCM encrypt/decrypt round-trip and
     /// an SM3-HMAC compute both succeed. Called at startup so a corrupted or
     /// wrong-passphrase master key fails fast rather than silently producing
-    /// backups that can never be restored (audit P2-7).
+    /// backups that can never be restored.
     pub fn self_check(&self) -> Result<()> {
         let probe = b"kms-backup-masterkey-self-check";
         let mut nonce = [0u8; SM4_NONCE_SIZE];
@@ -528,8 +527,7 @@ impl KeyBackupService {
         Ok(())
     }
 
-    /// Open the most recent backup file and check that it could be restored
-    /// (audit B8-c / B5 P2-7).
+    /// Open the most recent backup file and check that it could be restored.
     ///
     /// `load_or_create` only checks that the **master key** itself is usable
     /// (an SM4-GCM round-trip plus an SM3-HMAC). It never opens a backup
@@ -1191,7 +1189,7 @@ mod tests {
         assert_eq!(loaded.key_meta.id, key_meta.id);
     }
 
-    /// audit B7-f: the encrypted master key file must be owner-only readable.
+    /// the encrypted master key file must be owner-only readable.
     ///
     /// The file used to be created with the default umask (typically 0644)
     /// and only tightened afterwards, which left a window in which another
@@ -1216,7 +1214,7 @@ mod tests {
         );
     }
 
-    /// audit B7-f: rewriting an existing file must not widen its permissions
+    /// rewriting an existing file must not widen its permissions
     /// before the new content is written.
     #[cfg(unix)]
     #[test]
@@ -1242,7 +1240,7 @@ mod tests {
         );
     }
 
-    /// audit B7-g: the write must not follow a symlink. Replacing the
+    /// the write must not follow a symlink. Replacing the
     /// destination with a temporary file and renaming it over the target
     /// replaces the symlink itself, so the key material cannot be redirected
     /// to another file (and the permissions of another file cannot be changed
@@ -1379,7 +1377,7 @@ mod tests {
         );
     }
 
-    // -- Master key persistence (audit P2-7) --
+    // -- Master key persistence --
 
     #[test]
     fn test_master_key_save_load_roundtrip() {

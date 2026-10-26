@@ -1,4 +1,4 @@
-//! Interface-level guard for the fail-closed startup semantics (audit B0 / P1-4).
+//! Interface-level guard for the fail-closed startup semantics.
 //!
 //! `src/cmd/server.rs::in_memory_fallback_permitted` has unit-level coverage,
 //! but the property that matters in production is what the **process** does:
@@ -38,11 +38,11 @@ const CONNECT_TIMEOUT_SECS: u64 = 2;
 /// seconds of work.
 const EXIT_DEADLINE_SECS: u64 = 180;
 
-/// The marker the fail-closed keystore gate prints (audit P1-4).
+/// The marker the fail-closed keystore gate prints.
 const REFUSAL_MARKER: &str = "refusing to start without a persistent keystore";
 
 /// The marker of the *next* gate on the startup path: the plaintext gRPC
-/// listener is refused unless the operator opted in (audit PR-4.1).
+/// listener is refused unless the operator opted in.
 const TLS_GATE_MARKER: &str = "KMS gRPC requires TLS in production";
 
 /// Write a minimal configuration that points at an unreachable PostgreSQL.
@@ -95,7 +95,7 @@ fn free_port() -> u16 {
 ///
 /// The database TLS mode is pinned to `verify_ca` with a CA path, because the
 /// production default (`verify_ca`) is mandatory and the server refuses to
-/// start when it is not configured (audit PR-4.4). The opt-in modes
+/// start when it is not configured. The opt-in modes
 /// (`no_verify` / `disabled`) would require `KMS_DEV_MODE` / `KMS_ALLOW_INSECURE`,
 /// and those flags also lift the in-memory keystore gate — which is exactly
 /// what this file must not do.

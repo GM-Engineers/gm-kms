@@ -124,7 +124,7 @@ pub struct GmRng {
 }
 
 /// 熵实例（`new()`）在两次 OS 重播种之间的默认 generate 调用次数
-/// （audit P3-2：周期重播种）。
+///。
 const DEFAULT_RESEED_INTERVAL: u64 = 1024;
 
 impl GmRng {
@@ -146,7 +146,7 @@ impl GmRng {
         }
     }
 
-    /// 达到配置的间隔时从 OS 拉取新熵并混入状态（audit P3-2：周期重播种）。
+    /// 达到配置的间隔时从 OS 拉取新熵并混入状态。
     /// `reseed_interval == 0` 时为空操作，保证种子实例的确定性。
     fn maybe_periodic_reseed(&mut self) -> Result<(), CsprngError> {
         if self.reseed_interval == 0 {
@@ -199,10 +199,10 @@ impl Default for GmRng {
 
 /// From OS CSPRNG (`getrandom`) fill `len` bytes.
 ///
-/// audit P3-2：关键密码材料（DEK/nonce/随机密钥字节）统一走经过充分审计的
+/// 关键密码材料（DEK/nonce/随机密钥字节）统一走经过充分审计的
 /// OS CSPRNG；自建 HMAC-SM3 DRBG（[`GmRng`]）限定于非密钥场景（测试/掩码等）。
 ///
-/// audit B7-f：失败时返回错误而不是 panic —— 请求路径上的 panic 会把一次
+/// 失败时返回错误而不是 panic —— 请求路径上的 panic 会把一次
 /// 熵源故障放大成拒绝服务。
 fn os_random(len: usize) -> Result<Vec<u8>, CsprngError> {
     let mut buf = vec![0u8; len];
@@ -210,17 +210,17 @@ fn os_random(len: usize) -> Result<Vec<u8>, CsprngError> {
     Ok(buf)
 }
 
-/// 生成随机DEK（走 OS CSPRNG，audit P3-2）
+/// 生成随机DEK（走 OS CSPRNG）
 pub fn generate_dek(length: usize) -> Result<Vec<u8>, CsprngError> {
     os_random(length)
 }
 
-/// 生成随机nonce（走 OS CSPRNG，audit P3-2）
+/// 生成随机nonce（走 OS CSPRNG）
 pub fn generate_nonce(length: usize) -> Result<Vec<u8>, CsprngError> {
     os_random(length)
 }
 
-/// 生成随机字节（走 OS CSPRNG，audit P3-2）
+/// 生成随机字节（走 OS CSPRNG）
 pub fn random_bytes(len: usize) -> Result<Vec<u8>, CsprngError> {
     os_random(len)
 }
@@ -252,7 +252,7 @@ pub fn verify() -> Result<(), CsprngError> {
             "OS entropy source unavailable".to_string(),
         ));
     }
-    // audit P3-2: run the DRBG instantiation known-answer self-test every time.
+    // run the DRBG instantiation known-answer self-test every time.
     self_test()?;
     let bytes1 = random_bytes(32)?;
     let bytes2 = random_bytes(32)?;
@@ -267,13 +267,13 @@ pub fn verify() -> Result<(), CsprngError> {
 // Frozen DRBG reference vector: first 32 bytes of
 // `GmRng::from_seed(&[0x01; 32]).random_bytes(32)` under the current
 // HMAC-SM3 instantiation. Captured once; self_test() then guards against any
-// accidental drift in the DRBG core (audit P3-2).
+// accidental drift in the DRBG core.
 const DRBG_KAT_EXPECTED: [u8; 32] = [
     62, 47, 184, 75, 201, 248, 226, 119, 152, 15, 78, 78, 49, 128, 44, 151, 25, 193, 214, 24, 97,
     121, 92, 173, 207, 139, 159, 86, 59, 103, 251, 220,
 ];
 
-/// DRBG 实例化 Known-Answer 自检（audit P3-2）。
+/// DRBG 实例化 Known-Answer 自检。
 ///
 /// 从固定种子实例化 HMAC-SM3 DRBG，校验：
 /// 1. 输出与冻结的参考向量逐字节一致（防算法漂移）；
@@ -380,13 +380,13 @@ mod tests {
 
     #[test]
     fn test_drbg_kat_self_test() {
-        // audit P3-2: the DRBG instantiation KAT must pass and stay deterministic.
+        // the DRBG instantiation KAT must pass and stay deterministic.
         assert!(self_test().is_ok());
     }
 
     #[test]
     fn test_key_material_helpers_use_os_csprng() {
-        // audit P3-2: DEK/nonce/random_bytes come from the OS CSPRNG — non-zero
+        // DEK/nonce/random_bytes come from the OS CSPRNG — non-zero
         // and unique across calls.
         let a = generate_dek(32).expect("generate_dek");
         let b = generate_dek(32).expect("generate_dek");
@@ -404,7 +404,7 @@ mod tests {
 
     #[test]
     fn test_periodic_reseed_triggers_at_interval() {
-        // audit P3-2: an entropy-backed instance reseeds from the OS once the
+        // an entropy-backed instance reseeds from the OS once the
         // countdown elapses, mutating the state and resetting the countdown.
         let mut rng = GmRng::new().unwrap();
         rng.reseed_interval = 4;

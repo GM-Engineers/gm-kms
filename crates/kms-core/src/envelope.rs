@@ -84,7 +84,7 @@ impl Default for EnvelopeConfig {
 /// 生成随机DEK (Data Encryption Key)
 ///
 /// 使用经过审计的 OS CSPRNG (`getrandom`)；自建 HMAC-SM3 DRBG 仅限非密钥场景
-/// （audit P3-2）。熵源故障时返回错误而非 panic（audit B7-f）。
+///。熵源故障时返回错误而非 panic。
 pub fn generate_dek(length: usize) -> Result<Vec<u8>, crate::csprng::CsprngError> {
     gm_generate_dek(length)
 }
@@ -92,7 +92,7 @@ pub fn generate_dek(length: usize) -> Result<Vec<u8>, crate::csprng::CsprngError
 /// 生成随机nonce
 ///
 /// 使用经过审计的 OS CSPRNG (`getrandom`)；自建 HMAC-SM3 DRBG 仅限非密钥场景
-/// （audit P3-2）。熵源故障时返回错误而非 panic（audit B7-f）。
+///。熵源故障时返回错误而非 panic。
 pub fn generate_nonce(length: usize) -> Result<Vec<u8>, crate::csprng::CsprngError> {
     gm_generate_nonce(length)
 }

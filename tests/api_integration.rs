@@ -37,7 +37,7 @@ const ADMIN_HEADER: &str = "x-api-key";
 
 /// Distinct SecurityOfficer keys used as distinct approvers.
 ///
-/// audit follow-up B7-a: the approver identity is derived from the
+/// the approver identity is derived from the
 /// authenticated API key, so one key = one vote. A multi-party quorum
 /// therefore requires several *different* keys, not one key replayed with
 /// different body-supplied names.
@@ -48,15 +48,15 @@ const OFFICER_SECRETS: [&str; 3] = [
 ];
 
 /// An Operator key: authority level `Double`, which is **below** the `Triple`
-/// level a key export requires (audit follow-up B7-a).
+/// level a key export requires.
 const OPERATOR_SECRET: &str = "integration-operator-key-secret";
 
 /// A TenantAdmin key: the only role that reaches the approval engine's `Admin`
-/// level, which the `tenant_admin` operation requires (audit follow-up B7-g).
+/// level, which the `tenant_admin` operation requires.
 const TENANT_ADMIN_SECRET: &str = "integration-tenant-admin-key-secret";
 
 /// A tenant-bound approver: holds the approve permission, but only within its
-/// own tenant (audit follow-up B7-h).
+/// own tenant.
 const ACME_OFFICER_SECRET: &str = "integration-acme-officer-key-secret";
 
 /// 起一个绑定随机 loopback 端口的 REST 服务器，返回 `http://addr` base URL 与
@@ -68,7 +68,7 @@ async fn spawn_rest_server() -> (String, reqwest::Client, tokio::task::JoinHandl
 /// Same as [`spawn_rest_server`], plus extra PBAC policies.
 ///
 /// Deny policies are evaluated before allow policies by the PBAC engine, so an
-/// extra `Deny` policy can single out one action (audit B7-b).
+/// extra `Deny` policy can single out one action.
 async fn spawn_rest_server_with_policies(
     extra_policies: Vec<Policy>,
 ) -> (String, reqwest::Client, tokio::task::JoinHandle<()>) {
@@ -110,7 +110,7 @@ async fn spawn_rest_server_with_policies_and_state(
 }
 
 /// Boot a REST server with the default allow-all policy and hand back the
-/// [`KmsState`] as well (audit B8-d).
+/// [`KmsState`] as well.
 async fn spawn_rest_server_with_state() -> (
     String,
     reqwest::Client,
@@ -123,7 +123,7 @@ async fn spawn_rest_server_with_state() -> (
 /// Same as [`spawn_rest_server_with_policies`], but with **no** policy at all.
 ///
 /// This mirrors a production deployment: the server starts with an empty PBAC
-/// engine and never loads policies at startup (audit follow-up B7-g). Before
+/// engine and never loads policies at startup. Before
 /// the fix, every protected endpoint answered 403 in this state, i.e. the KMS
 /// was unusable out of the box.
 async fn spawn_rest_server_without_policy() -> (String, reqwest::Client, tokio::task::JoinHandle<()>)
@@ -166,7 +166,7 @@ async fn spawn_rest_server_with_engine_and_state(
     let api_key_config = ApiKeyConfig::with_keys(vec![
         ApiKey::key_admin(ADMIN_SECRET.to_string()).with_key_id("admin".to_string()),
         ApiKey::security_officer(OFFICER_SECRET.to_string()).with_key_id("officer".to_string()),
-        // Distinct approver keys (audit follow-up B7-a): each key is one vote.
+        // Distinct approver keys: each key is one vote.
         ApiKey::security_officer(OFFICER_SECRETS[0].to_string())
             .with_key_id("officer-1".to_string()),
         ApiKey::security_officer(OFFICER_SECRETS[1].to_string())
@@ -176,16 +176,16 @@ async fn spawn_rest_server_with_engine_and_state(
         // Lower authority: may not approve a Triple-level (key export) request.
         ApiKey::operator(OPERATOR_SECRET.to_string()).with_key_id("operator".to_string()),
         // Admin-level authority: the only role that can approve a
-        // `tenant_admin` request (audit follow-up B7-g).
+        // `tenant_admin` request.
         ApiKey::tenant_admin(TENANT_ADMIN_SECRET.to_string())
             .with_key_id("tenant-admin".to_string()),
-        // Tenant-bound admin key (audit P1-3): server derives tenant="acme" from this
+        // Tenant-bound admin key: server derives tenant="acme" from this
         // identity and ignores any self-reported tenant.
         ApiKey::key_admin(ACME_SECRET.to_string())
             .with_key_id("acme".to_string())
             .with_tenant("acme".to_string()),
         // Tenant-bound approver: it may approve, but only within its own
-        // tenant (audit follow-up B7-h).
+        // tenant.
         ApiKey::security_officer(ACME_OFFICER_SECRET.to_string())
             .with_key_id("acme-officer".to_string())
             .with_tenant("acme".to_string()),
@@ -398,7 +398,7 @@ async fn create_approval(
     body["id"].as_str().expect("approval id").to_string()
 }
 
-/// Approve with `n` **distinct** approver keys (audit follow-up B7-a).
+/// Approve with `n` **distinct** approver keys.
 ///
 /// The server derives the approver identity from the authenticated API key,
 /// so every vote needs a *different* key; replaying one key with different
@@ -570,7 +570,7 @@ async fn export_key_rest_requires_bound_approval() {
             .is_some_and(|s| !s.is_empty()),
         "export response must carry encrypted_transport_key: body={body}"
     );
-    // audit P3-4: the misleading dead fields must no longer be present.
+    // the misleading dead fields must no longer be present.
     assert!(
         body.get("export_id").is_none() && body.get("expires_at").is_none(),
         "export response must not advertise a non-existent pull-back flow: body={body}"
@@ -720,7 +720,7 @@ async fn rotate_key_requires_approval() {
 }
 
 // =============================================================================
-// Batch 3: multi-tenant identity binding (audit P1-3)
+// Batch 3: multi-tenant identity binding
 // =============================================================================
 
 /// A key bound to tenant "acme" ignores the tenant self-reported in the request body:
@@ -792,7 +792,7 @@ async fn bound_key_confined_to_its_tenant() {
 }
 
 // =============================================================================
-// Batch 4: versioned export + interface decrypt version echo (audit P2-2/P2-3)
+// Batch 4: versioned export + interface decrypt version echo
 // =============================================================================
 
 /// Encrypt via REST, returning (ciphertext, nonce, tag, format_version, key_version).
@@ -873,7 +873,7 @@ async fn decrypt_with_version(
 
 /// After a rotation the active key version bumps to 2. A ciphertext produced
 /// post-rotation binds AAD to version 2; REST must echo that version to decrypt.
-/// Before the audit P2-3 fix the handler hardcoded `version: 1`, so this failed.
+/// Before the fix the handler hardcoded `version: 1`, so this failed.
 #[tokio::test]
 async fn decrypt_after_rotation_echoes_version_rest() {
     let (base, client, handle) = spawn_rest_server().await;
@@ -913,7 +913,7 @@ async fn decrypt_after_rotation_echoes_version_rest() {
 }
 
 // =============================================================================
-// Batch 5: managed HMAC-SM3 (audit P2-1)
+// Batch 5: managed HMAC-SM3
 // =============================================================================
 
 /// REST compute+verify round-trip over the dedicated /hmac endpoints, and that
@@ -1042,7 +1042,7 @@ async fn spawn_dual_stack() -> DualStack {
 /// Same as [`spawn_dual_stack`], plus extra PBAC policies.
 ///
 /// Both channels share one engine, so a policy that denies an action blocks
-/// the REST *and* the gRPC endpoint of that action (audit follow-up B7-g).
+/// the REST *and* the gRPC endpoint of that action.
 async fn spawn_dual_stack_with_policies(extra_policies: Vec<Policy>) -> DualStack {
     let keystore = Arc::new(SoftwareKeystore::new());
 
@@ -1195,7 +1195,7 @@ async fn grpc_decrypt(
 
 #[tokio::test]
 async fn p43_ciphertext_interops_across_rest_and_grpc() {
-    // audit P4-3 invariant: AAD binding (key_id, tenant, version, format 2) is
+    // invariant: AAD binding (key_id, tenant, version, format 2) is
     // computed identically on both channels, so a ciphertext sealed on one
     // decrypts on the other.
     let mut stack = spawn_dual_stack().await;
@@ -1238,7 +1238,7 @@ async fn p43_ciphertext_interops_across_rest_and_grpc() {
 
 #[tokio::test]
 async fn p43_not_found_maps_consistently_across_channels() {
-    // audit P4-3 error-mapping invariant (the aligned KeyNotFound row): a missing
+    // error-mapping invariant (the aligned KeyNotFound row): a missing
     // key yields REST 404 and gRPC NOT_FOUND on both channels.
     let mut stack = spawn_dual_stack().await;
     let tenant = "tenant-a";
@@ -1280,7 +1280,7 @@ async fn p43_not_found_maps_consistently_across_channels() {
 
 #[tokio::test]
 async fn p43_cross_tenant_denied_on_both_channels() {
-    // audit P4-3 tenant-isolation invariant: a key owned by tenant-a is not usable
+    // tenant-isolation invariant: a key owned by tenant-a is not usable
     // under tenant-b on either channel (both fail-closed with the sanitized
     // not-found semantics used to avoid cross-tenant enumeration).
     let mut stack = spawn_dual_stack().await;
@@ -1750,7 +1750,7 @@ async fn b7d_grpc_decrypt_without_version_uses_the_same_default_as_rest() {
 // The PBAC engine denies every request that no policy covers. The server
 // starts with an EMPTY engine and loads no policies at startup, so with the
 // raw engine semantics every protected endpoint answered 403 — the KMS was
-// unusable out of the box (audit follow-up B7-g).
+// unusable out of the box.
 //
 // The fix: while no policy is configured, attribute-based control is inactive
 // and the role-based check (the API key's permission bitmask) is the only
@@ -1873,7 +1873,7 @@ async fn b7g1_installed_policy_restores_default_deny() {
 // The gRPC channel checked the attribute-based policy for every one of its 23
 // methods, but six REST endpoints did not evaluate it at all. A client that
 // was denied over gRPC could simply switch to REST and get through — the
-// protocol-switchable PBAC bypass (audit follow-up B7-g).
+// protocol-switchable PBAC bypass.
 //
 // The action names below are the ones the gRPC handlers use, verbatim.
 // =============================================================================
@@ -2312,7 +2312,7 @@ async fn b7g3_approval_request_is_not_readable_across_tenants() {
 // A declared API key whose secret environment variable is set but empty used
 // to register an *empty* credential — an empty `x-api-key` header then
 // authenticated. Duplicate secrets and duplicate key ids were accepted
-// silently (audit follow-up B7-g).
+// silently.
 //
 // The corresponding startup validation lives in `src/cmd/server.rs`
 // (`build_api_key_config`) and is covered by unit tests there.

@@ -66,7 +66,7 @@ impl KmsError {
     ///
     /// A 403 means the caller is not authorized — the request was well-formed
     /// but the approval or policy gate refused it. A 400, in contrast, means
-    /// the request itself was malformed (audit B8-d).
+    /// the request itself was malformed.
     pub fn is_forbidden(&self) -> bool {
         self.status() == Some(403)
     }

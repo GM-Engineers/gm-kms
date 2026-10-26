@@ -34,7 +34,7 @@ kms-audit = { path = "../../crates/kms-audit" }
 kms-core = { path = "../../crates/kms-core" }
 kms-keystore = { path = "../../crates/kms-keystore" }
 kms-policy = { path = "../../crates/kms-policy" }
-# audit B8-e: the end-to-end guard builds an "approved but expired" approval
+# the end-to-end guard builds an "approved but expired" approval
 # request, which needs the approval entity types.
 kms-approval = { path = "../../crates/kms-approval" }
 gm-sm9-rs = { workspace = true }

@@ -303,7 +303,7 @@ impl CryptoService {
         Ok(result)
     }
 
-    /// Compute a managed HMAC-SM3 over `data` using an `Sm3Hmac` key (audit P2-1).
+    /// Compute a managed HMAC-SM3 over `data` using an `Sm3Hmac` key.
     ///
     /// The key material never leaves the keystore: it is fetched internally via
     /// `get_key_material` and fed to `gm_crypto::sm3::Sm3Hmac`. An optional `aad`
@@ -335,7 +335,7 @@ impl CryptoService {
         Ok((mac, meta.version))
     }
 
-    /// Verify a managed HMAC-SM3 tag over `data` (audit P2-1). The comparison is
+    /// Verify a managed HMAC-SM3 tag over `data`. The comparison is
     /// constant-time and the key material is never returned.
     pub async fn hmac_verify(
         &self,
@@ -1129,7 +1129,7 @@ mod tests {
         );
     }
 
-    // ── HMAC-SM3 managed MAC (audit P2-1) ──
+    // ── HMAC-SM3 managed MAC ──
 
     #[test]
     fn build_mac_input_without_aad_is_data_only() {

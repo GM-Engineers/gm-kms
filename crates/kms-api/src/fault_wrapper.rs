@@ -206,7 +206,7 @@ mod tests {
         assert!(err.contains("fault injected"));
     }
 
-    /// audit B7-c: a backend that does not keep a version history must fail
+    /// a backend that does not keep a version history must fail
     /// closed for a historical version instead of handing out the *current*
     /// material (which would silently export the wrong key).
     ///

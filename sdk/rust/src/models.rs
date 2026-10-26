@@ -575,7 +575,7 @@ pub struct ExportKeyRequest {
     pub purpose: String,
     /// The id of the approved `KeyExport` approval request.
     ///
-    /// The export is refused without it (403, audit B8-d).
+    /// The export is refused without it (403).
     #[serde(default)]
     pub approval_id: Option<String>,
     /// How the transport key is protected: `"rsa-oaep"` (default) or `"sm2"`.
@@ -693,8 +693,7 @@ pub enum ApprovalLevel {
 /// The request to raise an approval request.
 ///
 /// The requestor is **not** part of this request: the server derives it from
-/// the authenticated API key, and a body-supplied requestor would be ignored
-/// (audit follow-up B7-a).
+/// the authenticated API key, and a body-supplied requestor would be ignored.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreateApprovalRequest {
     /// The operation the approval is for.

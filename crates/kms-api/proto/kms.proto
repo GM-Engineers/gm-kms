@@ -83,7 +83,7 @@ message DecryptResponse {
 message RotateKeyRequest {
     string id = 1;
     string tenant_id = 2;
-    // Approval request ID (KeyRotate is a dual-approval operation; audit P2-4).
+    // Approval request ID (KeyRotate is a dual-approval operation).
     string approval_id = 3;
 }
 
@@ -123,7 +123,7 @@ message VerifyResponse {
     bool valid = 1;
 }
 
-// Managed HMAC-SM3 messages (audit P2-1)
+// Managed HMAC-SM3 messages
 message HmacRequest {
     string key_id = 1;
     bytes data = 2;
@@ -270,15 +270,15 @@ message ExportKeyRequest {
     // POST /v1/approvals, obtain the required quorum approvals, then
     // supply the approved request ID here.
     string approval_id = 3;
-    // Wrapped-export semantics (audit P2-5): the caller supplies its public key so the
+    // Wrapped-export semantics: the caller supplies its public key so the
     // server can return an encrypted transport key + wrapped material instead of raw
     // plaintext. For the RSA-OAEP path this is a PKCS#1 DER RSA public key.
     bytes target_public_key = 4;
     // Purpose of the export (migration, backup, ...) for audit.
     string purpose = 5;
-    // Transport-key protection scheme (audit P2-6): ""/"rsa-oaep" (default) or "sm2".
+    // Transport-key protection scheme: ""/"rsa-oaep" (default) or "sm2".
     string protection_scheme = 6;
-    // Key version to export (audit P2-2). 0 exports the current version; a
+    // Key version to export. 0 exports the current version; a
     // non-zero value exports that historical version while the key is exportable.
     uint32 version = 7;
 }
@@ -287,7 +287,7 @@ message ExportKeyResponse {
     // Fields 1, 2 and 3 belonged to earlier, unreleased shapes
     // (`bytes key_material`, `uint32 version`, and a removed field). Reusing
     // those field numbers for a different wire type would make an old client
-    // mis-parse the response instead of failing cleanly (audit B7-f), so they
+    // mis-parse the response instead of failing cleanly, so they
     // are reserved and the new fields start at 4.
     reserved 1, 2, 3;
 

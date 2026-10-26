@@ -106,7 +106,7 @@ pub trait KeystoreBackend: Send + Sync {
     /// The default implementation serves the current version only and **fails
     /// closed** for an older one: a backend without version history must not
     /// hand out the current material for a historical request, because the
-    /// caller would silently receive the wrong key (audit B7-c). Backends that
+    /// caller would silently receive the wrong key. Backends that
     /// keep a version history override this method.
     async fn get_key_material_version(
         &self,
@@ -134,7 +134,7 @@ pub trait KeystoreBackend: Send + Sync {
     /// to compute a shared secret. Supports ECDH-P256, ECDH-P384, X25519, and SM2-KEX.
     ///
     /// `tenant_id` is the tenant the caller acts in; every implementation must
-    /// verify that the key belongs to it (audit B7-b). Without that check a
+    /// verify that the key belongs to it. Without that check a
     /// caller could derive a shared secret with another tenant's private key.
     async fn derive_shared_secret(
         &self,

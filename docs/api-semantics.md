@@ -1,4 +1,4 @@
-# REST ↔ gRPC 语义对照表（audit P4-3）
+# REST ↔ gRPC 语义对照表
 
 > 更新日期：2026-10-25
 > 目的：gm-kms 同时提供 REST（axum/JSON）与 gRPC（tonic/protobuf）两条通道，
@@ -31,7 +31,7 @@
 | 信封加解密/重包 | `POST /v1/envelope/{encrypt,decrypt,rewrap}` | `EnvelopeEncrypt/Decrypt/Rewrap` |
 | 健康 | `GET /v1/health`、`/readyz` | （健康为 REST 侧探针） |
 
-## 2. 租户身份派生（audit P1-3 / Batch 3）
+## 2. 租户身份派生
 
 两条通道都遵循"**认证身份优先**"原则：当 API Key 绑定了租户，绑定租户为权威值，
 请求自报租户被忽略（不匹配时记 WARN，便于发现客户端租户伪装）。差异仅在**未绑定 Key** 的缺省：
@@ -42,10 +42,10 @@
 | Key 未绑定 + 请求带非空租户 | 用请求租户 | 用请求租户 |
 | Key 未绑定 + 请求租户为空 | **缺省 `"default"`** 并打印 SECURITY WARN | **显式失败** `INVALID_ARGUMENT`（"tenant_id is required"） |
 
-> 差异说明：REST 保留 `"default"` 缺省以兼容既有部署/测试；gRPC 自 Batch 3 起对空租户
+> 差异说明：REST 保留 `"default"` 缺省以兼容既有部署/测试；gRPC 对空租户
 > fail-closed，移除静默放行。
 >
-> **如何在生产中消除该分叉**（audit B7-e）：在服务端配置里声明**绑定租户**的 API Key，
+> **如何在生产中消除该分叉**：在服务端配置里声明**绑定租户**的 API Key，
 > 此时两条通道都使用绑定租户，忽略调用方自报值：
 >
 > ```toml
@@ -58,7 +58,7 @@
 >
 > 未绑定租户的 Key 启动时会打印 `warn` 日志（因为它仍依赖调用方自报租户）。
 >
-> 配置校验（audit B7-g）：空密钥、重复密钥、重复 `key_id` 均导致**启动失败**。
+> 配置校验：空密钥、重复密钥、重复 `key_id` 均导致**启动失败**。
 
 ## 3. 错误映射
 
@@ -71,20 +71,20 @@
 | `InvalidRequest` | 400 | `INVALID_ARGUMENT` | ✅ |
 | `InvalidArgument` | 400 | `INVALID_ARGUMENT` | ✅ |
 | `Forbidden` | 403 | `PERMISSION_DENIED` | ✅ |
-| `PermissionDenied` | 403 | `PERMISSION_DENIED` | ✅（audit B7-g 补齐） |
-| `BadRequest` | 400 | `INVALID_ARGUMENT` | ✅（audit B7-g 补齐） |
-| `TooManyRequests` | 429 | `RESOURCE_EXHAUSTED` | ✅（audit B7-g 补齐） |
-| `NotImplemented` | 501 | `UNIMPLEMENTED` | ✅（audit B7-g 补齐） |
+| `PermissionDenied` | 403 | `PERMISSION_DENIED` | ✅ 对齐 |
+| `BadRequest` | 400 | `INVALID_ARGUMENT` | ✅ 对齐 |
+| `TooManyRequests` | 429 | `RESOURCE_EXHAUSTED` | ✅ 对齐 |
+| `NotImplemented` | 501 | `UNIMPLEMENTED` | ✅ 对齐 |
 | `QuotaExceeded` | 429 | `RESOURCE_EXHAUSTED` | ✅ |
 | `Internal` | 500（脱敏） | `INTERNAL`（脱敏） | ✅ |
 
 > 此前 `PermissionDenied`/`BadRequest`/`TooManyRequests`/`NotImplemented` 在
 > `grpc.rs::api_error_to_status` 中落入 `_ => Status::internal(...)` 兜底，gRPC 侧报
-> `INTERNAL` 而 REST 报 403/400/429/501（audit B7-g 已补齐映射）。
+> `INTERNAL` 而 REST 报 403/400/429/501。
 >
 > **不存在的密钥版本**统一走 `KeyNotFound` → 404（脱敏），两通道一致。
 
-## 4. 导出语义（audit P2-5 / P2-6 / P2-2）
+## 4. 导出语义
 
 两通道都收敛为**包裹语义（wrapped export）**，绝不回传明文材料：
 
@@ -94,15 +94,15 @@
   + `key_fingerprint`（材料 SHA-256 指纹，供完整性校验）。
 - 传输密钥保护：`rsa-oaep` 走 RSA-OAEP；`sm2` 走 SM2 加密（国密合规路径）。
 
-## 5. 版本与 format_version（audit P0 / P2-3 / B7-d）
+## 5. 版本与 format_version
 
 - `Encrypt` 响应回显 `format_version`（REST `u8`、gRPC `uint32`）与 `version`（密钥版本号）。
   当前生产格式为 **2**，其 AAD 绑定 `(key_id, tenant_id, version)`。
 - `Decrypt` 接受 `format_version`（缺省按 **2** 重算绑定 AAD）；`format_version` 0/1 为遗留空 AAD 密文，
   需显式回传以解密历史密文。
-- **缺省 `version` 的语义**（audit B7-d 更正，audit B7-g 补齐 REST 侧）：
+- **缺省 `version` 的语义**：
   - REST：`version` 缺省为 **1**（`default_decrypt_version()`）；**显式传 `version: 0`
-    同样归一为 1**（audit B7-g）。
+    同样归一为 1**。
   - gRPC：proto3 无法区分“未设置”与 0，因此服务端将 `version == 0` 归一为 **1**，
     与 REST 一致（`grpc.rs::decrypt`）。
   - 两通道的缺省值相同，但**均不代表“当前版本”**：密钥轮换后（当前版本 > 1），
@@ -110,22 +110,22 @@
     从而解密失败（fail-closed，不会静默使用错误密钥）。
   - 例外：`version` 缺省仅对“密钥当前版本就是 1”的密文成立。
 - **不存在的密钥版本**是“资源不存在”，不是“算法非法”：后端统一返回
-  `Error::KeyVersionNotFound`，API 层脱敏为 **404 `key not found`**（audit B7-g）。
+  `Error::KeyVersionNotFound`，API 层脱敏为 **404 `key not found`**。
   早期实现报 `InvalidAlgorithm`，会变成 400 并把内部文案回给客户端。
 
-## 6. 托管 HMAC-SM3（audit P2-1）
+## 6. 托管 HMAC-SM3
 
 - 独立 `KeySpec::Sm3Hmac` + `Hmac`/`HmacVerify` 通道，走 `gm_crypto::sm3::Sm3Hmac`，
   **不复用** AES-GCM 分支。REST `/v1/keys/{id}/hmac[/verify]` 与 gRPC `Hmac`/`HmacVerify` 收敛同一服务方法。
 - `aad` 为可选域分离输入（长度前缀混入 MAC），计算与验证必须一致。
 
-## 7. 密钥销毁证明（audit P4-2）
+## 7. 密钥销毁证明
 
 - `DestructionProof` 的 HMAC 签名使用 **HMAC-SM3**（替换遗留 HMAC-SHA256）。
 - 证明中的 `material_hash` 仍为 **SHA-256**（`hash_algorithm="SHA256"` 字段描述的是材料哈希，
   非签名 HMAC），两通道/各后端一致。
 
-## 8. 审批工作流：身份来自认证主体（audit B7-a）
+## 8. 审批工作流：身份来自认证主体
 
 审批的**请求方、审批人、审批人角色**一律由服务端从**认证的 API Key** 推导，不再采信请求体：
 
@@ -148,7 +148,7 @@
 
 另外，审批请求的资源必须属于该请求的租户，否则返回脱敏的 404（不泄露资源是否存在）。
 
-### 8.1 资源类型由操作推导（audit B7-g）
+### 8.1 资源类型由操作推导
 
 `resource_type` **不是**请求体字段的特权：它由 `operation` 推导（`key_delete`/`key_export`/
 `key_rotate` → `key`，`high_value_key_create` → `key-request`（密钥尚不存在，批准的是创建
@@ -159,10 +159,10 @@
 > 原因：早期实现以请求体的 `resource_type` 决定是否做租户归属校验，调用方把密钥资源
 > 标成 `"policy"` 就能跳过校验，把审批绑定到别的租户的密钥上。
 >
-> 修正（audit B7-h）：`high_value_key_create` 最初也被推导为 `key`，于是它要求一个**尚未
+> 修正：`high_value_key_create` 最初也被推导为 `key`，于是它要求一个**尚未
 > 存在**的密钥，审批永远无法发起；改为 `key-request`。
 
-### 8.2 `tenant_admin` 需要可达到的 `Admin` 级（audit B7-g）
+### 8.2 `tenant_admin` 需要可达到的 `Admin` 级
 
 `tenant_admin` 操作要求 `ApprovalLevel::Admin`，而 `Role::Admin` 之前没有任何 API Key 角色
 能映射到（`read-only`/`operator`/`key-admin`/`security-officer`/`audit-admin` 只能到
@@ -170,16 +170,16 @@
 新增 `tenant-admin` 角色（配置名 `tenant-admin`）映射到 `Role::Admin`；它只持有
 `APPROVE_ACTION` 权限，不持有策略/审计/MFA 管理权，三员分立不受影响。
 
-### 8.3 审批请求的可见性（audit B7-g）
+### 8.3 审批请求的可见性
 
 绑定租户的 Key 只能读取/列举**自己租户**的审批请求：跨租户读取返回脱敏 404，
 跨租户列举返回 403。未绑定租户的 Key 沿用本 API 其余部分的既有语义（自报租户）。
 
-> audit B7-h 补齐：最初只收紧了**读**路径（读取/列举），**写**路径（审批/驳回）未收紧。
+> 补齐记录：最初只收紧了**读**路径（读取/列举），**写**路径（审批/驳回）未收紧。
 > 于是绑定租户的审批 Key 可以批准（或驳回）其它租户的请求，而被批准的请求正是导出该租户
 > 密钥材料的凭据。现在 `approve`/`reject` 同样做租户校验（跨租户 → 脱敏 404）。
 
-### 8.4 错误不再被压平（audit B7-g）
+### 8.4 错误不再被压平
 
 `reject` 路径此前把所有引擎错误（自审批、已投票、已过期、已终止）统一压成 404；
 现在与 `approve` 路径一样按 `ApprovalError` 映射（自审批 → 403 等）。
@@ -187,7 +187,7 @@
 > 兼容性：请求体中上述字段仍可发送（未知字段被忽略），服务端会记录 `warn` 日志提示
 > 这些字段不再生效；新客户端应停止发送。
 
-### 8.5 审批闸门：缺失 400，未授权 403（audit B8-d）
+### 8.5 审批闸门：缺失 400，未授权 403
 
 导出/轮换等受审批保护的端点，其审批闸门按**两种不同性质**的失败区分状态码：
 
@@ -196,7 +196,7 @@
 | `approval_id` **缺失或格式非法**（畸形调用） | 400 `InvalidRequest` | `INVALID_ARGUMENT` |
 | `approval_id` 存在但**不获授权**（未批准 / 已过期 / 绑定到别的资源） | 403 `Forbidden` | `PERMISSION_DENIED` |
 
-> 变更（audit B8-d）：此前 REST 把"审批存在但不获授权"也压成 400，与 gRPC 通道的
+> 变更：此前 REST 把"审批存在但不获授权"也压成 400，与 gRPC 通道的
 > `PERMISSION_DENIED` 分叉。同一道安全闸门在两条通道给出不同语义，会让调用方把
 > "重新审批"（400）与"改权限"（403）混为一谈。现在 REST 对齐 gRPC。
 >
@@ -206,7 +206,7 @@
 过期判定在服务端：审批请求带 `expires_at`，闸门要求 `now <= expires_at`。
 被批准后过期的单据**不再**授权导出，且**不会**下发任何密钥材料。
 
-## 9. PBAC：两通道同源（audit B7-g）
+## 9. PBAC：两通道同源
 
 REST 与 gRPC 通过**同一个**求值入口（`kms_api::auth::evaluate_pbac`）评估属性策略，
 动作名与资源 id 逐字一致，共 23 个：
@@ -222,7 +222,7 @@ sm9_sign    sm9_verify  sm9_encrypt  sm9_decrypt  query_audit_events
 > （`sign`/`verify`/`get_key`/`envelope_encrypt`/`envelope_decrypt`/`envelope_rewrap`）
 > **完全不做**求值——被 gRPC 拒绝的客户端换到 REST 即可绕过。
 
-### 9.1 空引擎 = 未启用（audit B7-g）
+### 9.1 空引擎 = 未启用
 
 策略引擎对“未被任何策略覆盖”的请求返回 `Deny`。而服务端启动时**不加载任何策略**，
 若直接沿用该语义，所有受 PBAC 保护的端点（含建钥、加密、解密）在**出厂状态下**
@@ -239,14 +239,14 @@ sm9_sign    sm9_verify  sm9_encrypt  sm9_decrypt  query_audit_events
 > 两通道共用同一入口，因此不会出现一通道放行、另一通道拒绝的分叉。显式 `Deny` 策略始终优先
 > 于 `Allow`。
 >
-> 计数只包含**已启用**的策略（audit B7-h）：被禁用的策略不匹配任何请求，若把它计入，
+> 计数只包含**已启用**的策略：被禁用的策略不匹配任何请求，若把它计入，
 > 就会在“什么都匹配不到”的状态下切到默认拒绝，把所有调用方锁在门外且无从查因。
 >
-> 策略持久化到 PostgreSQL 的 `policies` 表：**重启后仍在**（audit B9-a）。
+> 策略持久化到 PostgreSQL 的 `policies` 表：**重启后仍在**。
 > 启动时服务端会加载已持久化的策略；加载失败则**拒绝启动**（fail-closed），
 > 绝不把“读不到”当成“没有策略”而静默降级。
 
-### 9.2 策略持久化与 fail-closed 启动（audit B9-a）
+### 9.2 策略持久化与 fail-closed 启动
 
 策略引擎的求值集在内存里，持久层是另一半：通过 API 安装的策略会**写穿**到
 PostgreSQL 的 `policies` 表，进程重启时再加载回引擎。
@@ -268,7 +268,7 @@ PostgreSQL 的 `policies` 表，进程重启时再加载回引擎。
 > 写穿的方向也是同一个道理：**持久态是真相源**。落库失败就不进内存，
 > 否则会出现“内存里有、库里没有”的策略——它看起来已安装，直到下次重启静默消失。
 
-### 9.3 策略的租户维度（audit B9-b）
+### 9.3 策略的租户维度
 
 策略多一个可选的 `tenant` 字段。省略（或空串）表示这条策略**不受租户限定**，
 对所有租户生效——这与租户维度出现之前的语义完全一致。
@@ -325,10 +325,10 @@ PostgreSQL 的 `policies` 表，进程重启时再加载回引擎。
 - 导出均为包裹语义（`wrapped_key` 非明文、含 `encrypted_transport_key`）；
 - 共享错误码（`KeyNotFound`/`InvalidRequest`/`Forbidden`）在两通道语义对齐。
 
-第 3 节曾经存在的 ⚠️ 分叉已在 audit B7-g 中消除（`api_error_to_status` 补齐四个变体），
+第 3 节曾经存在的 ⚠️ 分叉已消除（`api_error_to_status` 补齐四个变体），
 现在两通道的错误码完全对齐。
 
-### Batch 7 / B7-g 的固化用例
+### 审批与 PBAC 的固化用例
 
 | 前缀 | 覆盖的缺陷 |
 |------|-----------|
@@ -342,7 +342,7 @@ PostgreSQL 的 `policies` 表，进程重启时再加载回引擎。
 引导语义与 `policy_count`；`src/cmd/server.rs` 的单测固化 API Key 配置校验；
 `crates/kms-core/src/backup.rs` 的单测固化主密钥文件的原子写与不跟随符号链接。
 
-### B9-a 的固化用例
+### 策略持久化的固化用例
 
 | 位置 | 覆盖的语义 |
 |------|-----------|
@@ -350,11 +350,11 @@ PostgreSQL 的 `policies` 表，进程重启时再加载回引擎。
 | `crates/kms-policy/src/engine.rs` | 写穿：装/删策略先落库；落库失败时内存不变；读不到的存储报**错**而不是空集；加载后的策略仍参与求值 |
 | `tests/api_policy_pg_integration.rs` | 真实 PostgreSQL：策略落到 `policies` 表、逐字段往返、**重启后仍在且仍生效**、删除后不再复活、建表幂等 |
 
-### B9-b 的固化用例
+### 策略租户维度的固化用例
 
 | 位置 | 覆盖的语义 |
 |------|-----------|
 | `crates/kms-policy/src/engine.rs` | 租户限定策略只命中自己的租户；无租户的请求不命中租户限定策略；无 `tenant` 的策略对所有租户生效；glob 覆盖一族租户；租户限定的拒绝不影响其它租户 |
 | `crates/kms-api/src/auth.rs` | 求值入口收到的租户决定哪条策略生效（租户维度穿透 `evaluate_pbac`） |
 | `tests/api_integration.rs` | 租户限定的拒绝只覆盖它点名的那个租户；无租户的请求不落入租户限定策略；**换协议不能绕过**租户限定策略（REST 403 与 gRPC `PermissionDenied` 同时成立） |
-| `tests/api_policy_pg_integration.rs` | 真实 PostgreSQL：`tenant` 列逐字段往返，且**没有 `tenant` 的旧行**（B9-b 之前写入的行）加载后仍是不限租户的策略 |
+| `tests/api_policy_pg_integration.rs` | 真实 PostgreSQL：`tenant` 列逐字段往返，且**没有 `tenant` 的旧行**（`tenant` 列引入之前写入的行）加载后仍是不限租户的策略 |

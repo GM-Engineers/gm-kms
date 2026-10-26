@@ -606,7 +606,7 @@ impl AlgorithmSelfTest for Sm9SelfTest {
 // GM DRBG Known Answer Test
 // ============================================================================
 
-/// HMAC-SM3 DRBG instantiation Known-Answer Test (audit P3-2).
+/// HMAC-SM3 DRBG instantiation Known-Answer Test.
 ///
 /// Verifies the custom CSPRNG reproduces a frozen reference vector for a fixed
 /// seed, guarding against accidental drift in the DRBG core.

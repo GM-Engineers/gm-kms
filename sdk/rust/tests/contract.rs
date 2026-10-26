@@ -683,7 +683,7 @@ fn approval_request_is_understood_by_both_sides() {
     assert_eq!(server.resource_id, KEY_ID);
     assert_eq!(server.tenant_id, "acme");
     // The identity fields are still accepted (for wire compatibility) but the
-    // server derives the requestor from the API key (audit follow-up B7-a).
+    // server derives the requestor from the API key.
     assert_eq!(server.resource_type, "key");
     assert_eq!(server.requestor_id, "ignored");
     assert_eq!(server.justification.as_deref(), Some("quarterly migration"));
@@ -738,7 +738,7 @@ fn approval_decisions_carry_only_the_comment_and_the_reason() {
     let server: ServerApproveRequest = serde_json::from_value(json).unwrap();
     assert_eq!(server.comment.as_deref(), Some("looks good"));
     // The SDK sends no approver identity at all: the server would ignore it
-    // anyway (audit follow-up B7-a), so the SDK does not offer the field.
+    // anyway, so the SDK does not offer the field.
     assert_eq!(server.approver_id, "");
     assert_eq!(server.approver_role, "");
 

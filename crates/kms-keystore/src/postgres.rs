@@ -537,7 +537,7 @@ impl PostgresKeystore {
             .map_err(|e| Error::Internal(e.to_string()))
     }
 
-    /// Load the key material of a specific historical version (audit B7-c).
+    /// Load the key material of a specific historical version.
     ///
     /// The Postgres backend stores every rotation as its own key row, and the
     /// archived material of a rotated-away key lives in `key_versions` under
@@ -968,7 +968,7 @@ impl super::KeystoreBackend for PostgresKeystore {
             )));
         }
 
-        // Select the material for the requested version (audit B7-c): the
+        // Select the material for the requested version: the
         // current material is only correct for the current version. Falling
         // back to it for a different version would silently decrypt with the
         // wrong key and report a tag failure that looks like corruption.
@@ -984,7 +984,7 @@ impl super::KeystoreBackend for PostgresKeystore {
             &entry.meta.spec,
             ciphertext,
             // The format-2 AAD binds the *owning* tenant, exactly like the
-            // software backend (audit B7-c / M4). Using the request tenant
+            // software backend. Using the request tenant
             // here would make the two backends compute different AADs.
             &entry.meta.tenant_id,
             _aad,
@@ -992,7 +992,7 @@ impl super::KeystoreBackend for PostgresKeystore {
         .await
     }
 
-    /// Get the raw material of a specific key version (audit B7-c).
+    /// Get the raw material of a specific key version.
     ///
     /// The default trait implementation silently returns the *current*
     /// material for every version, which made a versioned export return the
@@ -1252,7 +1252,7 @@ impl super::KeystoreBackend for PostgresKeystore {
         material: Vec<u8>,
     ) -> Result<KeyMeta> {
         // Validate the material with the **shared, algorithm-aware** validator
-        // (audit P3-1) instead of a local hard-coded length table. The table
+        // instead of a local hard-coded length table. The table
         // demanded exactly 512 bytes for RSA-4096, which is the size of the
         // modulus alone — a real RSA-4096 private key in DER (PKCS#8, ~2374
         // bytes) could therefore never be imported through this backend. This
@@ -1345,7 +1345,7 @@ impl super::KeystoreBackend for PostgresKeystore {
     ) -> Result<SharedSecret> {
         use kms_core::dh::SharedSecret;
 
-        // Tenant isolation (audit B7-b): the private key must belong to the
+        // Tenant isolation: the private key must belong to the
         // tenant the caller acts in.
         // Audit B8-b: resolve the entry in one step. The two-step form
         // (tenant check, then read the entry back out of the cache) failed

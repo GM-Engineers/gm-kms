@@ -1,5 +1,4 @@
-//! Interface-level security guards against the **PostgreSQL-backed** keystore
-//! (audit B8-d / plan Batch 0 + Batch 2).
+//! Interface-level security guards against the **PostgreSQL-backed** keystore.
 //!
 //! `tests/api_integration.rs` exercises the interface guards against the
 //! in-memory `SoftwareKeystore`. The guards themselves (approval expiry,
@@ -48,7 +47,7 @@ const ADMIN_HEADER: &str = "x-api-key";
 ///
 /// The server derives the approver identity from the authenticated API key,
 /// so one key is one vote: a Triple-level quorum needs three *different*
-/// keys (audit follow-up B7-a).
+/// keys.
 const OFFICER_SECRETS: [&str; 3] = [
     "pg-integration-officer-1-secret",
     "pg-integration-officer-2-secret",
