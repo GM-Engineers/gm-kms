@@ -3,17 +3,22 @@ package kms
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 )
 
 // CreatePolicyRequest is the request to create a PBAC policy.
 type CreatePolicyRequest struct {
-	Name      string            `json:"name"`
-	Effect    string            `json:"effect"` // "allow" or "deny"
-	Condition json.RawMessage   `json:"condition"`
-	Resources []string          `json:"resources"`
-	Subjects  []string          `json:"subjects"`
-	Enabled   *bool             `json:"enabled,omitempty"`
+	Name      string          `json:"name"`
+	Effect    string          `json:"effect"` // "allow" or "deny"
+	Condition json.RawMessage `json:"condition"`
+	Resources []string        `json:"resources"`
+	Subjects  []string        `json:"subjects"`
+	// Tenant restricts the policy to a single tenant. Leaving it unset means
+	// the policy is not tenant-scoped and applies to every tenant. A glob
+	// pattern is accepted, so "tenant-*" covers a family of tenants.
+	Tenant  *string `json:"tenant,omitempty"`
+	Enabled *bool   `json:"enabled,omitempty"`
 }
 
 // Policy represents a PBAC policy.
@@ -24,7 +29,10 @@ type Policy struct {
 	Condition json.RawMessage `json:"condition"`
 	Resources []string        `json:"resources"`
 	Subjects  []string        `json:"subjects"`
-	Enabled   bool            `json:"enabled"`
+	// Tenant is the tenant the policy is restricted to, nil when the policy
+	// applies to every tenant.
+	Tenant  *string `json:"tenant"`
+	Enabled bool    `json:"enabled"`
 }
 
 // CreatePolicy creates a new PBAC policy. Requires security-officer role.
@@ -52,4 +60,23 @@ func (c *Client) GetPolicy(ctx context.Context, policyID string) (*Policy, error
 		return nil, err
 	}
 	return &result, nil
+}
+
+// DeletePolicy removes a PBAC policy. Returns nil on success (204 No Content).
+// Requires security-officer role.
+//
+// Without this the operator could install a policy but never take it back,
+// and a persisted policy that turns out to be wrong would outlive every
+// restart.
+func (c *Client) DeletePolicy(ctx context.Context, policyID string) error {
+	resp, err := c.doRequest(ctx, http.MethodDelete, fmt.Sprintf("/v1/policies/%s", policyID), nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if !isSuccess(resp.StatusCode) {
+		return c.parseError(resp)
+	}
+	return nil
 }

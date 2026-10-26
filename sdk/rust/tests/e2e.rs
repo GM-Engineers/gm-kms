@@ -18,8 +18,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gm_kms_sdk::{
-    ApprovalOperation, Client, CreateApprovalRequest, CreateKeyRequest, EncryptRequest,
-    ExportKeyRequest, HmacRequest, HmacVerifyRequest, KeySpec, KmsError,
+    ApprovalOperation, Client, CreateApprovalRequest, CreateKeyRequest, CreatePolicyRequest,
+    EncryptRequest, ExportKeyRequest, HmacRequest, HmacVerifyRequest, KeySpec, KmsError,
 };
 use kms_api::auth::{ApiKey, ApiKeyConfig};
 use kms_api::{KmsMetrics, KmsState, Sm9State, rest::create_routes};
@@ -478,4 +478,60 @@ async fn an_unknown_key_is_reported_as_not_found() {
         message.contains("not found"),
         "the message must say what happened: {message}"
     );
+}
+
+/// The SDK installs a tenant-scoped policy and takes it back again.
+///
+/// The withdrawal matters: now that policies are persisted, one that turns
+/// out to be wrong would outlive every restart, so the operator needs a way
+/// to remove it — and the SDK has to be able to reach that endpoint. The
+/// tenant dimension is checked on the way through, because a policy that
+/// cannot be scoped to a tenant cannot be governed either.
+#[tokio::test]
+async fn the_sdk_installs_a_tenant_scoped_policy_and_withdraws_it_again() {
+    let (base, _state, handle) = spawn_server().await;
+    let kms = officer_client(&base, OFFICER_SECRETS[0]);
+
+    let created = kms
+        .create_policy(&CreatePolicyRequest {
+            name: "tenant-scoped-allow".to_string(),
+            effect: gm_kms_sdk::PolicyEffect::Allow,
+            condition: json!({ "operator": "always" }),
+            resources: vec!["*".to_string()],
+            subjects: vec!["*".to_string()],
+            tenant: Some(TENANT.to_string()),
+            enabled: true,
+        })
+        .await
+        .expect("create the policy");
+
+    assert_eq!(created.tenant.as_deref(), Some(TENANT));
+    assert_eq!(created.name, "tenant-scoped-allow");
+
+    // It is listed and fetchable.
+    let listed = kms.list_policies().await.expect("list the policies");
+    assert!(
+        listed.iter().any(|p| p.id == created.id),
+        "the new policy must be listed"
+    );
+    let fetched = kms.get_policy(&created.id).await.expect("get the policy");
+    assert_eq!(fetched.id, created.id);
+    assert_eq!(fetched.tenant.as_deref(), Some(TENANT));
+
+    // It can be withdrawn — and a second withdrawal is reported, not ignored.
+    kms.delete_policy(&created.id)
+        .await
+        .expect("delete the policy");
+    let error = kms
+        .get_policy(&created.id)
+        .await
+        .expect_err("the policy is gone");
+    assert!(error.is_not_found(), "the refusal must be a 404: {error}");
+    let error = kms
+        .delete_policy(&created.id)
+        .await
+        .expect_err("it is already gone");
+    assert!(error.is_not_found(), "the refusal must be a 404: {error}");
+
+    handle.abort();
 }

@@ -391,28 +391,78 @@ func TestCreatePolicy(t *testing.T) {
 		if r.URL.Path != "/v1/policies" {
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
+		var body map[string]interface{}
+		json.NewDecoder(r.Body).Decode(&body)
+		if body["tenant"] != "tenant-a" {
+			t.Errorf("expected tenant tenant-a, got %v", body["tenant"])
+		}
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"id":        "policy-1",
 			"name":      "test-policy",
 			"effect":    "allow",
 			"resources": []string{"keys/*"},
 			"subjects":  []string{"*"},
+			"tenant":    "tenant-a",
 			"enabled":   true,
 		})
 	})
 	defer srv.Close()
 
+	tenant := "tenant-a"
 	result, err := client.CreatePolicy(context.Background(), &CreatePolicyRequest{
 		Name:      "test-policy",
 		Effect:    "allow",
 		Resources: []string{"keys/*"},
 		Subjects:  []string{"*"},
+		Tenant:    &tenant,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if result.ID != "policy-1" {
 		t.Errorf("expected policy-1, got %s", result.ID)
+	}
+	if result.Tenant == nil || *result.Tenant != "tenant-a" {
+		t.Errorf("expected tenant tenant-a, got %v", result.Tenant)
+	}
+}
+
+func TestDeletePolicy(t *testing.T) {
+	client, srv := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			t.Errorf("expected DELETE, got %s", r.Method)
+		}
+		if r.URL.Path != "/v1/policies/policy-1" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	defer srv.Close()
+
+	if err := client.DeletePolicy(context.Background(), "policy-1"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestDeletePolicyReportsAnUnknownPolicy(t *testing.T) {
+	client, srv := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error": "policy policy-1 not found",
+		})
+	})
+	defer srv.Close()
+
+	err := client.DeletePolicy(context.Background(), "policy-1")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	apiErr, ok := err.(*APIError)
+	if !ok {
+		t.Fatalf("expected APIError, got %T", err)
+	}
+	if apiErr.StatusCode != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", apiErr.StatusCode)
 	}
 }
 

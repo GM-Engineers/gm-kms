@@ -6,7 +6,7 @@ All notable changes to gm-kms will be documented in this file.
 
 ### 上游审计整改（upstream audit remediation）
 
-分支 `fix/upstream-audit-2026h2`（基线 `release/0.3.0` @ `51a8e16`）共 **36 个提交**，闭合上游审计报告复核确认的全部 **22 项**问题（21 项复核属实 + 1 项新发现的 P0 功能阻断），并追加两轮独立复核（B7-*）与缺口闭合（B8-*）。每项均带回归测试；每批提交前通过 `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`（nightly 与 CI 稳定版 1.88 双通道），以及 PostgreSQL/Redis 集成套件（`--ignored`，55 passed / 0 failed，且**可重复执行**——不再需要每次手工清库或 `FLUSHALL`）。
+分支 `fix/upstream-audit-2026h2`（基线 `release/0.3.0` @ `51a8e16`）共 **42 个提交**，闭合上游审计报告复核确认的全部 **22 项**问题（21 项复核属实 + 1 项新发现的 P0 功能阻断），并追加两轮独立复核（B7-*）、缺口闭合（B8-*）与两项策略治理补齐（B9-*）。每项均带回归测试；每批提交前通过 `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`（nightly 与 CI 稳定版 1.88 双通道），以及 PostgreSQL/Redis 集成套件（`--ignored`，55 passed / 0 failed，且**可重复执行**——不再需要每次手工清库或 `FLUSHALL`）。
 
 #### Security
 
@@ -59,11 +59,13 @@ All notable changes to gm-kms will be documented in this file.
 
 #### Added
 
+- **B9-c — SDK 补齐策略撤销与租户维度**：`DELETE /v1/policies/{id}`（B9-a 新增的撤销路径）此前**没有任何 SDK 能调用**——Rust SDK 只有 `create_policy` / `list_policies` / `get_policy`，Go SDK 只有 `CreatePolicy` / `ListPolicies` / `GetPolicy`，所以"装得下、撤不掉"在 SDK 侧依然成立，运维只能绕过 SDK 手拼 REST。Rust SDK 增 `delete_policy`，Go SDK 增 `DeletePolicy`（204 成功；未知 id 报 404）。Go SDK 的 `CreatePolicyRequest` / `Policy` 同步补上 B9-b 的 `tenant` 字段（`Tenant *string`，请求侧 `omitempty`），此前 Go 侧**完全无法设置或读取**租户维度。字段为可选且向后兼容：旧 SDK 不发 `tenant` 时服务端按"不限租户"处理，服务端应答里的 `tenant` 也不会被旧客户端误解。
+  - 护栏：Rust SDK `tests/e2e.rs` 增 1 例（真实 server 上装一条**限定租户**的策略 → 列出 → 取出 → 撤销 → 再取报 404 → 二次撤销报 404），Go SDK `kms_test.go` 增 2 例（`DeletePolicy` 的方法与路径、204 成功；未知策略报 404），并改写既有的 `TestCreatePolicy` 使其断言 `tenant` 既被发出去也被读回来。Go SDK 的 `policies.go` 同时成为该目录下 gofmt 干净的文件。
 - **P2-1 — 托管 HMAC-SM3 密钥规格与独立 RPC**：新增 `KeySpec::Sm3Hmac` 与独立的 `Hmac` / `HmacVerify` RPC（`{key_id,data,aad?} -> {mac,version}`），走 `gm_crypto::sm3::Sm3Hmac`，不复用 AES-GCM 分支。
 - **P2-7 — 备份主密钥跨重启持久化**：`MasterKey` 复用 KEK 的 `export_encrypted`/`import_encrypted` 机制接入启动流程；启动时校验能否解开上次备份，失败告警。
 - **B7-e — `[[api_keys]]` 配置段**：key_id、role、tenant、secret_env。密钥从**环境变量**读取而非配置文件；未知角色或缺失 secret 使启动失败；未绑定租户的 key 在启动时告警。部署指南与语义表同步说明该配置面。
 - **B8-e — Rust SDK（`sdk/rust`，包名 `gm-kms-sdk`）**：仓库原有 Go/Python/JavaScript SDK，Rust 消费方需自行拼装 REST 调用、base64 编码与逐端点的租户位置，且服务端 wire 格式变动时构建不会报警。新增为 workspace member（`publish = false`），`cargo test --workspace` 与 `cargo clippy --all-targets` 自动覆盖。REST/JSON 通道，无需 protoc、无 gRPC 绑定、无代码生成；`reqwest` + `rustls-tls` 不依赖系统 OpenSSL。
-  - 护栏：`tests/contract.rs` 形状护栏 26 例，双向断言服务端 DTO 接受 SDK body、SDK DTO 接受服务端应答，逐层比对字段名；`tests/e2e.rs` 语义护栏 5 例，跑真实 `kms-api` server（loopback）：密钥全生命周期（create → encrypt → decrypt → hmac → hmac/verify 篡改 tag → 三个**不同** key 的三次审批 → export）、无审批导出、过期审批解锁导出、未知 key；另有 5 个 client 单元测试与 3 个 doctest。
+  - 护栏：`tests/contract.rs` 形状护栏 26 例，双向断言服务端 DTO 接受 SDK body、SDK DTO 接受服务端应答，逐层比对字段名；`tests/e2e.rs` 语义护栏 6 例，跑真实 `kms-api` server（loopback）：密钥全生命周期（create → encrypt → decrypt → hmac → hmac/verify 篡改 tag → 三个**不同** key 的三次审批 → export）、无审批导出、过期审批解锁导出、未知 key、策略全生命周期（装一条限定租户的策略 → 列出 → 取出 → 撤销 → 再取报 404 → 二次撤销报 404）；另有 5 个 client 单元测试与 3 个 doctest。
   - 护栏当场查出两处缺陷：导出缺审批实际答 400（请求畸形）而非 403（语义见 `docs/api-semantics.md` §8.5）；`Client::endpoint` 在 base URL 以斜杠结尾时拼出 `https://host/api//v1/keys`。
 - **B8-d — 审批恢复钩子**：`ApprovalEngine::restore_request` / `ApprovalManager::restore_request`，供持久化层在不延长生命周期的前提下重新装载请求。`create_request` 始终由所需级别推导新的 `expires_at`，因此"已批准但已过期"的请求无法被构造；恢复的请求保留自己的截止时间与自己的投票，重复 id 被拒绝而非静默覆盖活跃请求。
 

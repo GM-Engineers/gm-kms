@@ -162,6 +162,34 @@ status, err := client.Health(ctx)
 fmt.Println(status) // "healthy"
 ```
 
+### Policies
+
+PBAC policies manage access to keys. All four calls require the
+security-officer role.
+
+```go
+// Create a policy. A nil Tenant means the policy applies to every tenant;
+// a value restricts it to that tenant, and a glob pattern such as
+// "tenant-*" covers a family of tenants.
+tenant := "tenant-a"
+policy, err := client.CreatePolicy(ctx, &CreatePolicyRequest{
+    Name:      "allow-encrypt",
+    Effect:    "allow",
+    Resources: []string{"keys/*"},
+    Subjects:  []string{"*"},
+    Tenant:    &tenant,
+})
+
+// List and fetch.
+policies, err := client.ListPolicies(ctx)
+policy, err = client.GetPolicy(ctx, policy.ID)
+
+// Withdraw it again — a persisted policy that turns out to be wrong would
+// otherwise outlive every restart. A policy that does not exist is reported
+// as a 404 rather than silently ignored.
+err = client.DeletePolicy(ctx, policy.ID)
+```
+
 ## License
 
 MIT

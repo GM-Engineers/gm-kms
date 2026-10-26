@@ -549,6 +549,20 @@ impl Client {
         .await
     }
 
+    /// Remove a PBAC policy.
+    ///
+    /// The server answers `204 No Content` on success and `404` when no such
+    /// policy exists, so a typo is reported instead of looking like a
+    /// successful removal.
+    pub async fn delete_policy(&self, policy_id: &str) -> Result<()> {
+        self.send_empty(
+            Method::DELETE,
+            self.endpoint(&format!("/v1/policies/{policy_id}"))?,
+            None,
+        )
+        .await
+    }
+
     // ── Health ────────────────────────────────────────────────────────────
 
     /// Fetch the health of the KMS.
