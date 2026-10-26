@@ -6,7 +6,7 @@ All notable changes to gm-kms will be documented in this file.
 
 ### 上游审计整改（upstream audit remediation）
 
-分支 `fix/upstream-audit-2026h2`（基线 `release/0.3.0` @ `51a8e16`）共 **36 个提交**，闭合上游审计报告复核确认的全部 **22 项**问题（21 项复核属实 + 1 项新发现的 P0 功能阻断），并追加两轮独立复核（B7-*）与缺口闭合（B8-*）。每项均带回归测试；每批提交前通过 `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`（nightly 与 CI 稳定版 1.88 双通道），以及 PostgreSQL/Redis 集成套件（`--ignored`，45 passed / 0 failed）。
+分支 `fix/upstream-audit-2026h2`（基线 `release/0.3.0` @ `51a8e16`）共 **36 个提交**，闭合上游审计报告复核确认的全部 **22 项**问题（21 项复核属实 + 1 项新发现的 P0 功能阻断），并追加两轮独立复核（B7-*）与缺口闭合（B8-*）。每项均带回归测试；每批提交前通过 `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`（nightly 与 CI 稳定版 1.88 双通道），以及 PostgreSQL/Redis 集成套件（`--ignored`，55 passed / 0 failed，且**可重复执行**——不再需要每次手工清库或 `FLUSHALL`）。
 
 #### Security
 
@@ -45,6 +45,7 @@ All notable changes to gm-kms will be documented in this file.
 
 #### Fixed
 
+- **集成套件可重复执行**：三个 `--ignored` 用例把"数据库 / Redis 里没有旧状态"当成了前置条件，于是第二次执行必然失败。`mfa::tests::test_mfa_db_lockout_persistence` 断言失败计数恰好等于 `MAX_TOTP_ATTEMPTS`，而 `record_failed_totp_attempt` 只增不减（`ON CONFLICT … DO UPDATE SET failed_attempts = failed_attempts + 1`），固定 `user_id` 的计数会跨运行累加；`quota::tests::test_quota_tracker_basic` 与 `test_quota_exceeded` 同理，Redis 里的计数同样只增不减。三个用例改用**每次运行新生成**的用户 / 租户 id（`uuid::Uuid::new_v4()`），不再依赖"这套件只在干净库上跑过一次"这个前提。整套 `--ignored` 套件现在可连续执行多次且全部通过，不需要手工 `DELETE` 或 `FLUSHALL`。
 - **B8-d — 审批门的 400 / 403 语义统一**：REST 对审批门的拒绝答 400，而 gRPC 同一道门答 `permission_denied`——一个格式合法但未授权的请求被报成畸形调用，且两条通道在同一道安全门上分歧。拒绝统一为 `ApiError::Forbidden`（403）；400 保留给缺失或畸形的 `approval_id`（那是畸形调用，不是授权失败）。语义表 `docs/api-semantics.md` §8.5 补该区分。
 - **B8-b — 缓存条目一步解析**：每次操作都是"lazy-load 写回缓存 → 再从缓存读出"两步，而 `insert_with_eviction` 在插入后按上限淘汰，上限为 0 时写回即淘汰自己的条目——**专门用来少留密钥材料在内存的配置反而让每个密钥都报 `KeyNotFound`**。新增 `entry_for` helper 直接返回条目（命中取缓存，未命中取新加载），8 个读操作改用。
 - **B8-g — 写路径不再依赖缓存驻留**：轮换与删除改为在缓存修改闭包内做 `can_rotate()` 检查，而闭包无法返回错误，于是 panic（`rotate_key: can_rotate returned false after try_read success`）打挂请求；现在报 `KeyOperationNotAllowed`，与软件后端一致并由 API 层映射为 4xx。写入顺序改为"先落库、后刷新缓存"——旧顺序在数据库写失败时留下缓存声称 obsolete 而数据库仍称 active，且新密钥材料只存在于缓存中，一次失败的轮换会静默丢密钥。

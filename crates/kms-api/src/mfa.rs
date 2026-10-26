@@ -1127,18 +1127,21 @@ mod tests {
     #[ignore]
     async fn test_mfa_db_lockout_persistence() {
         let mfa = setup_mfa_with_db().await.expect("DATABASE_URL must be set");
-        let user_id = "db-test-lockout-user";
+        // A fresh user id per run: the counter lives in PostgreSQL and is only
+        // ever incremented, so a fixed id would make the assertion below depend
+        // on how many times the suite had already run against this database.
+        let user_id = format!("db-test-lockout-user-{}", uuid::Uuid::new_v4());
 
         // Trigger lockout
         for _ in 0..MAX_TOTP_ATTEMPTS {
-            mfa.record_failed_totp_attempt(user_id).await;
+            mfa.record_failed_totp_attempt(&user_id).await;
         }
-        assert!(mfa.is_locked_out(user_id).await);
+        assert!(mfa.is_locked_out(&user_id).await);
 
         // Verify persistence by creating a NEW MfaManager
         let mfa2 = MfaManager::new(mfa.pool.clone().unwrap());
-        assert!(mfa2.is_locked_out(user_id).await);
-        assert_eq!(mfa2.failed_attempt_count(user_id).await, MAX_TOTP_ATTEMPTS);
+        assert!(mfa2.is_locked_out(&user_id).await);
+        assert_eq!(mfa2.failed_attempt_count(&user_id).await, MAX_TOTP_ATTEMPTS);
     }
 
     #[tokio::test]

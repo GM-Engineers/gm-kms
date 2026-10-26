@@ -259,7 +259,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    #[ignore] // Requires isolated Redis or cleanup between runs
+    #[ignore] // Requires Redis
     async fn test_quota_tracker_basic() {
         let redis_url =
             std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".to_string());
@@ -280,23 +280,26 @@ mod tests {
         };
 
         let tracker = TenantQuotaTracker::new(conn_manager, config);
-        let tenant_id = "test-tenant-quota-unique"; // Use unique tenant to avoid conflicts
+        // A fresh tenant id per run: the counters live in Redis and are only ever
+        // incremented, so a fixed id would make the assertions below depend on how
+        // many times the suite had already run against this Redis.
+        let tenant_id = format!("test-tenant-quota-{}", uuid::Uuid::new_v4());
 
         // Check initial state
-        let can_create = tracker.can_create_key(tenant_id).await;
+        let can_create = tracker.can_create_key(&tenant_id).await;
         assert!(can_create.is_ok());
 
         // Increment key count
-        let count = tracker.increment_key_count(tenant_id).await;
+        let count = tracker.increment_key_count(&tenant_id).await;
         assert!(count.is_ok());
         assert_eq!(count.unwrap(), 1);
 
         // Record request
-        let result = tracker.record_request(tenant_id).await;
+        let result = tracker.record_request(&tenant_id).await;
         assert!(result.is_ok());
 
         // Get usage
-        let usage = tracker.get_usage(tenant_id).await;
+        let usage = tracker.get_usage(&tenant_id).await;
         assert!(usage.is_ok());
         let usage = usage.unwrap();
         assert_eq!(usage.key_count, 1);
@@ -306,7 +309,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // Requires isolated Redis or cleanup between runs
+    #[ignore] // Requires Redis
     async fn test_quota_exceeded() {
         let redis_url =
             std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".to_string());
@@ -328,16 +331,17 @@ mod tests {
         };
 
         let tracker = TenantQuotaTracker::new(conn_manager, config);
-        let tenant_id = "test-tenant-exceeded-unique"; // Use unique tenant
+        // A fresh tenant id per run — see the note in `test_quota_tracker_basic`.
+        let tenant_id = format!("test-tenant-exceeded-{}", uuid::Uuid::new_v4());
 
         // First two requests should succeed
-        assert!(tracker.can_create_key(tenant_id).await.is_ok());
-        let _ = tracker.increment_key_count(tenant_id).await;
-        assert!(tracker.can_create_key(tenant_id).await.is_ok());
-        let _ = tracker.increment_key_count(tenant_id).await;
+        assert!(tracker.can_create_key(&tenant_id).await.is_ok());
+        let _ = tracker.increment_key_count(&tenant_id).await;
+        assert!(tracker.can_create_key(&tenant_id).await.is_ok());
+        let _ = tracker.increment_key_count(&tenant_id).await;
 
         // Third should fail
-        assert!(tracker.can_create_key(tenant_id).await.is_err());
+        assert!(tracker.can_create_key(&tenant_id).await.is_err());
 
         println!("Quota exceeded test passed!");
     }

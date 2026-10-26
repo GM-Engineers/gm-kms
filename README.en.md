@@ -176,7 +176,7 @@ gm-kms/
 | **Total** | **1268 passed** (plus 55 ignored) | |
 
 > Ignored breakdown: kms-api 5 + kms-keystore 25 + kms binary 2 + api_pg_integration 7 + api_policy_pg_integration 8 + doctests 8.
-> The PostgreSQL / Redis backed cases need a real PostgreSQL and Redis; run them separately with `cargo test --workspace -- --ignored`.
+> The PostgreSQL / Redis backed cases need a real PostgreSQL and Redis; run them separately with `cargo test --workspace -- --ignored`. The suite is **safe to re-run** — every case uses a one-shot identifier, so no manual cleanup or `FLUSHALL` is needed between runs.
 
 ## Third-party components
 
